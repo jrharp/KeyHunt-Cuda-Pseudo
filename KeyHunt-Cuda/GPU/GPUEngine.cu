@@ -435,14 +435,14 @@ int GPUEngine::GetGroupSize()
 
 void GPUEngine::PrintCudaInfo()
 {
-	const char* sComputeMode[] = {
-		"Multiple host threads",
-		"Only one host thread",
-		"No host thread",
-		"Multiple process threads",
-		"Unknown",
-		NULL
-	};
+        const char* sComputeMode[] = {
+                "Multiple host threads",
+                "Only one host thread",
+                "No host thread",
+                "Multiple process threads",
+                "Unknown",
+                NULL
+        };
 
 	int deviceCount = 0;
 	CudaSafeCall(cudaGetDeviceCount(&deviceCount));
@@ -457,12 +457,20 @@ void GPUEngine::PrintCudaInfo()
 		CudaSafeCall(cudaSetDevice(i));
 		cudaDeviceProp deviceProp;
 		CudaSafeCall(cudaGetDeviceProperties(&deviceProp, i));
-		printf("GPU #%d %s (%dx%d cores) (Cap %d.%d) (%.1f MB) (%s)\n",
-			i, deviceProp.name, deviceProp.multiProcessorCount,
-			_ConvertSMVer2Cores(deviceProp.major, deviceProp.minor),
-			deviceProp.major, deviceProp.minor, (double)deviceProp.totalGlobalMem / 1048576.0,
-			sComputeMode[deviceProp.computeMode]);
-	}
+                int computeModeIndex = 4;
+                int computeModeValue = -1;
+                if (cudaDeviceGetAttribute(&computeModeValue, cudaDevAttrComputeMode, i) == cudaSuccess) {
+                        if (computeModeValue >= 0 && computeModeValue < 4) {
+                                computeModeIndex = computeModeValue;
+                        }
+                }
+
+                printf("GPU #%d %s (%dx%d cores) (Cap %d.%d) (%.1f MB) (%s)\n",
+                        i, deviceProp.name, deviceProp.multiProcessorCount,
+                        _ConvertSMVer2Cores(deviceProp.major, deviceProp.minor),
+                        deviceProp.major, deviceProp.minor, (double)deviceProp.totalGlobalMem / 1048576.0,
+                        sComputeMode[computeModeIndex]);
+        }
 }
 
 // ----------------------------------------------------------------------------

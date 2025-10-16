@@ -15,8 +15,7 @@
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
 */
 
-#include <device_atomic_functions.h>
-#include <device_functions.h>
+#include <cuda_runtime.h>
 
 __device__ uint64_t* _2Gnx = NULL;
 __device__ uint64_t* _2Gny = NULL;
