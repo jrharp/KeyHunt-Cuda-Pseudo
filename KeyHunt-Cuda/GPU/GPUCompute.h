@@ -16,57 +16,62 @@
 */
 
 #include <cuda_runtime.h>
+#include <stdint.h>
 
-__device__ uint64_t* _2Gnx = NULL;
-__device__ uint64_t* _2Gny = NULL;
+#if __CUDA_ARCH__ >= 350
+#define GPU_LDG(ptr) __ldg(ptr)
+#else
+#define GPU_LDG(ptr) (*(ptr))
+#endif
 
-__device__ uint64_t* Gx = NULL;
-__device__ uint64_t* Gy = NULL;
+__device__ uint64_t* _2Gnx = nullptr;
+__device__ uint64_t* _2Gny = nullptr;
+
+__device__ uint64_t* Gx = nullptr;
+__device__ uint64_t* Gy = nullptr;
 
 // ---------------------------------------------------------------------------------------
 
-__device__ int Test_Bit_Set_Bit(const uint8_t* buf, uint32_t bit)
+__device__ __forceinline__ int Test_Bit_Set_Bit(const uint8_t* __restrict__ buf, uint32_t bit)
 {
-	uint32_t byte = bit >> 3;
-	uint8_t c = buf[byte];        // expensive memory access
-	uint8_t mask = 1 << (bit % 8);
-
-	if (c & mask) {
-		return 1;
-	}
-	else {
-		return 0;
-	}
+        const uint32_t byte = bit >> 3;
+        const uint8_t mask = static_cast<uint8_t>(1u << (bit & 7u));
+        return (GPU_LDG(buf + byte) & mask) != 0;
 }
 
 // ---------------------------------------------------------------------------------------
 
-__device__ uint32_t MurMurHash2(const void* key, int len, uint32_t seed)
+__device__ __forceinline__ uint32_t MurMurHash2(const void* __restrict__ key, int len, uint32_t seed)
 {
-	const uint32_t m = 0x5bd1e995;
-	const int r = 24;
+        constexpr uint32_t m = 0x5bd1e995u;
+        constexpr int r = 24;
 
-	uint32_t h = seed ^ len;
-	const uint8_t* data = (const uint8_t*)key;
-	while (len >= 4) {
-		uint32_t k = *(uint32_t*)data;
-		k *= m;
-		k ^= k >> r;
-		k *= m;
-		h *= m;
-		h ^= k;
+        uint32_t h = seed ^ len;
+        const uint8_t* data = static_cast<const uint8_t*>(key);
+        while (len >= 4) {
+                uint32_t k;
+#if __CUDA_ARCH__ >= 350
+                k = __ldg(reinterpret_cast<const uint32_t*>(data));
+#else
+                k = *reinterpret_cast<const uint32_t*>(data);
+#endif
+                k *= m;
+                k ^= k >> r;
+                k *= m;
+                h *= m;
+                h ^= k;
 		data += 4;
 		len -= 4;
 	}
 	switch (len) {
-	case 3: h ^= data[2] << 16;
-		break;
-	case 2: h ^= data[1] << 8;
-		break;
-	case 1: h ^= data[0];
-		h *= m;
-		break;
-	}
+        case 3: h ^= static_cast<uint32_t>(data[2]) << 16;
+                break;
+        case 2: h ^= static_cast<uint32_t>(data[1]) << 8;
+                break;
+        case 1: h ^= data[0];
+                h *= m;
+                break;
+        }
 
 	h ^= h >> 13;
 	h *= m;
@@ -77,155 +82,128 @@ __device__ uint32_t MurMurHash2(const void* key, int len, uint32_t seed)
 
 // ---------------------------------------------------------------------------------------
 
-__device__ int BloomCheck(const uint32_t* hash, const uint8_t* inputBloomLookUp, uint64_t BLOOM_BITS, uint8_t BLOOM_HASHES, uint32_t K_LENGTH)
+__device__ __forceinline__ int BloomCheck(const uint32_t* __restrict__ hash, const uint8_t* __restrict__ inputBloomLookUp,
+        uint64_t BLOOM_BITS, uint8_t BLOOM_HASHES, uint32_t K_LENGTH)
 {
-	int add = 0;
-	uint8_t hits = 0;
-	uint32_t a = MurMurHash2((uint8_t*)hash, K_LENGTH, 0x9747b28c);
-	uint32_t b = MurMurHash2((uint8_t*)hash, K_LENGTH, a);
-	uint32_t x;
-	uint8_t i;
-	for (i = 0; i < BLOOM_HASHES; i++) {
-		x = (a + b * i) % BLOOM_BITS;
-		if (Test_Bit_Set_Bit(inputBloomLookUp, x)) {
-			hits++;
-		}
-		else if (!add) {
-			return 0;
-		}
-	}
-	if (hits == BLOOM_HASHES) {
-		return 1;
-	}
-	return 0;
+        uint8_t hits = 0;
+        const uint32_t seedA = MurMurHash2(hash, K_LENGTH, 0x9747b28c);
+        const uint32_t seedB = MurMurHash2(hash, K_LENGTH, seedA);
+        for (uint8_t i = 0; i < BLOOM_HASHES; ++i) {
+                const uint32_t bitIndex = (seedA + seedB * i) % BLOOM_BITS;
+                if (Test_Bit_Set_Bit(inputBloomLookUp, bitIndex)) {
+                        ++hits;
+                }
+                else {
+                        return 0;
+                }
+        }
+        return hits == BLOOM_HASHES;
 }
 
 // ---------------------------------------------------------------------------------------
 
-__device__ __noinline__ void CheckPointSEARCH_MODE_MA(uint32_t* _h, int32_t incr, int32_t mode,
-	uint8_t* bloomLookUp, uint64_t BLOOM_BITS, uint8_t BLOOM_HASHES, uint32_t maxFound, uint32_t* out)
+__device__ __forceinline__ void CheckPointSEARCH_MODE_MA(uint32_t* __restrict__ _h, int32_t incr, int32_t mode,
+	uint8_t* __restrict__ bloomLookUp, uint64_t BLOOM_BITS, uint8_t BLOOM_HASHES, uint32_t maxFound, uint32_t* __restrict__ out)
 {
-	uint32_t tid = (blockIdx.x * blockDim.x) + threadIdx.x;
+	const uint32_t tid = (blockIdx.x * blockDim.x) + threadIdx.x;
 
 	if (BloomCheck(_h, bloomLookUp, BLOOM_BITS, BLOOM_HASHES, 20) > 0) {
-		uint32_t pos = atomicAdd(out, 1);
+		const uint32_t pos = atomicAdd(out, 1u);
 		if (pos < maxFound) {
-			out[pos * ITEM_SIZE_A32 + 1] = tid;
-			out[pos * ITEM_SIZE_A32 + 2] = (uint32_t)(incr << 16) | (uint32_t)(mode << 15);// | (uint32_t)(endo);
-			out[pos * ITEM_SIZE_A32 + 3] = _h[0];
-			out[pos * ITEM_SIZE_A32 + 4] = _h[1];
-			out[pos * ITEM_SIZE_A32 + 5] = _h[2];
-			out[pos * ITEM_SIZE_A32 + 6] = _h[3];
-			out[pos * ITEM_SIZE_A32 + 7] = _h[4];
+			const uint32_t base = pos * ITEM_SIZE_A32;
+			out[base + 1] = tid;
+			out[base + 2] = static_cast<uint32_t>(incr << 16) | static_cast<uint32_t>(mode << 15);
+			#pragma unroll
+			for (int i = 0; i < 5; ++i) {
+				out[base + 3 + i] = _h[i];
+			}
 		}
 	}
 }
 
 // ---------------------------------------------------------------------------------------
 
-__device__ __noinline__ void CheckPointSEARCH_MODE_MX(uint32_t* _h, int32_t incr, int32_t mode,
-	uint8_t* bloomLookUp, uint64_t BLOOM_BITS, uint8_t BLOOM_HASHES, uint32_t maxFound, uint32_t* out)
+__device__ __forceinline__ void CheckPointSEARCH_MODE_MX(uint32_t* __restrict__ _h, int32_t incr, int32_t mode,
+	uint8_t* __restrict__ bloomLookUp, uint64_t BLOOM_BITS, uint8_t BLOOM_HASHES, uint32_t maxFound, uint32_t* __restrict__ out)
 {
-	uint32_t tid = (blockIdx.x * blockDim.x) + threadIdx.x;
+	const uint32_t tid = (blockIdx.x * blockDim.x) + threadIdx.x;
 
 	if (BloomCheck(_h, bloomLookUp, BLOOM_BITS, BLOOM_HASHES, 32) > 0) {
-		uint32_t pos = atomicAdd(out, 1);
+		const uint32_t pos = atomicAdd(out, 1u);
 		if (pos < maxFound) {
-			out[pos * ITEM_SIZE_X32 + 1] = tid;
-			out[pos * ITEM_SIZE_X32 + 2] = (uint32_t)(incr << 16) | (uint32_t)(mode << 15);// | (uint32_t)(endo);
-			out[pos * ITEM_SIZE_X32 + 3] = _h[0];
-			out[pos * ITEM_SIZE_X32 + 4] = _h[1];
-			out[pos * ITEM_SIZE_X32 + 5] = _h[2];
-			out[pos * ITEM_SIZE_X32 + 6] = _h[3];
-			out[pos * ITEM_SIZE_X32 + 7] = _h[4];
-			out[pos * ITEM_SIZE_X32 + 8] = _h[5];
-			out[pos * ITEM_SIZE_X32 + 9] = _h[6];
-			out[pos * ITEM_SIZE_X32 + 10] = _h[7];
+			const uint32_t base = pos * ITEM_SIZE_X32;
+			out[base + 1] = tid;
+			out[base + 2] = static_cast<uint32_t>(incr << 16) | static_cast<uint32_t>(mode << 15);
+			#pragma unroll
+			for (int i = 0; i < 8; ++i) {
+				out[base + 3 + i] = _h[i];
+			}
 		}
 	}
 }
 
 // ---------------------------------------------------------------------------------------
 
-__device__ __noinline__ bool MatchHash(uint32_t* _h, uint32_t* hash)
+__device__ __forceinline__ bool MatchHash(const uint32_t* __restrict__ _h, const uint32_t* __restrict__ hash)
 {
-	if (_h[0] == hash[0] &&
-		_h[1] == hash[1] &&
-		_h[2] == hash[2] &&
-		_h[3] == hash[3] &&
-		_h[4] == hash[4]) {
-		return true;
+	bool match = true;
+	#pragma unroll
+	for (int i = 0; i < 5; ++i) {
+		match &= (_h[i] == hash[i]);
 	}
-	else {
-		return false;
-	}
+	return match;
 }
 
 // ---------------------------------------------------------------------------------------
 
-__device__ __noinline__ bool MatchXPoint(uint32_t* _h, uint32_t* xpoint)
+__device__ __forceinline__ bool MatchXPoint(const uint32_t* __restrict__ _h, const uint32_t* __restrict__ xpoint)
 {
-	//for (int i = 0; i < 32; i++) {
-	//	printf("%02x", ((uint8_t*)xpoint)[i]);
-	//}
-	//printf("\n");
-
-	if (_h[0] == xpoint[0] &&
-		_h[1] == xpoint[1] &&
-		_h[2] == xpoint[2] &&
-		_h[3] == xpoint[3] &&
-		_h[4] == xpoint[4] &&
-		_h[5] == xpoint[5] &&
-		_h[6] == xpoint[6] &&
-		_h[7] == xpoint[7]) {
-		return true;
+	bool match = true;
+	#pragma unroll
+	for (int i = 0; i < 8; ++i) {
+		match &= (_h[i] == xpoint[i]);
 	}
-	else {
-		return false;
-	}
+	return match;
 }
 
 // ---------------------------------------------------------------------------------------
 
-__device__ __noinline__ void CheckPointSEARCH_MODE_SA(uint32_t* _h, int32_t incr, int32_t mode,
-	uint32_t* hash160, uint32_t maxFound, uint32_t* out)
+__device__ __forceinline__ void CheckPointSEARCH_MODE_SA(uint32_t* __restrict__ _h, int32_t incr, int32_t mode,
+	uint32_t* __restrict__ hash160, uint32_t maxFound, uint32_t* __restrict__ out)
 {
-	uint32_t tid = (blockIdx.x * blockDim.x) + threadIdx.x;
+	const uint32_t tid = (blockIdx.x * blockDim.x) + threadIdx.x;
 
 	if (MatchHash(_h, hash160)) {
-		uint32_t pos = atomicAdd(out, 1);
+		const uint32_t pos = atomicAdd(out, 1u);
 		if (pos < maxFound) {
-			out[pos * ITEM_SIZE_A32 + 1] = tid;
-			out[pos * ITEM_SIZE_A32 + 2] = (uint32_t)(incr << 16) | (uint32_t)(mode << 15);// | (uint32_t)(endo);
-			out[pos * ITEM_SIZE_A32 + 3] = _h[0];
-			out[pos * ITEM_SIZE_A32 + 4] = _h[1];
-			out[pos * ITEM_SIZE_A32 + 5] = _h[2];
-			out[pos * ITEM_SIZE_A32 + 6] = _h[3];
-			out[pos * ITEM_SIZE_A32 + 7] = _h[4];
+			const uint32_t base = pos * ITEM_SIZE_A32;
+			out[base + 1] = tid;
+			out[base + 2] = static_cast<uint32_t>(incr << 16) | static_cast<uint32_t>(mode << 15);
+			#pragma unroll
+			for (int i = 0; i < 5; ++i) {
+				out[base + 3 + i] = _h[i];
+			}
 		}
 	}
 }
 
 // ---------------------------------------------------------------------------------------
 
-__device__ __noinline__ void CheckPointSEARCH_MODE_SX(uint32_t* _h, int32_t incr, int32_t mode,
-	uint32_t* xpoint, uint32_t maxFound, uint32_t* out)
+__device__ __forceinline__ void CheckPointSEARCH_MODE_SX(uint32_t* __restrict__ _h, int32_t incr, int32_t mode,
+	uint32_t* __restrict__ xpoint, uint32_t maxFound, uint32_t* __restrict__ out)
 {
-	uint32_t tid = (blockIdx.x * blockDim.x) + threadIdx.x;
+	const uint32_t tid = (blockIdx.x * blockDim.x) + threadIdx.x;
 
 	if (MatchXPoint(_h, xpoint)) {
-		uint32_t pos = atomicAdd(out, 1);
+		const uint32_t pos = atomicAdd(out, 1u);
 		if (pos < maxFound) {
-			out[pos * ITEM_SIZE_X32 + 1] = tid;
-			out[pos * ITEM_SIZE_X32 + 2] = (uint32_t)(incr << 16) | (uint32_t)(mode << 15);// | (uint32_t)(endo);
-			out[pos * ITEM_SIZE_X32 + 3] = _h[0];
-			out[pos * ITEM_SIZE_X32 + 4] = _h[1];
-			out[pos * ITEM_SIZE_X32 + 5] = _h[2];
-			out[pos * ITEM_SIZE_X32 + 6] = _h[3];
-			out[pos * ITEM_SIZE_X32 + 7] = _h[4];
-			out[pos * ITEM_SIZE_X32 + 8] = _h[5];
-			out[pos * ITEM_SIZE_X32 + 9] = _h[6];
-			out[pos * ITEM_SIZE_X32 + 10] = _h[7];
+			const uint32_t base = pos * ITEM_SIZE_X32;
+			out[base + 1] = tid;
+			out[base + 2] = static_cast<uint32_t>(incr << 16) | static_cast<uint32_t>(mode << 15);
+			#pragma unroll
+			for (int i = 0; i < 8; ++i) {
+				out[base + 3 + i] = _h[i];
+			}
 		}
 	}
 }
@@ -1196,4 +1174,4 @@ __device__ void ComputeKeysSEARCH_ETH_MODE_SA(uint64_t* startx, uint64_t* starty
 
 }
 
-
+#undef GPU_LDG

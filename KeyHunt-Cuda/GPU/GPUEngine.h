@@ -18,6 +18,8 @@
 #ifndef GPUENGINEH
 #define GPUENGINEH
 
+#include <cuda_runtime_api.h>
+#include <string>
 #include <vector>
 #include "../SECP256k1.h"
 
@@ -84,51 +86,58 @@ public:
 private:
 	void InitGenratorTable(Secp256K1* secp);
 
-	bool callKernelSEARCH_MODE_MA();
-	bool callKernelSEARCH_MODE_SA();
-	bool callKernelSEARCH_MODE_MX();
-	bool callKernelSEARCH_MODE_SX();
+        bool callKernelSEARCH_MODE_MA();
+        bool callKernelSEARCH_MODE_SA();
+        bool callKernelSEARCH_MODE_MX();
+        bool callKernelSEARCH_MODE_SX();
 
-	int CheckBinary(const uint8_t* x, int K_LENGTH);
+        void waitForStream(bool spinWait);
 
-	int nbThread;
-	int nbThreadPerGroup;
+        int CheckBinary(const uint8_t* x, int K_LENGTH);
 
-	uint32_t* inputHashORxpoint;
-	uint32_t* inputHashORxpointPinned;
+        int nbThread = 0;
+        int nbThreadPerGroup = 0;
 
-	//uint8_t *bloomLookUp;
-	uint8_t* inputBloomLookUp;
-	uint8_t* inputBloomLookUpPinned;
+        uint32_t* inputHashORxpoint = nullptr;
+        uint32_t* inputHashORxpointPinned = nullptr;
 
-	uint64_t* inputKey;
-	uint64_t* inputKeyPinned;
+        //uint8_t *bloomLookUp;
+        uint8_t* inputBloomLookUp = nullptr;
+        uint8_t* inputBloomLookUpPinned = nullptr;
 
-	uint32_t* outputBuffer;
-	uint32_t* outputBufferPinned;
+        uint64_t* inputKey = nullptr;
+        uint64_t* inputKeyPinned = nullptr;
 
-	uint64_t* __2Gnx;
-	uint64_t* __2Gny;
+        uint32_t* outputBuffer = nullptr;
+        uint32_t* outputBufferPinned = nullptr;
 
-	uint64_t* _Gx;
-	uint64_t* _Gy;
+        uint64_t* __2Gnx = nullptr;
+        uint64_t* __2Gny = nullptr;
 
-	bool initialised;
-	uint32_t compMode;
-	uint32_t searchMode;
-	uint32_t coinType;
-	bool littleEndian;
+        uint64_t* _Gx = nullptr;
+        uint64_t* _Gy = nullptr;
 
-	bool rKey;
-	uint32_t maxFound;
-	uint32_t outputSize;
+        bool initialised = false;
+        uint32_t compMode = 0;
+        uint32_t searchMode = 0;
+        uint32_t coinType = 0;
+        bool littleEndian = false;
 
-	int64_t BLOOM_SIZE;
-	uint64_t BLOOM_BITS;
-	uint8_t BLOOM_HASHES;
+        bool rKey = false;
+        uint32_t maxFound = 0;
+        uint32_t outputSize = 0;
 
-	uint8_t* DATA;
-	uint64_t TOTAL_COUNT;
+        int64_t BLOOM_SIZE = 0;
+        uint64_t BLOOM_BITS = 0;
+        uint8_t BLOOM_HASHES = 0;
+
+        uint8_t* DATA = nullptr;
+        uint64_t TOTAL_COUNT = 0;
+
+        cudaStream_t stream_ = nullptr;
+        cudaEvent_t syncEvent_ = nullptr;
+        bool streamCreated_ = false;
+        bool eventCreated_ = false;
 
 };
 
