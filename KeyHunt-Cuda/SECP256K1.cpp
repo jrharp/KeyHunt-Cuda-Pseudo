@@ -647,52 +647,29 @@ std::string Secp256K1::GetPrivAddress(bool compressed, Int& privKey)
 //
 //}
 
-#define CHECKSUM(buff,A) \
-(buff)[0] = (uint32_t)A[0] << 24 | (uint32_t)A[1] << 16 | (uint32_t)A[2] << 8 | (uint32_t)A[3];\
-(buff)[1] = (uint32_t)A[4] << 24 | (uint32_t)A[5] << 16 | (uint32_t)A[6] << 8 | (uint32_t)A[7];\
-(buff)[2] = (uint32_t)A[8] << 24 | (uint32_t)A[9] << 16 | (uint32_t)A[10] << 8 | (uint32_t)A[11];\
-(buff)[3] = (uint32_t)A[12] << 24 | (uint32_t)A[13] << 16 | (uint32_t)A[14] << 8 | (uint32_t)A[15];\
-(buff)[4] = (uint32_t)A[16] << 24 | (uint32_t)A[17] << 16 | (uint32_t)A[18] << 8 | (uint32_t)A[19];\
-(buff)[5] = (uint32_t)A[20] << 24 | 0x800000;\
-(buff)[6] = 0; \
-(buff)[7] = 0; \
-(buff)[8] = 0; \
-(buff)[9] = 0; \
-(buff)[10] = 0; \
-(buff)[11] = 0; \
-(buff)[12] = 0; \
-(buff)[13] = 0; \
-(buff)[14] = 0; \
-(buff)[15] = 0xA8;
-
 std::vector<std::string> Secp256K1::GetAddress(bool compressed, unsigned char* h1, unsigned char* h2, unsigned char* h3, unsigned char* h4)
 {
 
-	std::vector<std::string> ret;
+        std::vector<std::string> ret;
 
-	unsigned char add1[25];
-	unsigned char add2[25];
-	unsigned char add3[25];
-	unsigned char add4[25];
-	uint32_t b1[16];
-	uint32_t b2[16];
-	uint32_t b3[16];
-	uint32_t b4[16];
+        unsigned char add1[25];
+        unsigned char add2[25];
+        unsigned char add3[25];
+        unsigned char add4[25];
 
-	add1[0] = 0x00;
-	add2[0] = 0x00;
-	add3[0] = 0x00;
-	add4[0] = 0x00;
+        add1[0] = 0x00;
+        add2[0] = 0x00;
+        add3[0] = 0x00;
+        add4[0] = 0x00;
 
-	memcpy(add1 + 1, h1, 20);
-	memcpy(add2 + 1, h2, 20);
-	memcpy(add3 + 1, h3, 20);
-	memcpy(add4 + 1, h4, 20);
-	CHECKSUM(b1, add1);
-	CHECKSUM(b2, add2);
-	CHECKSUM(b3, add3);
-	CHECKSUM(b4, add4);
-	sha256sse_checksum(b1, b2, b3, b4, add1 + 21, add2 + 21, add3 + 21, add4 + 21);
+        memcpy(add1 + 1, h1, 20);
+        memcpy(add2 + 1, h2, 20);
+        memcpy(add3 + 1, h3, 20);
+        memcpy(add4 + 1, h4, 20);
+        sha256_checksum(add1, 21, add1 + 21);
+        sha256_checksum(add2, 21, add2 + 21);
+        sha256_checksum(add3, 21, add3 + 21);
+        sha256_checksum(add4, 21, add4 + 21);
 
 	// Base58
 	ret.push_back(EncodeBase58(add1, add1 + 25));
