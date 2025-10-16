@@ -8,6 +8,7 @@
 #include <stdexcept>
 #include <cassert>
 #include <algorithm>
+#include <inttypes.h>
 #ifndef WIN64
 #include <signal.h>
 #include <unistd.h>
@@ -525,7 +526,7 @@ int main(int argc, char** argv)
 			printf("\n");
 	}
 	printf("SSE          : %s\n", useSSE ? "YES" : "NO");
-	printf("RKEY         : %llu Mkeys\n", rKey);
+        printf("RKEY         : %" PRIu64 " Mkeys\n", rKey);
 	printf("MAX FOUND    : %d\n", maxFound);
 	if (coinType == COIN_BTC) {
 		switch (searchMode) {
