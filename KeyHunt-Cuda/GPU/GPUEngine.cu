@@ -30,10 +30,10 @@
 #include "../hash/sha256.h"
 #include "../Timer.h"
 
-#include "GPUBase58.h"
-#include "GPUCompute.h"
 #include "GPUHash.h"
 #include "GPUMath.h"
+#include "GPUCompute.h"
+#include "GPUBase58.h"
 
 namespace {
 
