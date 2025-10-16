@@ -9,7 +9,10 @@ SRC = Base58.cpp IntGroup.cpp Main.cpp Bloom.cpp Random.cpp \
       hash/sha256.cpp hash/sha512.cpp hash/ripemd160_sse.cpp \
       hash/sha256_sse.cpp hash/keccak160.cpp GmpUtil.cpp CmdParse.cpp
 
-OBJDIR = obj
+# Dynamic object and build directories based on CCAP value
+CCAP ?= 86  # Default Compute Capability
+OBJDIR = build/ccap_$(CCAP)/obj
+BINDIR = build/ccap_$(CCAP)/bin
 
 ifdef gpu
 
@@ -32,49 +35,51 @@ OBJET = $(addprefix $(OBJDIR)/, \
 endif
 
 CXX        = g++
-CUDA       = /usr/local/cuda
+CUDA       = /usr/local/cuda-13.0
 CXXCUDA    = /usr/bin/g++
 NVCC       = $(CUDA)/bin/nvcc
-# nvcc requires joint notation w/o dot, i.e. "5.2" -> "52"
-ccap       = $(shell echo $(CCAP) | tr -d '.')
 
 ifdef gpu
 ifdef debug
-CXXFLAGS   = -DWITHGPU -m64  -mssse3 -Wno-write-strings -g -I. -I$(CUDA)/include
+CXXFLAGS   = -DWITHGPU -m64 -mssse3 -Wno-write-strings -g -I. -I$(CUDA)/include -std=c++23
 else
-CXXFLAGS   =  -DWITHGPU -m64 -mssse3 -Wno-write-strings -O2 -I. -I$(CUDA)/include
+CXXFLAGS   = -DWITHGPU -m64 -mssse3 -Wno-write-strings -O2 -I. -I$(CUDA)/include -std=c++23
 endif
-LFLAGS     = -lgmp -lpthread -L$(CUDA)/lib64 -lcudart
+LFLAGS     = -lgmp -lpthread -L$(CUDA)/lib64 -lcudart -lssl -lcrypto -lsqlite3
 else
 ifdef debug
-CXXFLAGS   = -m64 -mssse3 -Wno-write-strings -g -I. -I$(CUDA)/include
+CXXFLAGS   = -m64 -mssse3 -Wno-write-strings -g -I. -I$(CUDA)/include -std=c++23
 else
-CXXFLAGS   =  -m64 -mssse3 -Wno-write-strings -O2 -I. -I$(CUDA)/include
+CXXFLAGS   = -m64 -mssse3 -Wno-write-strings -O2 -I. -I$(CUDA)/include -std=c++23
 endif
 LFLAGS     = -lgmp -lpthread
 endif
 
-
-#--------------------------------------------------------------------
+#---------------------------------------------------------------------
 
 ifdef gpu
+$(OBJDIR)/GPU/GPUEngine.o: GPU/GPUEngine.cu | $(OBJDIR)/GPU
 ifdef debug
-$(OBJDIR)/GPU/GPUEngine.o: GPU/GPUEngine.cu
-	$(NVCC) -G -maxrregcount=0 --ptxas-options=-v --compile --compiler-options -fPIC -ccbin $(CXXCUDA) -m64 -g -I$(CUDA)/include -gencode=arch=compute_$(ccap),code=sm_$(ccap) -o $(OBJDIR)/GPU/GPUEngine.o -c GPU/GPUEngine.cu
+	$(NVCC) -G -g -maxrregcount=0 --ptxas-options=-v --compile \
+	--compiler-options -fPIC -ccbin $(CXXCUDA) -m64 \
+	-I$(CUDA)/include -gencode=arch=compute_$(CCAP),code=sm_$(CCAP) \
+	-o $(OBJDIR)/GPU/GPUEngine.o -c GPU/GPUEngine.cu
 else
-$(OBJDIR)/GPU/GPUEngine.o: GPU/GPUEngine.cu
-	$(NVCC) -maxrregcount=0 --ptxas-options=-v --compile --compiler-options -fPIC -ccbin $(CXXCUDA) -m64 -O2 -I$(CUDA)/include -gencode=arch=compute_$(ccap),code=sm_$(ccap) -o $(OBJDIR)/GPU/GPUEngine.o -c GPU/GPUEngine.cu
+	$(NVCC) -maxrregcount=0 --ptxas-options=-v --compile \
+	--compiler-options -fPIC -ccbin $(CXXCUDA) -m64 -O2 \
+	-I$(CUDA)/include -gencode=arch=compute_$(CCAP),code=sm_$(CCAP) \
+	-o $(OBJDIR)/GPU/GPUEngine.o -c GPU/GPUEngine.cu
 endif
 endif
 
-$(OBJDIR)/%.o : %.cpp
+$(OBJDIR)/%.o : %.cpp | $(OBJDIR)
 	$(CXX) $(CXXFLAGS) -o $@ -c $<
 
-all: KeyHunt
+all: $(BINDIR)/KeyHunt
 
-KeyHunt: $(OBJET)
-	@echo Making KeyHunt...
-	$(CXX) $(OBJET) $(LFLAGS) -o KeyHunt
+$(BINDIR)/KeyHunt: $(OBJET) | $(BINDIR)
+	@echo "Building KeyHunt..."
+	$(CXX) $(OBJET) $(LFLAGS) -o $@
 
 $(OBJET): | $(OBJDIR) $(OBJDIR)/GPU $(OBJDIR)/hash
 
@@ -82,14 +87,16 @@ $(OBJDIR):
 	mkdir -p $(OBJDIR)
 
 $(OBJDIR)/GPU: $(OBJDIR)
-	cd $(OBJDIR) &&	mkdir -p GPU
+	mkdir -p $(OBJDIR)/GPU
 
 $(OBJDIR)/hash: $(OBJDIR)
-	cd $(OBJDIR) &&	mkdir -p hash
+	mkdir -p $(OBJDIR)/hash
+
+$(BINDIR):
+	mkdir -p $(BINDIR)
 
 clean:
-	@echo Cleaning...
-	@rm -f obj/*.o
-	@rm -f obj/GPU/*.o
-	@rm -f obj/hash/*.o
+	@echo "Cleaning..."
+	@rm -rf build/ccap_$(CCAP)
 
+.PHONY: all clean
