@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <iostream>
 #include <cassert>
+#include <inttypes.h>
 #ifndef WIN64
 #include <pthread.h>
 #endif
@@ -87,7 +88,7 @@ KeyHunt::KeyHunt(const std::string& inputFile, int compMode, int searchMode, int
 			bloom->add(buf, K_LENGTH);
 			memcpy(DATA + (i * K_LENGTH), buf, K_LENGTH);
 			if ((percent != 0) && i % percent == 0) {
-				printf("\rLoading      : %llu %%", (i / percent));
+				printf("\rLoading      : %" PRIu64 " %%", (i / percent));
 				fflush(stdout);
 			}
 		}
@@ -189,7 +190,7 @@ void KeyHunt::InitGenratorTable()
 	printf("Start Time   : %s", ctimeBuff);
 
 	if (rKey > 0) {
-		printf("Base Key     : Randomly changes on every %llu Mkeys\n", rKey);
+		printf("Base Key     : Randomly changes on every %" PRIu64 " Mkeys\n", rKey);
 	}
 	printf("Global start : %s (%d bit)\n", this->rangeStart.GetBase16().c_str(), this->rangeStart.GetBitLength());
 	printf("Global end   : %s (%d bit)\n", this->rangeEnd.GetBase16().c_str(), this->rangeEnd.GetBitLength());
@@ -1220,7 +1221,7 @@ void KeyHunt::Search(int nbThread, std::vector<int> gpuId, std::vector<int> grid
 
 		if (isAlive(params)) {
 			memset(timeStr, '\0', 256);
-			printf("\r[%s] [CPU+GPU: %.2f Mk/s] [GPU: %.2f Mk/s] [C: %lf %%] [R: %llu] [T: %s (%d bit)] [F: %d]  ",
+			printf("\r[%s] [CPU+GPU: %.2f Mk/s] [GPU: %.2f Mk/s] [C: %lf %%] [R: %" PRIu64 "] [T: %s (%d bit)] [F: %d]  ",
 				toTimeStr(t1, timeStr),
 				avgKeyRate / 1000000.0,
 				avgGpuKeyRate / 1000000.0,
@@ -1342,7 +1343,7 @@ std::string KeyHunt::formatThousands(uint64_t x)
 {
 	char buf[32] = "";
 
-	sprintf(buf, "%llu", x);
+	snprintf(buf, sizeof(buf), "%" PRIu64, x);
 
 	std::string s(buf);
 
