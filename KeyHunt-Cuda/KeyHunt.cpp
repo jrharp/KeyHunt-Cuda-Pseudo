@@ -1388,14 +1388,67 @@ void KeyHunt::FindKeyGPU(TH_PARAM * ph)
 
         int nbThread = g->GetNbThread();
         int threadsPerGroup = g->GetThreadsPerGroup();
-        Point* p = new Point[nbThread];
-        Int* keys = new Int[nbThread];
-        std::vector<uint64_t> pseudoSequential(nbThread, std::numeric_limits<uint64_t>::max());
-        std::vector<ITEM> found;
+        Point* pointBuffers[2] = { new Point[nbThread], new Point[nbThread] };
+        Int* keyBuffers[2] = { new Int[nbThread], new Int[nbThread] };
+        std::vector<uint64_t> pseudoSequentialBuffers[2] = {
+                std::vector<uint64_t>(nbThread, std::numeric_limits<uint64_t>::max()),
+                std::vector<uint64_t>(nbThread, std::numeric_limits<uint64_t>::max()) };
+        int currentBuffer = 0;
+        int nextBuffer = 1;
+        int currentAssignedBlocks = 0;
 
-        const int groupSize = g->GetGroupSize();
         const int compiledGroupSize = GPUEngine::GetCompiledGroupSize();
         const uint64_t compiledGroupMidpoint = static_cast<uint64_t>(compiledGroupSize) / 2ULL;
+
+        auto preparePseudoRandomBatch = [&](int bufferIndex, int& assignedBlocksOut, int& activeThreadsOut) {
+                auto& sequential = pseudoSequentialBuffers[bufferIndex];
+                std::fill(sequential.begin(), sequential.end(), std::numeric_limits<uint64_t>::max());
+
+                assignedBlocksOut = 0;
+                activeThreadsOut = 0;
+
+                for (int i = 0; i < nbThread; i++) {
+                        PseudoRandomBlock block;
+                        if (!dequeuePseudoRandomGpuBlock(block)) {
+                                break;
+                        }
+
+                        keyBuffers[bufferIndex][i] = block.key;
+                        Int startScalar(keyBuffers[bufferIndex] + i);
+                        startScalar.Add(compiledGroupMidpoint);
+                        pointBuffers[bufferIndex][i] = secp->ComputePublicKey(&startScalar);
+                        sequential[i] = block.sequentialIndex;
+                        assignedBlocksOut++;
+                }
+
+                if (assignedBlocksOut == 0) {
+                        return false;
+                }
+
+                activeThreadsOut = assignedBlocksOut;
+                if (threadsPerGroup > 0) {
+                        int remainder = activeThreadsOut % threadsPerGroup;
+                        if (remainder != 0) {
+                                int pad = threadsPerGroup - remainder;
+                                if (pad > nbThread - activeThreadsOut) {
+                                        pad = nbThread - activeThreadsOut;
+                                }
+                                for (int j = 0; j < pad; j++) {
+                                        int idx = activeThreadsOut + j;
+                                        if (idx >= nbThread) {
+                                                break;
+                                        }
+                                        pointBuffers[bufferIndex][idx] = pointBuffers[bufferIndex][assignedBlocksOut - 1];
+                                        keyBuffers[bufferIndex][idx] = keyBuffers[bufferIndex][assignedBlocksOut - 1];
+                                        sequential[idx] = std::numeric_limits<uint64_t>::max();
+                                }
+                                activeThreadsOut += pad;
+                        }
+                }
+
+                return true;
+        };
+        std::vector<ITEM> found;
         printf("GPU          : %s\n\n", g->deviceName.c_str());
 
         counters[thId] = 0;
@@ -1404,9 +1457,20 @@ void KeyHunt::FindKeyGPU(TH_PARAM * ph)
         if (usePseudoRandomGpu) {
                 startPseudoRandomGpuPrefetch(nbThread);
         }
-        if (!usePseudoRandomGpu) {
-                getGPUStartingKeys(tRangeStart, tRangeEnd, compiledGroupSize, nbThread, keys, p);
-                ok = g->SetKeys(p);
+        if (usePseudoRandomGpu) {
+                int initialActiveThreads = 0;
+                bool haveInitial = preparePseudoRandomBatch(currentBuffer, currentAssignedBlocks, initialActiveThreads);
+                if (haveInitial) {
+                        ok = g->SetKeys(pointBuffers[currentBuffer], initialActiveThreads);
+                }
+                else {
+                        ok = false;
+                }
+        }
+        else {
+                getGPUStartingKeys(tRangeStart, tRangeEnd, compiledGroupSize, nbThread, keyBuffers[currentBuffer],
+                        pointBuffers[currentBuffer]);
+                ok = g->SetKeys(pointBuffers[currentBuffer]);
         }
 
         ph->hasStarted = true;
@@ -1414,6 +1478,11 @@ void KeyHunt::FindKeyGPU(TH_PARAM * ph)
 
         // GPU Thread
         while (ok && !endOfSearch) {
+
+                const int resultsBuffer = currentBuffer;
+                Int* resultKeys = keyBuffers[resultsBuffer];
+                auto& resultSequential = pseudoSequentialBuffers[resultsBuffer];
+                const int resultAssignedBlocks = currentAssignedBlocks;
 
                 int assignedBlocks = 0;
                 int activeThreads = nbThread;
@@ -1423,59 +1492,15 @@ void KeyHunt::FindKeyGPU(TH_PARAM * ph)
                 }
 
                 if (usePseudoRandomGpu) {
-                        std::fill(pseudoSequential.begin(), pseudoSequential.end(), std::numeric_limits<uint64_t>::max());
-
-                        for (int i = 0; i < nbThread; i++) {
-                                PseudoRandomBlock block;
-                                if (!dequeuePseudoRandomGpuBlock(block)) {
-                                        break;
-                                }
-
-                                keys[i] = block.key;
-                                Int startScalar(keys + i);
-                                startScalar.Add(compiledGroupMidpoint);
-                                p[i] = secp->ComputePublicKey(&startScalar);
-                                pseudoSequential[i] = block.sequentialIndex;
-                                assignedBlocks++;
-                        }
-
-                        if (assignedBlocks == 0) {
-                                break;
-                        }
-
-                        activeThreads = assignedBlocks;
-                        if (threadsPerGroup > 0) {
-                                int remainder = activeThreads % threadsPerGroup;
-                                if (remainder != 0) {
-                                        int pad = threadsPerGroup - remainder;
-                                        if (pad > nbThread - activeThreads) {
-                                                pad = nbThread - activeThreads;
-                                        }
-                                        for (int j = 0; j < pad; j++) {
-                                                int idx = activeThreads + j;
-                                                if (idx >= nbThread) {
-                                                        break;
-                                                }
-                                                p[idx] = p[assignedBlocks - 1];
-                                                keys[idx] = keys[assignedBlocks - 1];
-                                                pseudoSequential[idx] = std::numeric_limits<uint64_t>::max();
-                                        }
-                                        activeThreads += pad;
-                                }
-                        }
-
-                        ok = g->SetKeys(p, activeThreads);
+                        preparePseudoRandomBatch(nextBuffer, assignedBlocks, activeThreads);
                 }
                 else {
                         if (ph->rKeyRequest) {
-                                getGPUStartingKeys(tRangeStart, tRangeEnd, compiledGroupSize, nbThread, keys, p);
-                                ok = g->SetKeys(p);
+                                getGPUStartingKeys(tRangeStart, tRangeEnd, compiledGroupSize, nbThread, keyBuffers[currentBuffer],
+                                        pointBuffers[currentBuffer]);
+                                ok = g->SetKeys(pointBuffers[currentBuffer]);
                                 ph->rKeyRequest = false;
                         }
-                }
-
-                if (!ok) {
-                        break;
                 }
 
                 const bool queueNextBatch = !usePseudoRandomGpu;
@@ -1488,13 +1513,13 @@ void KeyHunt::FindKeyGPU(TH_PARAM * ph)
                                 ITEM it = found[i];
                                 if (coinType == COIN_BTC) {
                                         std::string addr = secp->GetAddress(it.mode, it.hash);
-                                        if (checkPrivKey(addr, keys[it.thId], it.incr, it.mode)) {
+                                        if (checkPrivKey(addr, resultKeys[it.thId], it.incr, it.mode)) {
                                                 nbFoundKey++;
                                         }
                                 }
                                 else {
                                         std::string addr = secp->GetAddressETH(it.hash);
-                                        if (checkPrivKeyETH(addr, keys[it.thId], it.incr)) {
+                                        if (checkPrivKeyETH(addr, resultKeys[it.thId], it.incr)) {
                                                 nbFoundKey++;
                                         }
                                 }
@@ -1504,7 +1529,7 @@ void KeyHunt::FindKeyGPU(TH_PARAM * ph)
                         ok = g->LaunchSEARCH_MODE_MX(found, false, queueNextBatch);
                         for (int i = 0; i < (int)found.size() && !endOfSearch; i++) {
                                 ITEM it = found[i];
-                                if (checkPrivKeyX(/*addr,*/ keys[it.thId], it.incr, it.mode)) {
+                                if (checkPrivKeyX(/*addr,*/ resultKeys[it.thId], it.incr, it.mode)) {
                                         nbFoundKey++;
                                 }
                         }
@@ -1515,13 +1540,13 @@ void KeyHunt::FindKeyGPU(TH_PARAM * ph)
                                 ITEM it = found[i];
                                 if (coinType == COIN_BTC) {
                                         std::string addr = secp->GetAddress(it.mode, it.hash);
-                                        if (checkPrivKey(addr, keys[it.thId], it.incr, it.mode)) {
+                                        if (checkPrivKey(addr, resultKeys[it.thId], it.incr, it.mode)) {
                                                 nbFoundKey++;
                                         }
                                 }
                                 else {
                                         std::string addr = secp->GetAddressETH(it.hash);
-                                        if (checkPrivKeyETH(addr, keys[it.thId], it.incr)) {
+                                        if (checkPrivKeyETH(addr, resultKeys[it.thId], it.incr)) {
                                                 nbFoundKey++;
                                         }
                                 }
@@ -1531,7 +1556,7 @@ void KeyHunt::FindKeyGPU(TH_PARAM * ph)
                         ok = g->LaunchSEARCH_MODE_SX(found, false, queueNextBatch);
                         for (int i = 0; i < (int)found.size() && !endOfSearch; i++) {
                                 ITEM it = found[i];
-                                if (checkPrivKeyX(/*addr,*/ keys[it.thId], it.incr, it.mode)) {
+                                if (checkPrivKeyX(/*addr,*/ resultKeys[it.thId], it.incr, it.mode)) {
                                         nbFoundKey++;
                                 }
                         }
@@ -1543,30 +1568,53 @@ void KeyHunt::FindKeyGPU(TH_PARAM * ph)
                 if (ok) {
                         const uint64_t stepSize = g->GetStepSize();
                         if (usePseudoRandomGpu) {
-                                for (int i = 0; i < assignedBlocks; i++) {
-                                        if (pseudoSequential[i] != std::numeric_limits<uint64_t>::max()) {
-                                                notifyPseudoRandomBlockComplete(pseudoSequential[i]);
+                                for (int i = 0; i < resultAssignedBlocks; i++) {
+                                        if (resultSequential[i] != std::numeric_limits<uint64_t>::max()) {
+                                                notifyPseudoRandomBlockComplete(resultSequential[i]);
                                         }
                                 }
-                                counters[thId] += stepSize * static_cast<uint64_t>(assignedBlocks);
+                                counters[thId] += stepSize * static_cast<uint64_t>(resultAssignedBlocks);
                         }
                         else {
                                 for (int i = 0; i < nbThread; i++) {
-                                        keys[i].Add(stepSize);
+                                        resultKeys[i].Add(stepSize);
                                 }
                                 counters[thId] += stepSize * static_cast<uint64_t>(nbThread); // Point
                         }
                 }
-                
 
-        	}
+                if (!ok || endOfSearch) {
+                        break;
+                }
+
+                if (!usePseudoRandomGpu) {
+                        continue;
+                }
+
+                if (assignedBlocks == 0) {
+                        ok = false;
+                        break;
+                }
+
+                ok = g->SetKeys(pointBuffers[nextBuffer], activeThreads);
+                if (!ok) {
+                        break;
+                }
+
+                currentBuffer = nextBuffer;
+                currentAssignedBlocks = assignedBlocks;
+                nextBuffer = 1 - currentBuffer;
+
+                }
 
         if (usePseudoRandomGpu) {
                 stopPseudoRandomGpuPrefetch();
         }
 
-        delete[] keys;
-        delete[] p;
+        delete[] keyBuffers[0];
+        delete[] keyBuffers[1];
+        delete[] pointBuffers[0];
+        delete[] pointBuffers[1];
         delete g;
 
 #else
