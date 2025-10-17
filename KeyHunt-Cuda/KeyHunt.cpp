@@ -1307,7 +1307,7 @@ void KeyHunt::FindKeyCPU(TH_PARAM * ph)
 
 // ----------------------------------------------------------------------------
 
-void KeyHunt::getGPUStartingKeys(Int & tRangeStart, Int & tRangeEnd, int groupSize, int nbThread, Int * keys, Point * p)
+void KeyHunt::getGPUStartingKeys(Int & tRangeStart, Int & tRangeEnd, int compiledGroupSize, int nbThread, Int * keys, Point * p)
 {
 
 	Int tRangeDiff(tRangeEnd);
@@ -1424,7 +1424,9 @@ void KeyHunt::FindKeyGPU(TH_PARAM * ph)
                                 }
 
                                 keys[i] = block.key;
-                                p[i] = block.startPoint;
+                                Int startScalar(keys + i);
+                                startScalar.Add(compiledGroupMidpoint);
+                                p[i] = secp->ComputePublicKey(&startScalar);
                                 pseudoSequential[i] = block.sequentialIndex;
                                 assignedBlocks++;
                         }
