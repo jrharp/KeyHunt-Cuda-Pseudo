@@ -14,7 +14,7 @@
 #include <Windows.h>
 #endif
 
-#define CPU_GRP_SIZE (1024*2)
+static constexpr int CPU_GRP_SIZE = 1024 * 2;
 
 class KeyHunt;
 
@@ -117,7 +117,9 @@ private:
 	std::string inputFile;
 	uint32_t hash160Keccak[5];
 	uint32_t xpoint[8];
-	bool useSSE;
+        bool useSSE;
+
+        int cpuGroupSize = CPU_GRP_SIZE;
 
 	Int rangeStart;
 	Int rangeEnd;

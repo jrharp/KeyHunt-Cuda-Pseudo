@@ -128,8 +128,8 @@ KeyHunt::KeyHunt(const std::string& inputFile, int compMode, int searchMode, int
         bloom->print();
         printf("\n");
 
-        InitGenratorTable();
         initializePseudoRandomState();
+        InitGenratorTable();
 
 }
 
@@ -172,8 +172,8 @@ KeyHunt::KeyHunt(const std::vector<unsigned char>& hashORxpoint, int compMode, i
 	}
         printf("\n");
 
-        InitGenratorTable();
         initializePseudoRandomState();
+        InitGenratorTable();
 }
 
 // ----------------------------------------------------------------------------
@@ -181,16 +181,28 @@ KeyHunt::KeyHunt(const std::vector<unsigned char>& hashORxpoint, int compMode, i
 void KeyHunt::InitGenratorTable()
 {
         // Compute Generator table G[n] = (n+1)*G
+        int halfGroup = cpuGroupSize / 2;
         Point g = secp->G;
-        Gn[0] = g;
-	g = secp->DoubleDirect(g);
-	Gn[1] = g;
-	for (int i = 2; i < CPU_GRP_SIZE / 2; i++) {
-		g = secp->AddDirect(g, secp->G);
-		Gn[i] = g;
-	}
-	// _2Gn = CPU_GRP_SIZE*G
-	_2Gn = secp->DoubleDirect(Gn[CPU_GRP_SIZE / 2 - 1]);
+        if (halfGroup > 0) {
+                Gn[0] = g;
+        }
+
+        if (halfGroup > 1) {
+                g = secp->DoubleDirect(g);
+                Gn[1] = g;
+                for (int i = 2; i < halfGroup; i++) {
+                        g = secp->AddDirect(g, secp->G);
+                        Gn[i] = g;
+                }
+        }
+
+        // _2Gn = cpuGroupSize*G
+        if (halfGroup > 0) {
+                _2Gn = secp->DoubleDirect(Gn[halfGroup - 1]);
+        }
+        else {
+                _2Gn = secp->DoubleDirect(secp->G);
+        }
 
 	char* ctimeBuff;
 	time_t now = time(NULL);
@@ -291,12 +303,12 @@ bool KeyHunt::acquirePseudoRandomBlock(Int& key, Point& startP, uint64_t& sequen
                 uint64_t blockIndex = permuteBlockIndex(idx);
                 sequentialIndex = idx;
 
-                uint64_t offset = blockIndex * (uint64_t)CPU_GRP_SIZE;
+                uint64_t offset = blockIndex * static_cast<uint64_t>(cpuGroupSize);
                 key = initialRangeStart;
                 key.Add(offset);
 
                 Int km(&key);
-                km.Add((uint64_t)CPU_GRP_SIZE / 2);
+                km.Add(static_cast<uint64_t>(cpuGroupSize) / 2);
                 startP = secp->ComputePublicKey(&km);
                 return true;
         }
@@ -340,6 +352,7 @@ void KeyHunt::notifyPseudoRandomBlockComplete(uint64_t sequentialIndex)
 void KeyHunt::initializePseudoRandomState()
 {
         pseudoRandomEnabled = false;
+        cpuGroupSize = CPU_GRP_SIZE;
         pseudoState.totalKeys = 0;
         pseudoState.totalBlocks = 0;
         pseudoState.blockMask = 0;
@@ -359,25 +372,45 @@ void KeyHunt::initializePseudoRandomState()
                 return;
         }
 
-        uint64_t totalKeys = rangeDiff2.bits64[0];
-        if (totalKeys == 0)
+        uint64_t exclusiveRange = rangeDiff2.bits64[0];
+        if (exclusiveRange == 0)
                 return;
 
-        if ((totalKeys % CPU_GRP_SIZE) != 0) {
-                printf("Pseudo-random traversal disabled: range not aligned to group size (%d).\n", CPU_GRP_SIZE);
+        uint64_t inclusiveRange = exclusiveRange + 1;
+        uint64_t cappedGroup = std::min<uint64_t>(static_cast<uint64_t>(CPU_GRP_SIZE), inclusiveRange);
+
+        uint64_t candidateGroup = 1;
+        while ((candidateGroup << 1) <= cappedGroup) {
+                candidateGroup <<= 1;
+        }
+
+        const uint64_t minGroupSize = 4;
+        if (candidateGroup < minGroupSize) {
+                printf("Pseudo-random traversal disabled: range too small for pseudo-random traversal.\n");
                 return;
         }
 
-        uint64_t totalBlocks = totalKeys / (uint64_t)CPU_GRP_SIZE;
-        if (totalBlocks == 0)
-                return;
+        bool foundGroup = false;
+        uint64_t totalBlocks = 0;
+        uint64_t workingGroup = candidateGroup;
+        while (workingGroup >= minGroupSize) {
+                if ((inclusiveRange % workingGroup) == 0) {
+                        totalBlocks = inclusiveRange / workingGroup;
+                        if (totalBlocks != 0 && (totalBlocks & (totalBlocks - 1)) == 0) {
+                                foundGroup = true;
+                                break;
+                        }
+                }
+                workingGroup >>= 1;
+        }
 
-        if ((totalBlocks & (totalBlocks - 1)) != 0) {
-                printf("Pseudo-random traversal disabled: block count must be a power of two.\n");
+        if (!foundGroup) {
+                printf("Pseudo-random traversal disabled: unable to derive a suitable group size for the range.\n");
                 return;
         }
 
-        pseudoState.totalKeys = totalKeys;
+        cpuGroupSize = static_cast<int>(workingGroup);
+        pseudoState.totalKeys = inclusiveRange;
         pseudoState.totalBlocks = totalBlocks;
         pseudoState.blockMask = totalBlocks - 1;
 
@@ -408,8 +441,8 @@ void KeyHunt::initializePseudoRandomState()
         }
 
         pseudoRandomEnabled = true;
-        printf("Pseudo-random traversal enabled (%" PRIu64 " blocks). State file: %s\n",
-                pseudoState.totalBlocks, pseudoState.stateFile.c_str());
+        printf("Pseudo-random traversal enabled (%" PRIu64 " blocks, group size %d). State file: %s\n",
+                pseudoState.totalBlocks, cpuGroupSize, pseudoState.stateFile.c_str());
         if (rKey > 0) {
                 printf("Note: random base key refresh is disabled while pseudo-random traversal is active.\n");
         }
@@ -771,8 +804,8 @@ void KeyHunt::getCPUStartingKey(Int & tRangeStart, Int & tRangeEnd, Int & key, P
 	else {
 		key.Rand(&tRangeEnd);
 	}
-	Int km(&key);
-	km.Add((uint64_t)CPU_GRP_SIZE / 2);
+        Int km(&key);
+        km.Add(static_cast<uint64_t>(cpuGroupSize) / 2);
 	startP = secp->ComputePublicKey(&km);
 
 }
@@ -789,7 +822,7 @@ void KeyHunt::FindKeyCPU(TH_PARAM * ph)
 	counters[thId] = 0;
 
 	// CPU Thread
-	IntGroup* grp = new IntGroup(CPU_GRP_SIZE / 2 + 1);
+        IntGroup* grp = new IntGroup(cpuGroupSize / 2 + 1);
 
 	// Group Init
         Int key;// = new Int();
@@ -799,8 +832,8 @@ void KeyHunt::FindKeyCPU(TH_PARAM * ph)
         }
         uint64_t pseudoSequentialIndex = 0;
 
-	Int* dx = new Int[CPU_GRP_SIZE / 2 + 1];
-	Point* pts = new Point[CPU_GRP_SIZE];
+        Int* dx = new Int[cpuGroupSize / 2 + 1];
+        Point* pts = new Point[cpuGroupSize];
 
 	Int* dy = new Int();
 	Int* dyn = new Int();
@@ -829,7 +862,7 @@ void KeyHunt::FindKeyCPU(TH_PARAM * ph)
 
 		// Fill group
 		int i;
-		int hLength = (CPU_GRP_SIZE / 2 - 1);
+                int hLength = (cpuGroupSize / 2 - 1);
 
 		for (i = 0; i < hLength; i++) {
 			dx[i].ModSub(&Gn[i].x, &startP.x);
@@ -844,7 +877,7 @@ void KeyHunt::FindKeyCPU(TH_PARAM * ph)
 		// We compute key in the positive and negative way from the center of the group
 
 		// center point
-		pts[CPU_GRP_SIZE / 2] = startP;
+                pts[cpuGroupSize / 2] = startP;
 
 		for (i = 0; i < hLength && !endOfSearch; i++) {
 
@@ -881,8 +914,8 @@ void KeyHunt::FindKeyCPU(TH_PARAM * ph)
 			pn->y.ModMulK1(_s);
 			pn->y.ModAdd(&Gn[i].y);          // ry = - p2.y - s*(ret.x-p2.x);
 
-			pts[CPU_GRP_SIZE / 2 + (i + 1)] = *pp;
-			pts[CPU_GRP_SIZE / 2 - (i + 1)] = *pn;
+                        pts[cpuGroupSize / 2 + (i + 1)] = *pp;
+                        pts[cpuGroupSize / 2 - (i + 1)] = *pn;
 
 		}
 
@@ -925,7 +958,7 @@ void KeyHunt::FindKeyCPU(TH_PARAM * ph)
 
                 // Check addresses
 		if (useSSE) {
-			for (int i = 0; i < CPU_GRP_SIZE && !endOfSearch; i += 4) {
+                        for (int i = 0; i < cpuGroupSize && !endOfSearch; i += 4) {
 				switch (compMode) {
 				case SEARCH_COMPRESSED:
 					if (searchMode == (int)SEARCH_MODE_MA) {
@@ -958,7 +991,7 @@ void KeyHunt::FindKeyCPU(TH_PARAM * ph)
 		}
 		else {
 			if (coinType == COIN_BTC) {
-				for (int i = 0; i < CPU_GRP_SIZE && !endOfSearch; i++) {
+                                for (int i = 0; i < cpuGroupSize && !endOfSearch; i++) {
 					switch (compMode) {
 					case SEARCH_COMPRESSED:
 						switch (searchMode) {
@@ -1022,7 +1055,7 @@ void KeyHunt::FindKeyCPU(TH_PARAM * ph)
 				}
 			}
 			else {
-				for (int i = 0; i < CPU_GRP_SIZE && !endOfSearch; i++) {
+                                for (int i = 0; i < cpuGroupSize && !endOfSearch; i++) {
 					switch (searchMode) {
 					case (int)SEARCH_MODE_MA:
 						checkMultiAddressesETH(key, i, pts[i]);
@@ -1037,12 +1070,12 @@ void KeyHunt::FindKeyCPU(TH_PARAM * ph)
 			}
                 }
                 if (!pseudoRandomEnabled) {
-                        key.Add((uint64_t)CPU_GRP_SIZE);
+                        key.Add(static_cast<uint64_t>(cpuGroupSize));
                 }
                 else {
                         notifyPseudoRandomBlockComplete(pseudoSequentialIndex);
                 }
-                counters[thId] += CPU_GRP_SIZE; // Point
+                counters[thId] += cpuGroupSize; // Point
         }
 	ph->isRunning = false;
 
