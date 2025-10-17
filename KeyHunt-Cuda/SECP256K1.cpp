@@ -46,31 +46,48 @@ Secp256K1::Secp256K1()
 
 Int Secp256K1::MulShift384(const Int& k, const std::array<uint64_t, 4>& g)
 {
-        unsigned __int128 accum[8] = {};
-        for (int i = 0; i < 4; ++i) {
-                uint64_t ki = k.bits64[i];
-                for (int j = 0; j < 4; ++j) {
-                        accum[i + j] += static_cast<unsigned __int128>(ki) * g[j];
-                }
-        }
+        const uint64_t k0 = k.bits64[0];
+        const uint64_t k1 = k.bits64[1];
+        const uint64_t k2 = k.bits64[2];
+        const uint64_t k3 = k.bits64[3];
 
-        for (int i = 0; i < 7; ++i) {
-                unsigned __int128 carry = accum[i] >> 64;
-                accum[i] = static_cast<uint64_t>(accum[i]);
-                accum[i + 1] += carry;
-        }
-        accum[5] += (static_cast<unsigned __int128>(1) << 63);
-        for (int i = 5; i < 7; ++i) {
-                unsigned __int128 carry = accum[i] >> 64;
-                accum[i] = static_cast<uint64_t>(accum[i]);
-                accum[i + 1] += carry;
-        }
-        accum[6] = static_cast<uint64_t>(accum[6]);
-        accum[7] = static_cast<uint64_t>(accum[7]);
+        const uint64_t g0 = g[0];
+        const uint64_t g1 = g[1];
+        const uint64_t g2 = g[2];
+        const uint64_t g3 = g[3];
+
+        unsigned __int128 accum0 = static_cast<unsigned __int128>(k0) * g0;
+        unsigned __int128 accum1 = static_cast<unsigned __int128>(k0) * g1 + static_cast<unsigned __int128>(k1) * g0;
+        unsigned __int128 accum2 = static_cast<unsigned __int128>(k0) * g2 + static_cast<unsigned __int128>(k1) * g1 +
+                                   static_cast<unsigned __int128>(k2) * g0;
+        unsigned __int128 accum3 = static_cast<unsigned __int128>(k0) * g3 + static_cast<unsigned __int128>(k1) * g2 +
+                                   static_cast<unsigned __int128>(k2) * g1 + static_cast<unsigned __int128>(k3) * g0;
+        unsigned __int128 accum4 = static_cast<unsigned __int128>(k1) * g3 + static_cast<unsigned __int128>(k2) * g2 +
+                                   static_cast<unsigned __int128>(k3) * g1;
+        unsigned __int128 accum5 = static_cast<unsigned __int128>(k2) * g3 + static_cast<unsigned __int128>(k3) * g2;
+        unsigned __int128 accum6 = static_cast<unsigned __int128>(k3) * g3;
+        unsigned __int128 accum7 = 0;
+
+        auto propagate = [](unsigned __int128& current, unsigned __int128& next) {
+                const unsigned __int128 carry = current >> 64;
+                current = static_cast<uint64_t>(current);
+                next += carry;
+        };
+
+        propagate(accum0, accum1);
+        propagate(accum1, accum2);
+        propagate(accum2, accum3);
+        propagate(accum3, accum4);
+        propagate(accum4, accum5);
+
+        accum5 += (static_cast<unsigned __int128>(1) << 63);
+
+        propagate(accum5, accum6);
+        propagate(accum6, accum7);
 
         Int result(static_cast<uint64_t>(0));
-        result.bits64[0] = static_cast<uint64_t>(accum[6]);
-        result.bits64[1] = static_cast<uint64_t>(accum[7]);
+        result.bits64[0] = static_cast<uint64_t>(accum6);
+        result.bits64[1] = static_cast<uint64_t>(accum7);
         return result;
 }
 
@@ -98,6 +115,7 @@ Point Secp256K1::ApplyLambda(const Point& p) const
 std::vector<int8_t> Secp256K1::BuildWNAF(const Int& scalar, int width)
 {
         std::vector<int8_t> digits;
+        digits.reserve(std::max(1, scalar.GetBitLength() / width + 2));
         Int k((Int*)&scalar);
         const uint32_t window = 1u << width;
         const uint32_t mask = window - 1;
@@ -124,7 +142,8 @@ std::vector<int8_t> Secp256K1::BuildWNAF(const Int& scalar, int width)
 
 Point Secp256K1::SelectPrecomputed(const std::array<Point, 8>& table, int8_t digit)
 {
-        Point r(table[(std::abs(digit) - 1) >> 1]);
+        const int index = digit >= 0 ? digit : -digit;
+        Point r(table[(index - 1) >> 1]);
         if (digit < 0) {
                 r.y.ModNeg();
         }
@@ -814,10 +833,7 @@ void Secp256K1::GetHash160(bool compressed, Point& pubKey, unsigned char* hash)
                 blocks[0] = 0x4;
                 pubKey.x.Get32Bytes(blocks.data() + 1);
                 pubKey.y.Get32Bytes(blocks.data() + 33);
-                blocks[65] = 0x80;
-                blocks[126] = 0x02;
-                blocks[127] = 0x08;
-                sha256_compress_two_blocks(blocks.data(), shaDigest.data());
+                sha256_65(blocks.data(), shaDigest.data());
 
         }
         else {
@@ -826,10 +842,7 @@ void Secp256K1::GetHash160(bool compressed, Point& pubKey, unsigned char* hash)
                 alignas(64) std::array<uint8_t, 64> block{};
                 block[0] = pubKey.y.IsEven() ? 0x2 : 0x3;
                 pubKey.x.Get32Bytes(block.data() + 1);
-                block[33] = 0x80;
-                block[62] = 0x01;
-                block[63] = 0x08;
-                sha256_compress_block(block.data(), shaDigest.data());
+                sha256_33(block.data(), shaDigest.data());
 
         }
 
