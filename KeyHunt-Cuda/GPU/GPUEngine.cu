@@ -818,16 +818,7 @@ void GPUEngine::waitForStream(bool spinWait)
         }
 
         CUDA_CHECK(cudaEventRecord(syncEvent_, stream_));
-        while (true) {
-                const cudaError_t status = cudaEventQuery(syncEvent_);
-                if (status == cudaSuccess) {
-                        break;
-                }
-                if (status != cudaErrorNotReady) {
-                        CUDA_CHECK(status);
-                }
-                Timer::SleepMillis(1);
-        }
+        CUDA_CHECK(cudaEventSynchronize(syncEvent_));
 }
 
 // ----------------------------------------------------------------------------
