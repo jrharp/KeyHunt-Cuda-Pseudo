@@ -16,6 +16,7 @@
 #include <inttypes.h>
 #include <limits>
 #include <cstdio>
+#include <filesystem>
 #ifndef WIN64
 #include <pthread.h>
 #endif
@@ -251,17 +252,42 @@ void KeyHunt::persistPseudoRandomState(uint64_t completedCount)
                 return;
 
         std::lock_guard<std::mutex> guard(pseudoState.fileMutex);
-        std::ofstream out(pseudoState.stateFile, std::ios::trunc);
-        if (!out.is_open()) {
-                if (!pseudoState.persistWarningShown) {
-                        printf("Warning: unable to persist pseudo-random state to %s\n", pseudoState.stateFile.c_str());
-                        pseudoState.persistWarningShown = true;
+
+        const std::string tempFile = pseudoState.stateFile + ".tmp";
+        {
+                std::ofstream out(tempFile, std::ios::trunc);
+                if (!out.is_open()) {
+                        if (!pseudoState.persistWarningShown) {
+                                printf("Warning: unable to persist pseudo-random state to %s\n", pseudoState.stateFile.c_str());
+                                pseudoState.persistWarningShown = true;
+                        }
+                        return;
                 }
-                return;
+
+                out << completedCount << '\n';
+                out.flush();
+                if (!out.good()) {
+                        out.close();
+                        std::error_code ec;
+                        std::filesystem::remove(tempFile, ec);
+                        if (!pseudoState.persistWarningShown) {
+                                printf("Warning: unable to persist pseudo-random state to %s\n", pseudoState.stateFile.c_str());
+                                pseudoState.persistWarningShown = true;
+                        }
+                        return;
+                }
         }
 
-        out << completedCount << '\n';
-        if (!out.good()) {
+        std::error_code ec;
+        std::filesystem::rename(tempFile, pseudoState.stateFile, ec);
+        if (ec) {
+                std::filesystem::remove(pseudoState.stateFile, ec);
+                ec.clear();
+                std::filesystem::rename(tempFile, pseudoState.stateFile, ec);
+        }
+
+        if (ec) {
+                std::filesystem::remove(tempFile, ec);
                 if (!pseudoState.persistWarningShown) {
                         printf("Warning: unable to persist pseudo-random state to %s\n", pseudoState.stateFile.c_str());
                         pseudoState.persistWarningShown = true;
