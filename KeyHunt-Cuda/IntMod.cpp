@@ -878,7 +878,7 @@ void Int::MontgomeryMult(Int* a, Int* b) {
 
 // SecpK1 specific section -----------------------------------------------------------------------------
 
-void Int::ModMulK1(Int* a, Int* b) {
+void Int::ModMulK1(const Int* a, const Int* b) {
 
 #ifndef WIN64
 #if (__GNUC__ > 7) || (__GNUC__ == 7 && (__GNUC_MINOR__ > 2))
@@ -957,7 +957,7 @@ void Int::ModMulK1(Int* a, Int* b) {
 
 }
 
-void Int::ModMulK1(Int* a) {
+void Int::ModMulK1(const Int* a) {
 
 #ifndef WIN64
 #if (__GNUC__ > 7) || (__GNUC__ == 7 && (__GNUC_MINOR__ > 2))
