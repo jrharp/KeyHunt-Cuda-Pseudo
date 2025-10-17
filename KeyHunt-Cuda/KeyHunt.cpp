@@ -1443,9 +1443,9 @@ void KeyHunt::FindKeyGPU(TH_PARAM * ph)
                                 counters[thId] += stepSize * static_cast<uint64_t>(nbThread); // Point
                         }
                 }
-                }
+                
 
-        }
+        	}
 
         delete[] keys;
         delete[] p;
