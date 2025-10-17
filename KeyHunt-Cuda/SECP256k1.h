@@ -19,6 +19,7 @@
 #define SECP256K1H
 
 #include "Point.h"
+#include <array>
 #include <string>
 #include <vector>
 
@@ -30,8 +31,10 @@ public:
 	Secp256K1();
 	~Secp256K1();
 	void Init();
-	Point ComputePublicKey(Int* privKey);
-	Point NextKey(Point& key);
+        Point ComputePublicKey(Int* privKey);
+        void ComputePublicKeys(Int* privKeys, size_t count, Point* outPoints);
+        Point NextKey(Point& key);
+        void NextKeyBatch(Point* keys, size_t count);
 	void Check();
 	bool  EC(Point& p);
 
@@ -69,10 +72,24 @@ public:
 
 private:
 
-	uint8_t GetByte(std::string& str, int idx);
+        uint8_t GetByte(std::string& str, int idx);
 
-	Int GetY(Int x, bool isEven);
-	Point GTable[256 * 32];     // Generator table
+        Int GetY(Int x, bool isEven);
+        Point GTable[256 * 32];     // Generator table
+        std::array<Point, 8> wnafOddMultiples;
+        std::array<Point, 8> wnafLambdaMultiples;
+        Int lambdaConst;
+        Int betaConst;
+        Int minusB1;
+        Int minusB2;
+
+        static Int MulShift384(const Int& k, const std::array<uint64_t, 4>& g);
+        void SplitLambda(const Int& k, Int& r1, Int& r2);
+        void PrecomputeGLVTables();
+        Point ApplyLambda(const Point& p) const;
+        void EnsureAffine(Point& p) const;
+        static std::vector<int8_t> BuildWNAF(const Int& scalar, int width);
+        static Point SelectPrecomputed(const std::array<Point, 8>& table, int8_t digit);
 
 };
 
