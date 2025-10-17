@@ -77,6 +77,7 @@ public:
         int GetNbThread();
         int GetGroupSize();
         int GetThreadsPerGroup();
+        static int GetCompiledGroupSize();
 
 	//bool Check(Secp256K1 *secp);
 	std::string deviceName;
