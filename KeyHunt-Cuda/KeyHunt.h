@@ -139,6 +139,8 @@ private:
                 uint64_t totalBlocks = 0;
                 uint64_t blockMask = 0;
                 unsigned int blockBits = 0;
+                uint32_t blocksPerFetch = 1;
+                uint64_t blockSpanKeys = 0;
                 std::atomic<uint64_t> nextCounter{ 0 };
                 std::string stateFile;
                 mutable std::mutex fileMutex;
@@ -152,6 +154,7 @@ private:
         bool pseudoRandomEnabled = false;
         PseudoRandomState pseudoState;
         Int initialRangeStart;
+        uint32_t pseudoBlockScaleHint = 1;
 
 #ifdef WIN64
         HANDLE ghMutex;

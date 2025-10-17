@@ -303,7 +303,11 @@ bool KeyHunt::acquirePseudoRandomBlock(Int& key, Point& startP, uint64_t& sequen
                 uint64_t blockIndex = permuteBlockIndex(idx);
                 sequentialIndex = idx;
 
-                uint64_t offset = blockIndex * static_cast<uint64_t>(cpuGroupSize);
+                uint64_t span = pseudoState.blockSpanKeys;
+                if (span == 0) {
+                        span = static_cast<uint64_t>(cpuGroupSize);
+                }
+                uint64_t offset = blockIndex * span;
                 key = initialRangeStart;
                 key.Add(offset);
 
@@ -357,6 +361,8 @@ void KeyHunt::initializePseudoRandomState()
         pseudoState.totalBlocks = 0;
         pseudoState.blockMask = 0;
         pseudoState.blockBits = 0;
+        pseudoState.blocksPerFetch = 1;
+        pseudoState.blockSpanKeys = 0;
         pseudoState.nextCounter.store(0);
         pseudoState.stateFile.clear();
         pseudoState.lastPersisted = std::numeric_limits<uint64_t>::max();
@@ -379,29 +385,50 @@ void KeyHunt::initializePseudoRandomState()
         uint64_t inclusiveRange = exclusiveRange + 1;
         uint64_t cappedGroup = std::min<uint64_t>(static_cast<uint64_t>(CPU_GRP_SIZE), inclusiveRange);
 
-        uint64_t candidateGroup = 1;
-        while ((candidateGroup << 1) <= cappedGroup) {
-                candidateGroup <<= 1;
+        uint32_t desiredScale = (pseudoBlockScaleHint == 0) ? 1 : pseudoBlockScaleHint;
+        uint32_t scaleCandidate = 1;
+        while ((scaleCandidate << 1) <= desiredScale) {
+                scaleCandidate <<= 1;
         }
 
         const uint64_t minGroupSize = 4;
-        if (candidateGroup < minGroupSize) {
-                printf("Pseudo-random traversal disabled: range too small for pseudo-random traversal.\n");
-                return;
-        }
-
         bool foundGroup = false;
         uint64_t totalBlocks = 0;
-        uint64_t workingGroup = candidateGroup;
-        while (workingGroup >= minGroupSize) {
-                if ((inclusiveRange % workingGroup) == 0) {
-                        totalBlocks = inclusiveRange / workingGroup;
-                        if (totalBlocks != 0 && (totalBlocks & (totalBlocks - 1)) == 0) {
-                                foundGroup = true;
+        uint64_t workingGroup = 0;
+        uint32_t scaleUsed = 1;
+
+        while (scaleCandidate >= 1 && !foundGroup) {
+                uint64_t scaledCap = cappedGroup / scaleCandidate;
+                if (scaledCap < minGroupSize) {
+                        scaleCandidate >>= 1;
+                        continue;
+                }
+
+                uint64_t candidateGroup = 1;
+                while ((candidateGroup << 1) <= scaledCap) {
+                        candidateGroup <<= 1;
+                }
+
+                workingGroup = candidateGroup;
+                while (workingGroup >= minGroupSize) {
+                        uint64_t blockSpan = workingGroup * static_cast<uint64_t>(scaleCandidate);
+                        if (blockSpan == 0) {
                                 break;
                         }
+                        if ((inclusiveRange % blockSpan) == 0) {
+                                totalBlocks = inclusiveRange / blockSpan;
+                                if (totalBlocks != 0 && (totalBlocks & (totalBlocks - 1)) == 0) {
+                                        foundGroup = true;
+                                        scaleUsed = scaleCandidate;
+                                        break;
+                                }
+                        }
+                        workingGroup >>= 1;
                 }
-                workingGroup >>= 1;
+
+                if (!foundGroup) {
+                        scaleCandidate >>= 1;
+                }
         }
 
         if (!foundGroup) {
@@ -410,6 +437,8 @@ void KeyHunt::initializePseudoRandomState()
         }
 
         cpuGroupSize = static_cast<int>(workingGroup);
+        pseudoState.blocksPerFetch = scaleUsed;
+        pseudoState.blockSpanKeys = static_cast<uint64_t>(cpuGroupSize) * pseudoState.blocksPerFetch;
         pseudoState.totalKeys = inclusiveRange;
         pseudoState.totalBlocks = totalBlocks;
         pseudoState.blockMask = totalBlocks - 1;
@@ -441,8 +470,19 @@ void KeyHunt::initializePseudoRandomState()
         }
 
         pseudoRandomEnabled = true;
-        printf("Pseudo-random traversal enabled (%" PRIu64 " blocks, group size %d). State file: %s\n",
-                pseudoState.totalBlocks, cpuGroupSize, pseudoState.stateFile.c_str());
+        uint64_t effectiveGroupSize = static_cast<uint64_t>(cpuGroupSize) * pseudoState.blocksPerFetch;
+        if (effectiveGroupSize == 0) {
+                effectiveGroupSize = static_cast<uint64_t>(cpuGroupSize);
+        }
+        if (pseudoState.blocksPerFetch > 1) {
+                printf("Pseudo-random traversal enabled (%" PRIu64 " blocks, group size %d x %u => %" PRIu64 "). State file: %s\n",
+                        pseudoState.totalBlocks, cpuGroupSize, pseudoState.blocksPerFetch, effectiveGroupSize,
+                        pseudoState.stateFile.c_str());
+        }
+        else {
+                printf("Pseudo-random traversal enabled (%" PRIu64 " blocks, group size %d). State file: %s\n",
+                        pseudoState.totalBlocks, cpuGroupSize, pseudoState.stateFile.c_str());
+        }
         if (rKey > 0) {
                 printf("Note: random base key refresh is disabled while pseudo-random traversal is active.\n");
         }
@@ -1167,7 +1207,18 @@ void KeyHunt::FindKeyGPU(TH_PARAM * ph)
         int threadsPerGroup = g->GetThreadsPerGroup();
         Point* p = new Point[nbThread];
         Int* keys = new Int[nbThread];
-        std::vector<uint64_t> pseudoSequential(nbThread, std::numeric_limits<uint64_t>::max());
+        const uint32_t blocksPerFetchHint = std::max<uint32_t>(1u, pseudoState.blocksPerFetch);
+        uint32_t blocksPerChunk = blocksPerFetchHint;
+        while (blocksPerChunk > 1 &&
+                (blocksPerChunk > static_cast<uint32_t>(nbThread) || (nbThread % blocksPerChunk) != 0)) {
+                blocksPerChunk >>= 1;
+        }
+        if (blocksPerChunk == 0) {
+                blocksPerChunk = 1;
+        }
+        const int maxChunksPerBatch = (blocksPerChunk > 0) ? (nbThread / blocksPerChunk) : nbThread;
+        std::vector<uint64_t> chunkSequential(maxChunksPerBatch > 0 ? maxChunksPerBatch : 1,
+                std::numeric_limits<uint64_t>::max());
         std::vector<ITEM> found;
 
         printf("GPU          : %s\n\n", g->deviceName.c_str());
@@ -1188,26 +1239,46 @@ void KeyHunt::FindKeyGPU(TH_PARAM * ph)
 
                 int assignedBlocks = 0;
                 int activeThreads = nbThread;
+                int assignedChunkCount = 0;
 
                 if (usePseudoRandomGpu && ph->rKeyRequest) {
                         ph->rKeyRequest = false;
                 }
 
                 if (usePseudoRandomGpu) {
-                        std::fill(pseudoSequential.begin(), pseudoSequential.end(), std::numeric_limits<uint64_t>::max());
+                        std::fill(chunkSequential.begin(), chunkSequential.end(), std::numeric_limits<uint64_t>::max());
 
-                        for (int i = 0; i < nbThread; i++) {
-                                Int candidateKey;
-                                Point candidatePoint;
+                        assignedChunkCount = 0;
+                        assignedBlocks = 0;
+                        for (int chunk = 0; chunk < maxChunksPerBatch; ++chunk) {
+                                Int chunkKey;
+                                Point chunkPoint;
                                 uint64_t sequentialIndex = 0;
-                                if (!acquirePseudoRandomBlock(candidateKey, candidatePoint, sequentialIndex)) {
+                                if (!acquirePseudoRandomBlock(chunkKey, chunkPoint, sequentialIndex)) {
                                         break;
                                 }
 
-                                keys[i] = candidateKey;
-                                p[i] = candidatePoint;
-                                pseudoSequential[i] = sequentialIndex;
-                                assignedBlocks++;
+                                chunkSequential[chunk] = sequentialIndex;
+                                assignedChunkCount = chunk + 1;
+
+                                for (uint32_t j = 0; j < blocksPerChunk; ++j) {
+                                        int idx = chunk * static_cast<int>(blocksPerChunk) + static_cast<int>(j);
+                                        if (idx >= nbThread) {
+                                                break;
+                                        }
+
+                                        keys[idx] = chunkKey;
+                                        if (j > 0) {
+                                                keys[idx].Add(static_cast<uint64_t>(j) * static_cast<uint64_t>(cpuGroupSize));
+                                                Int km(&keys[idx]);
+                                                km.Add(static_cast<uint64_t>(cpuGroupSize) / 2);
+                                                p[idx] = secp->ComputePublicKey(&km);
+                                        }
+                                        else {
+                                                p[idx] = chunkPoint;
+                                        }
+                                        assignedBlocks++;
+                                }
                         }
 
                         if (assignedBlocks == 0) {
@@ -1229,7 +1300,6 @@ void KeyHunt::FindKeyGPU(TH_PARAM * ph)
                                                 }
                                                 p[idx] = p[assignedBlocks - 1];
                                                 keys[idx] = keys[assignedBlocks - 1];
-                                                pseudoSequential[idx] = std::numeric_limits<uint64_t>::max();
                                         }
                                         activeThreads += pad;
                                 }
@@ -1313,9 +1383,9 @@ void KeyHunt::FindKeyGPU(TH_PARAM * ph)
 
                 if (ok) {
                         if (usePseudoRandomGpu) {
-                                for (int i = 0; i < assignedBlocks; i++) {
-                                        if (pseudoSequential[i] != std::numeric_limits<uint64_t>::max()) {
-                                                notifyPseudoRandomBlockComplete(pseudoSequential[i]);
+                                for (int chunk = 0; chunk < assignedChunkCount; ++chunk) {
+                                        if (chunkSequential[chunk] != std::numeric_limits<uint64_t>::max()) {
+                                                notifyPseudoRandomBlockComplete(chunkSequential[chunk]);
                                         }
                                 }
                                 counters[thId] += (uint64_t)(STEP_SIZE)*assignedBlocks;
@@ -1422,13 +1492,37 @@ void KeyHunt::Search(int nbThread, std::vector<int> gpuId, std::vector<int> grid
 
 	double t0;
 	double t1;
-	endOfSearch = false;
-	nbCPUThread = nbThread;
-	nbGPUThread = (useGpu ? (int)gpuId.size() : 0);
-	nbFoundKey = 0;
+        endOfSearch = false;
+        nbCPUThread = nbThread;
+        nbGPUThread = (useGpu ? (int)gpuId.size() : 0);
+        nbFoundKey = 0;
 
-	// setup ranges
-	SetupRanges(nbCPUThread + nbGPUThread);
+        uint32_t scaleHint = 1;
+        if (useGpu && !gridSize.empty()) {
+                bool scaleSet = false;
+                for (size_t i = 0; i < gpuId.size() && (2 * i + 1) < gridSize.size(); ++i) {
+                        int threadsPerGroup = gridSize[2 * i + 1];
+                        if (threadsPerGroup <= 0)
+                                continue;
+                        uint32_t factor = static_cast<uint32_t>(threadsPerGroup & -threadsPerGroup);
+                        if (factor == 0)
+                                factor = 1;
+                        if (!scaleSet) {
+                                scaleHint = factor;
+                                scaleSet = true;
+                        }
+                        else {
+                                scaleHint = std::min(scaleHint, factor);
+                        }
+                }
+        }
+        if (scaleHint == 0)
+                scaleHint = 1;
+        pseudoBlockScaleHint = scaleHint;
+        initializePseudoRandomState();
+
+        // setup ranges
+        SetupRanges(nbCPUThread + nbGPUThread);
 
 	memset(counters, 0, sizeof(counters));
 
