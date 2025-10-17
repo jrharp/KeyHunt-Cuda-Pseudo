@@ -524,13 +524,50 @@ void sha256_compress_two_blocks(const unsigned char *blocks, unsigned char *dige
 
 }
 
+namespace {
+
+inline bool sha256_small_block(const unsigned char* data, size_t len, unsigned char* digest)
+{
+        if (len > 55) {
+                return false;
+        }
+
+        alignas(64) unsigned char block[64] = {};
+        memcpy(block, data, len);
+        block[len] = 0x80;
+        WRITEBE64(block + 56, static_cast<uint64_t>(len) << 3);
+
+        uint32_t state[8];
+        _sha256::Initialize(state);
+        _sha256::Transform(state, block);
+
+        WRITEBE32(digest, state[0]);
+        WRITEBE32(digest + 4, state[1]);
+        WRITEBE32(digest + 8, state[2]);
+        WRITEBE32(digest + 12, state[3]);
+        WRITEBE32(digest + 16, state[4]);
+        WRITEBE32(digest + 20, state[5]);
+        WRITEBE32(digest + 24, state[6]);
+        WRITEBE32(digest + 28, state[7]);
+
+        return true;
+}
+
+}
+
 void sha256_checksum(uint8_t *input, int length, uint8_t *checksum)
 {
 
     unsigned char digest[32];
 
-    sha256(input, length, digest);
-    sha256(digest, 32, digest);
+    if (!sha256_small_block(input, length, digest)) {
+        sha256(input, length, digest);
+    }
+
+    if (!sha256_small_block(digest, 32, digest)) {
+        sha256(digest, 32, digest);
+    }
+
     memcpy(checksum, digest, 4);
 
 }
