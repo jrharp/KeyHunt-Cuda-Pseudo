@@ -84,7 +84,7 @@ public:
 	bool IsLowerOrEqual(Int* a);
 	bool IsLower(Int* a);
 	bool IsEqual(Int* a);
-        bool IsZero() const;
+	bool IsZero();
 	bool IsOne();
 	bool IsStrictPositive();
 	bool IsPositive();
@@ -132,8 +132,8 @@ public:
 
 	// Specific SecpK1
 	static void InitK1(Int* order);
-        void ModMulK1(const Int* a, const Int* b);
-        void ModMulK1(const Int* a);
+	void ModMulK1(Int* a, Int* b);
+	void ModMulK1(Int* a);
 	void ModSquareK1(Int* a);
 	void ModMulK1order(Int* a);
 	void ModAddK1order(Int* a, Int* b);
