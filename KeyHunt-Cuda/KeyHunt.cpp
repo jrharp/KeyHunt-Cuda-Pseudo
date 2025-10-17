@@ -353,6 +353,106 @@ void KeyHunt::notifyPseudoRandomBlockComplete(uint64_t sequentialIndex)
         }
 }
 
+void KeyHunt::startPseudoRandomGpuPrefetch(int targetQueueSize)
+{
+        if (!pseudoRandomEnabled || targetQueueSize <= 0)
+                return;
+
+        stopPseudoRandomGpuPrefetch();
+
+        const size_t minimumCapacity = std::max<int>(CPU_GRP_SIZE, 1);
+        {
+                std::lock_guard<std::mutex> lock(pseudoGpuMutex);
+                pseudoGpuQueue.clear();
+                pseudoGpuQueueLimit = std::max<size_t>(static_cast<size_t>(targetQueueSize) * 2u, minimumCapacity);
+                pseudoGpuStop.store(false, std::memory_order_relaxed);
+        }
+
+        unsigned int workerCount = std::thread::hardware_concurrency();
+        if (workerCount == 0)
+                workerCount = 2;
+        workerCount = std::min<unsigned int>(workerCount, 8u);
+        pseudoGpuActiveWorkers.store(static_cast<int>(workerCount));
+        pseudoGpuWorkers.reserve(workerCount);
+        for (unsigned int i = 0; i < workerCount; ++i) {
+                pseudoGpuWorkers.emplace_back(&KeyHunt::pseudoRandomGpuWorker, this);
+        }
+}
+
+void KeyHunt::stopPseudoRandomGpuPrefetch()
+{
+        pseudoGpuStop.store(true, std::memory_order_relaxed);
+        pseudoGpuCv.notify_all();
+
+        for (auto& worker : pseudoGpuWorkers) {
+                if (worker.joinable()) {
+                        worker.join();
+                }
+        }
+        pseudoGpuWorkers.clear();
+        pseudoGpuActiveWorkers.store(0);
+
+        {
+                std::lock_guard<std::mutex> lock(pseudoGpuMutex);
+                pseudoGpuQueue.clear();
+                pseudoGpuQueueLimit = 0;
+                pseudoGpuStop.store(false, std::memory_order_relaxed);
+        }
+}
+
+bool KeyHunt::dequeuePseudoRandomGpuBlock(PseudoRandomBlock& block)
+{
+        std::unique_lock<std::mutex> lock(pseudoGpuMutex);
+        pseudoGpuCv.wait(lock, [this]() {
+                return !pseudoGpuQueue.empty() || pseudoGpuActiveWorkers.load() == 0 || pseudoGpuStop.load();
+        });
+
+        if (!pseudoGpuQueue.empty()) {
+                block = pseudoGpuQueue.front();
+                pseudoGpuQueue.pop_front();
+                lock.unlock();
+                pseudoGpuCv.notify_all();
+                return true;
+        }
+
+        return false;
+}
+
+void KeyHunt::pseudoRandomGpuWorker()
+{
+        while (true) {
+                if (endOfSearch || pseudoGpuStop.load())
+                        break;
+
+                Int key;
+                Point start;
+                uint64_t sequential = 0;
+                if (!acquirePseudoRandomBlock(key, start, sequential)) {
+                        break;
+                }
+
+                std::unique_lock<std::mutex> lock(pseudoGpuMutex);
+                pseudoGpuCv.wait(lock, [this]() {
+                        return pseudoGpuStop.load() || pseudoGpuQueue.size() < pseudoGpuQueueLimit;
+                });
+
+                if (pseudoGpuStop.load()) {
+                        break;
+                }
+
+                pseudoGpuQueue.emplace_back();
+                auto& entry = pseudoGpuQueue.back();
+                entry.key = key;
+                entry.startPoint = start;
+                entry.sequentialIndex = sequential;
+                lock.unlock();
+                pseudoGpuCv.notify_all();
+        }
+
+        pseudoGpuActiveWorkers.fetch_sub(1);
+        pseudoGpuCv.notify_all();
+}
+
 // ----------------------------------------------------------------------------
 
 void KeyHunt::initializePseudoRandomState()
@@ -1265,6 +1365,9 @@ void KeyHunt::FindKeyGPU(TH_PARAM * ph)
         counters[thId] = 0;
 
         const bool usePseudoRandomGpu = pseudoRandomEnabled;
+        if (usePseudoRandomGpu) {
+                startPseudoRandomGpuPrefetch(nbThread);
+        }
         if (!usePseudoRandomGpu) {
                 getGPUStartingKeys(tRangeStart, tRangeEnd, g->GetGroupSize(), nbThread, keys, p);
                 ok = g->SetKeys(p);
@@ -1287,16 +1390,14 @@ void KeyHunt::FindKeyGPU(TH_PARAM * ph)
                         std::fill(pseudoSequential.begin(), pseudoSequential.end(), std::numeric_limits<uint64_t>::max());
 
                         for (int i = 0; i < nbThread; i++) {
-                                Int candidateKey;
-                                Point candidatePoint;
-                                uint64_t sequentialIndex = 0;
-                                if (!acquirePseudoRandomBlock(candidateKey, candidatePoint, sequentialIndex)) {
+                                PseudoRandomBlock block;
+                                if (!dequeuePseudoRandomGpuBlock(block)) {
                                         break;
                                 }
 
-                                keys[i] = candidateKey;
-                                p[i] = candidatePoint;
-                                pseudoSequential[i] = sequentialIndex;
+                                keys[i] = block.key;
+                                p[i] = block.startPoint;
+                                pseudoSequential[i] = block.sequentialIndex;
                                 assignedBlocks++;
                         }
 
@@ -1418,6 +1519,10 @@ void KeyHunt::FindKeyGPU(TH_PARAM * ph)
                         }
                 }
 
+        }
+
+        if (usePseudoRandomGpu) {
+                stopPseudoRandomGpuPrefetch();
         }
 
         delete[] keys;
