@@ -67,15 +67,16 @@ public:
 
 	~GPUEngine();
 
-	bool SetKeys(Point* p);
+        bool SetKeys(Point* p, int activeThreadCount = -1);
 
-	bool LaunchSEARCH_MODE_MA(std::vector<ITEM>& dataFound, bool spinWait = false);
-	bool LaunchSEARCH_MODE_SA(std::vector<ITEM>& dataFound, bool spinWait = false);
-	bool LaunchSEARCH_MODE_MX(std::vector<ITEM>& dataFound, bool spinWait = false);
-	bool LaunchSEARCH_MODE_SX(std::vector<ITEM>& dataFound, bool spinWait = false);
+        bool LaunchSEARCH_MODE_MA(std::vector<ITEM>& dataFound, bool spinWait = false, bool queueNextBatch = true);
+        bool LaunchSEARCH_MODE_SA(std::vector<ITEM>& dataFound, bool spinWait = false, bool queueNextBatch = true);
+        bool LaunchSEARCH_MODE_MX(std::vector<ITEM>& dataFound, bool spinWait = false, bool queueNextBatch = true);
+        bool LaunchSEARCH_MODE_SX(std::vector<ITEM>& dataFound, bool spinWait = false, bool queueNextBatch = true);
 
-	int GetNbThread();
-	int GetGroupSize();
+        int GetNbThread();
+        int GetGroupSize();
+        int GetThreadsPerGroup();
 
 	//bool Check(Secp256K1 *secp);
 	std::string deviceName;
@@ -97,6 +98,7 @@ private:
 
         int nbThread = 0;
         int nbThreadPerGroup = 0;
+        int activeThreadCount = 0;
 
         uint32_t* inputHashORxpoint = nullptr;
         uint32_t* inputHashORxpointPinned = nullptr;

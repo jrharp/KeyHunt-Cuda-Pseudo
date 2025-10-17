@@ -6,12 +6,16 @@
 #include "IntGroup.h"
 #include "Timer.h"
 #include "hash/ripemd160.h"
-#include <cstring>
-#include <cmath>
 #include <algorithm>
-#include <iostream>
 #include <cassert>
+#include <cmath>
+#include <cstring>
+#include <fstream>
+#include <functional>
+#include <iostream>
 #include <inttypes.h>
+#include <limits>
+#include <cstdio>
 #ifndef WIN64
 #include <pthread.h>
 #endif
@@ -36,9 +40,10 @@ KeyHunt::KeyHunt(const std::string& inputFile, int compMode, int searchMode, int
 	this->maxFound = maxFound;
 	this->rKey = rKey;
 	this->searchMode = searchMode;
-	this->coinType = coinType;
-	this->rangeStart.SetBase16(rangeStart.c_str());
-	this->rangeEnd.SetBase16(rangeEnd.c_str());
+        this->coinType = coinType;
+        this->rangeStart.SetBase16(rangeStart.c_str());
+        this->initialRangeStart.Set(&this->rangeStart);
+        this->rangeEnd.SetBase16(rangeEnd.c_str());
 	this->rangeDiff2.Set(&this->rangeEnd);
 	this->rangeDiff2.Sub(&this->rangeStart);
 	this->lastrKey = 0;
@@ -120,10 +125,11 @@ KeyHunt::KeyHunt(const std::string& inputFile, int compMode, int searchMode, int
 
 	printf("\n");
 
-	bloom->print();
-	printf("\n");
+        bloom->print();
+        printf("\n");
 
-	InitGenratorTable();
+        InitGenratorTable();
+        initializePseudoRandomState();
 
 }
 
@@ -140,10 +146,11 @@ KeyHunt::KeyHunt(const std::vector<unsigned char>& hashORxpoint, int compMode, i
 	this->nbGPUThread = 0;
 	this->maxFound = maxFound;
 	this->rKey = rKey;
-	this->searchMode = searchMode;
-	this->coinType = coinType;
-	this->rangeStart.SetBase16(rangeStart.c_str());
-	this->rangeEnd.SetBase16(rangeEnd.c_str());
+        this->searchMode = searchMode;
+        this->coinType = coinType;
+        this->rangeStart.SetBase16(rangeStart.c_str());
+        this->initialRangeStart.Set(&this->rangeStart);
+        this->rangeEnd.SetBase16(rangeEnd.c_str());
 	this->rangeDiff2.Set(&this->rangeEnd);
 	this->rangeDiff2.Sub(&this->rangeStart);
 	this->targetCounter = 1;
@@ -163,18 +170,19 @@ KeyHunt::KeyHunt(const std::vector<unsigned char>& hashORxpoint, int compMode, i
 			((uint8_t*)xpoint)[i] = hashORxpoint.at(i);
 		}
 	}
-	printf("\n");
+        printf("\n");
 
-	InitGenratorTable();
+        InitGenratorTable();
+        initializePseudoRandomState();
 }
 
 // ----------------------------------------------------------------------------
 
 void KeyHunt::InitGenratorTable()
 {
-	// Compute Generator table G[n] = (n+1)*G
-	Point g = secp->G;
-	Gn[0] = g;
+        // Compute Generator table G[n] = (n+1)*G
+        Point g = secp->G;
+        Gn[0] = g;
 	g = secp->DoubleDirect(g);
 	Gn[1] = g;
 	for (int i = 2; i < CPU_GRP_SIZE / 2; i++) {
@@ -194,16 +202,225 @@ void KeyHunt::InitGenratorTable()
 	}
 	printf("Global start : %s (%d bit)\n", this->rangeStart.GetBase16().c_str(), this->rangeStart.GetBitLength());
 	printf("Global end   : %s (%d bit)\n", this->rangeEnd.GetBase16().c_str(), this->rangeEnd.GetBitLength());
-	printf("Global range : %s (%d bit)\n", this->rangeDiff2.GetBase16().c_str(), this->rangeDiff2.GetBitLength());
+        printf("Global range : %s (%d bit)\n", this->rangeDiff2.GetBase16().c_str(), this->rangeDiff2.GetBitLength());
 
+}
+
+// ----------------------------------------------------------------------------
+
+bool KeyHunt::loadPseudoRandomState(uint64_t& resumeIndex) const
+{
+        if (pseudoState.stateFile.empty())
+                return false;
+
+        std::ifstream in(pseudoState.stateFile);
+        if (!in.good())
+                return false;
+
+        uint64_t value = 0;
+        in >> value;
+        if (!in.good())
+                return false;
+
+        resumeIndex = value;
+        return true;
+}
+
+// ----------------------------------------------------------------------------
+
+void KeyHunt::persistPseudoRandomState(uint64_t completedCount)
+{
+        if (!pseudoRandomEnabled || pseudoState.stateFile.empty())
+                return;
+
+        if (pseudoState.lastPersisted == completedCount)
+                return;
+
+        std::lock_guard<std::mutex> guard(pseudoState.fileMutex);
+        std::ofstream out(pseudoState.stateFile, std::ios::trunc);
+        if (!out.is_open()) {
+                if (!pseudoState.persistWarningShown) {
+                        printf("Warning: unable to persist pseudo-random state to %s\n", pseudoState.stateFile.c_str());
+                        pseudoState.persistWarningShown = true;
+                }
+                return;
+        }
+
+        out << completedCount << '\n';
+        if (!out.good()) {
+                if (!pseudoState.persistWarningShown) {
+                        printf("Warning: unable to persist pseudo-random state to %s\n", pseudoState.stateFile.c_str());
+                        pseudoState.persistWarningShown = true;
+                }
+                return;
+        }
+
+        pseudoState.lastPersisted = completedCount;
+        pseudoState.persistWarningShown = false;
+}
+
+// ----------------------------------------------------------------------------
+
+uint64_t KeyHunt::permuteBlockIndex(uint64_t value) const
+{
+        uint64_t mask = pseudoState.blockMask;
+        uint64_t x = value & mask;
+        x ^= (x >> 12);
+        x &= mask;
+        x ^= ((x << 25) & mask);
+        x ^= (x >> 27);
+        x &= mask;
+        x = (x * 2685821657736338717ULL) & mask;
+        x ^= (x >> 33);
+        x &= mask;
+        return x;
+}
+
+// ----------------------------------------------------------------------------
+
+bool KeyHunt::acquirePseudoRandomBlock(Int& key, Point& startP, uint64_t& sequentialIndex)
+{
+        if (!pseudoRandomEnabled)
+                return false;
+
+        while (true) {
+                uint64_t idx = pseudoState.nextCounter.fetch_add(1);
+                if (idx >= pseudoState.totalBlocks)
+                        return false;
+
+                uint64_t blockIndex = permuteBlockIndex(idx);
+                sequentialIndex = idx;
+
+                uint64_t offset = blockIndex * (uint64_t)CPU_GRP_SIZE;
+                key = initialRangeStart;
+                key.Add(offset);
+
+                Int km(&key);
+                km.Add((uint64_t)CPU_GRP_SIZE / 2);
+                startP = secp->ComputePublicKey(&km);
+                return true;
+        }
+}
+
+// ----------------------------------------------------------------------------
+
+void KeyHunt::notifyPseudoRandomBlockComplete(uint64_t sequentialIndex)
+{
+        if (!pseudoRandomEnabled)
+                return;
+
+        uint64_t nextPersist = std::numeric_limits<uint64_t>::max();
+        {
+                std::lock_guard<std::mutex> guard(pseudoState.progressMutex);
+                if (sequentialIndex >= pseudoState.totalBlocks)
+                        return;
+
+                pseudoState.completedBlocks.insert(sequentialIndex);
+                uint64_t candidate = pseudoState.lowestUnpersisted;
+                bool advanced = false;
+                while (pseudoState.completedBlocks.count(candidate) > 0) {
+                        pseudoState.completedBlocks.erase(candidate);
+                        candidate++;
+                        advanced = true;
+                }
+
+                if (advanced) {
+                        pseudoState.lowestUnpersisted = candidate;
+                        nextPersist = candidate;
+                }
+        }
+
+        if (nextPersist != std::numeric_limits<uint64_t>::max()) {
+                persistPseudoRandomState(nextPersist);
+        }
+}
+
+// ----------------------------------------------------------------------------
+
+void KeyHunt::initializePseudoRandomState()
+{
+        pseudoRandomEnabled = false;
+        pseudoState.totalKeys = 0;
+        pseudoState.totalBlocks = 0;
+        pseudoState.blockMask = 0;
+        pseudoState.blockBits = 0;
+        pseudoState.nextCounter.store(0);
+        pseudoState.stateFile.clear();
+        pseudoState.lastPersisted = std::numeric_limits<uint64_t>::max();
+        pseudoState.persistWarningShown = false;
+        pseudoState.lowestUnpersisted = 0;
+        pseudoState.completedBlocks.clear();
+
+        if (searchMode != (int)SEARCH_MODE_SA || coinType != COIN_BTC)
+                return;
+
+        if (rangeDiff2.GetSize64() > 1) {
+                printf("Pseudo-random traversal disabled: range span exceeds 64 bits.\n");
+                return;
+        }
+
+        uint64_t totalKeys = rangeDiff2.bits64[0];
+        if (totalKeys == 0)
+                return;
+
+        if ((totalKeys % CPU_GRP_SIZE) != 0) {
+                printf("Pseudo-random traversal disabled: range not aligned to group size (%d).\n", CPU_GRP_SIZE);
+                return;
+        }
+
+        uint64_t totalBlocks = totalKeys / (uint64_t)CPU_GRP_SIZE;
+        if (totalBlocks == 0)
+                return;
+
+        if ((totalBlocks & (totalBlocks - 1)) != 0) {
+                printf("Pseudo-random traversal disabled: block count must be a power of two.\n");
+                return;
+        }
+
+        pseudoState.totalKeys = totalKeys;
+        pseudoState.totalBlocks = totalBlocks;
+        pseudoState.blockMask = totalBlocks - 1;
+
+        uint64_t tmp = totalBlocks;
+        unsigned int bits = 0;
+        while (tmp > 1) {
+                bits++;
+                tmp >>= 1;
+        }
+        pseudoState.blockBits = bits;
+
+        std::string startHex = initialRangeStart.GetBase16();
+        std::string endHex = rangeEnd.GetBase16();
+        std::string key = startHex + ":" + endHex;
+        std::size_t hashValue = std::hash<std::string>{}(key);
+        char fileName[64];
+        std::snprintf(fileName, sizeof(fileName), "keyhunt_sa_%016zx.state", hashValue);
+        pseudoState.stateFile = fileName;
+
+        uint64_t resumeIndex = 0;
+        if (loadPseudoRandomState(resumeIndex)) {
+                if (resumeIndex >= pseudoState.totalBlocks)
+                        resumeIndex = resumeIndex % pseudoState.totalBlocks;
+                pseudoState.nextCounter.store(resumeIndex);
+                pseudoState.lastPersisted = resumeIndex;
+                pseudoState.lowestUnpersisted = resumeIndex;
+                printf("Pseudo-random traversal resume index: %" PRIu64 "\n", resumeIndex);
+        }
+
+        pseudoRandomEnabled = true;
+        printf("Pseudo-random traversal enabled (%" PRIu64 " blocks). State file: %s\n",
+                pseudoState.totalBlocks, pseudoState.stateFile.c_str());
+        if (rKey > 0) {
+                printf("Note: random base key refresh is disabled while pseudo-random traversal is active.\n");
+        }
 }
 
 // ----------------------------------------------------------------------------
 
 KeyHunt::~KeyHunt()
 {
-	delete secp;
-	if (searchMode == (int)SEARCH_MODE_MA || searchMode == (int)SEARCH_MODE_MX)
+        delete secp;
+        if (searchMode == (int)SEARCH_MODE_MA || searchMode == (int)SEARCH_MODE_MX)
 		delete bloom;
 	if (DATA)
 		free(DATA);
@@ -575,9 +792,12 @@ void KeyHunt::FindKeyCPU(TH_PARAM * ph)
 	IntGroup* grp = new IntGroup(CPU_GRP_SIZE / 2 + 1);
 
 	// Group Init
-	Int key;// = new Int();
-	Point startP;// = new Point();
-	getCPUStartingKey(tRangeStart, tRangeEnd, key, startP);
+        Int key;// = new Int();
+        Point startP;// = new Point();
+        if (!pseudoRandomEnabled) {
+                getCPUStartingKey(tRangeStart, tRangeEnd, key, startP);
+        }
+        uint64_t pseudoSequentialIndex = 0;
 
 	Int* dx = new Int[CPU_GRP_SIZE / 2 + 1];
 	Point* pts = new Point[CPU_GRP_SIZE];
@@ -593,12 +813,19 @@ void KeyHunt::FindKeyCPU(TH_PARAM * ph)
 	ph->hasStarted = true;
 	ph->rKeyRequest = false;
 
-	while (!endOfSearch) {
+        while (!endOfSearch) {
 
-		if (ph->rKeyRequest) {
-			getCPUStartingKey(tRangeStart, tRangeEnd, key, startP);
-			ph->rKeyRequest = false;
-		}
+                if (pseudoRandomEnabled) {
+                        if (!acquirePseudoRandomBlock(key, startP, pseudoSequentialIndex)) {
+                                break;
+                        }
+                }
+                else {
+                        if (ph->rKeyRequest) {
+                                getCPUStartingKey(tRangeStart, tRangeEnd, key, startP);
+                                ph->rKeyRequest = false;
+                        }
+                }
 
 		// Fill group
 		int i;
@@ -678,23 +905,25 @@ void KeyHunt::FindKeyCPU(TH_PARAM * ph)
 
 		pts[0] = *pn;
 
-		// Next start point (startP + GRP_SIZE*G)
-		*pp = startP;
-		dy->ModSub(&_2Gn.y, &pp->y);
+                if (!pseudoRandomEnabled) {
+                        // Next start point (startP + GRP_SIZE*G)
+                        *pp = startP;
+                        dy->ModSub(&_2Gn.y, &pp->y);
 
-		_s->ModMulK1(dy, &dx[i + 1]);
-		_p->ModSquareK1(_s);
+                        _s->ModMulK1(dy, &dx[i + 1]);
+                        _p->ModSquareK1(_s);
 
-		pp->x.ModNeg();
-		pp->x.ModAdd(_p);
-		pp->x.ModSub(&_2Gn.x);
+                        pp->x.ModNeg();
+                        pp->x.ModAdd(_p);
+                        pp->x.ModSub(&_2Gn.x);
 
-		pp->y.ModSub(&_2Gn.x, &pp->x);
-		pp->y.ModMulK1(_s);
-		pp->y.ModSub(&_2Gn.y);
-		startP = *pp;
+                        pp->y.ModSub(&_2Gn.x, &pp->x);
+                        pp->y.ModMulK1(_s);
+                        pp->y.ModSub(&_2Gn.y);
+                        startP = *pp;
+                }
 
-		// Check addresses
+                // Check addresses
 		if (useSSE) {
 			for (int i = 0; i < CPU_GRP_SIZE && !endOfSearch; i += 4) {
 				switch (compMode) {
@@ -806,10 +1035,15 @@ void KeyHunt::FindKeyCPU(TH_PARAM * ph)
 					}
 				}
 			}
-		}
-		key.Add((uint64_t)CPU_GRP_SIZE);
-		counters[thId] += CPU_GRP_SIZE; // Point
-	}
+                }
+                if (!pseudoRandomEnabled) {
+                        key.Add((uint64_t)CPU_GRP_SIZE);
+                }
+                else {
+                        notifyPseudoRandomBlockComplete(pseudoSequentialIndex);
+                }
+                counters[thId] += CPU_GRP_SIZE; // Point
+        }
 	ph->isRunning = false;
 
 	delete grp;
@@ -873,130 +1107,199 @@ void KeyHunt::FindKeyGPU(TH_PARAM * ph)
 	Int tRangeStart = ph->rangeStart;
 	Int tRangeEnd = ph->rangeEnd;
 
-	GPUEngine* g;
-	switch (searchMode) {
-	case (int)SEARCH_MODE_MA:
-	case (int)SEARCH_MODE_MX:
-		g = new GPUEngine(secp, ph->gridSizeX, ph->gridSizeY, ph->gpuId, maxFound, searchMode, compMode, coinType,
-			BLOOM_N, bloom->get_bits(), bloom->get_hashes(), bloom->get_bf(), DATA, TOTAL_COUNT, (rKey != 0));
-		break;
-	case (int)SEARCH_MODE_SA:
-		g = new GPUEngine(secp, ph->gridSizeX, ph->gridSizeY, ph->gpuId, maxFound, searchMode, compMode, coinType,
-			hash160Keccak, (rKey != 0));
-		break;
-	case (int)SEARCH_MODE_SX:
-		g = new GPUEngine(secp, ph->gridSizeX, ph->gridSizeY, ph->gpuId, maxFound, searchMode, compMode, coinType,
-			xpoint, (rKey != 0));
-		break;
-	default:
-		printf("Invalid search mode format");
-		return;
-		break;
-	}
+        const bool retainInputKeys = (rKey != 0) || pseudoRandomEnabled;
+        GPUEngine* g;
+        switch (searchMode) {
+        case (int)SEARCH_MODE_MA:
+        case (int)SEARCH_MODE_MX:
+                g = new GPUEngine(secp, ph->gridSizeX, ph->gridSizeY, ph->gpuId, maxFound, searchMode, compMode, coinType,
+                        BLOOM_N, bloom->get_bits(), bloom->get_hashes(), bloom->get_bf(), DATA, TOTAL_COUNT, retainInputKeys);
+                break;
+        case (int)SEARCH_MODE_SA:
+                g = new GPUEngine(secp, ph->gridSizeX, ph->gridSizeY, ph->gpuId, maxFound, searchMode, compMode, coinType,
+                        hash160Keccak, retainInputKeys);
+                break;
+        case (int)SEARCH_MODE_SX:
+                g = new GPUEngine(secp, ph->gridSizeX, ph->gridSizeY, ph->gpuId, maxFound, searchMode, compMode, coinType,
+                        xpoint, retainInputKeys);
+                break;
+        default:
+                printf("Invalid search mode format");
+                return;
+                break;
+        }
 
 
-	int nbThread = g->GetNbThread();
-	Point* p = new Point[nbThread];
-	Int* keys = new Int[nbThread];
-	std::vector<ITEM> found;
+        int nbThread = g->GetNbThread();
+        int threadsPerGroup = g->GetThreadsPerGroup();
+        Point* p = new Point[nbThread];
+        Int* keys = new Int[nbThread];
+        std::vector<uint64_t> pseudoSequential(nbThread, std::numeric_limits<uint64_t>::max());
+        std::vector<ITEM> found;
 
-	printf("GPU          : %s\n\n", g->deviceName.c_str());
+        printf("GPU          : %s\n\n", g->deviceName.c_str());
 
-	counters[thId] = 0;
+        counters[thId] = 0;
 
-	getGPUStartingKeys(tRangeStart, tRangeEnd, g->GetGroupSize(), nbThread, keys, p);
-	ok = g->SetKeys(p);
+        const bool usePseudoRandomGpu = pseudoRandomEnabled;
+        if (!usePseudoRandomGpu) {
+                getGPUStartingKeys(tRangeStart, tRangeEnd, g->GetGroupSize(), nbThread, keys, p);
+                ok = g->SetKeys(p);
+        }
 
-	ph->hasStarted = true;
-	ph->rKeyRequest = false;
+        ph->hasStarted = true;
+        ph->rKeyRequest = false;
 
-	// GPU Thread
-	while (ok && !endOfSearch) {
+        // GPU Thread
+        while (ok && !endOfSearch) {
 
-		if (ph->rKeyRequest) {
-			getGPUStartingKeys(tRangeStart, tRangeEnd, g->GetGroupSize(), nbThread, keys, p);
-			ok = g->SetKeys(p);
-			ph->rKeyRequest = false;
-		}
+                int assignedBlocks = 0;
+                int activeThreads = nbThread;
 
-		// Call kernel
-		switch (searchMode) {
-		case (int)SEARCH_MODE_MA:
-			ok = g->LaunchSEARCH_MODE_MA(found, false);
-			for (int i = 0; i < (int)found.size() && !endOfSearch; i++) {
-				ITEM it = found[i];
-				if (coinType == COIN_BTC) {
-					std::string addr = secp->GetAddress(it.mode, it.hash);
-					if (checkPrivKey(addr, keys[it.thId], it.incr, it.mode)) {
-						nbFoundKey++;
-					}
-				}
-				else {
-					std::string addr = secp->GetAddressETH(it.hash);
-					if (checkPrivKeyETH(addr, keys[it.thId], it.incr)) {
-						nbFoundKey++;
-					}
-				}
-			}
-			break;
-		case (int)SEARCH_MODE_MX:
-			ok = g->LaunchSEARCH_MODE_MX(found, false);
-			for (int i = 0; i < (int)found.size() && !endOfSearch; i++) {
-				ITEM it = found[i];
-				//Point pk;
-				//memcpy((uint32_t*)pk.x.bits, (uint32_t*)it.hash, 8);
-				//string addr = secp->GetAddress(it.mode, pk);
-				if (checkPrivKeyX(/*addr,*/ keys[it.thId], it.incr, it.mode)) {
-					nbFoundKey++;
-				}
-			}
-			break;
-		case (int)SEARCH_MODE_SA:
-			ok = g->LaunchSEARCH_MODE_SA(found, false);
-			for (int i = 0; i < (int)found.size() && !endOfSearch; i++) {
-				ITEM it = found[i];
-				if (coinType == COIN_BTC) {
-					std::string addr = secp->GetAddress(it.mode, it.hash);
-					if (checkPrivKey(addr, keys[it.thId], it.incr, it.mode)) {
-						nbFoundKey++;
-					}
-				}
-				else {
-					std::string addr = secp->GetAddressETH(it.hash);
-					if (checkPrivKeyETH(addr, keys[it.thId], it.incr)) {
-						nbFoundKey++;
-					}
-				}
-			}
-			break;
-		case (int)SEARCH_MODE_SX:
-			ok = g->LaunchSEARCH_MODE_SX(found, false);
-			for (int i = 0; i < (int)found.size() && !endOfSearch; i++) {
-				ITEM it = found[i];
-				//Point pk;
-				//memcpy((uint32_t*)pk.x.bits, (uint32_t*)it.hash, 8);
-				//string addr = secp->GetAddress(it.mode, pk);
-				if (checkPrivKeyX(/*addr,*/ keys[it.thId], it.incr, it.mode)) {
-					nbFoundKey++;
-				}
-			}
-			break;
-		default:
-			break;
-		}
+                if (usePseudoRandomGpu && ph->rKeyRequest) {
+                        ph->rKeyRequest = false;
+                }
 
-		if (ok) {
-			for (int i = 0; i < nbThread; i++) {
-				keys[i].Add((uint64_t)STEP_SIZE);
-			}
-			counters[thId] += (uint64_t)(STEP_SIZE)*nbThread; // Point
-		}
+                if (usePseudoRandomGpu) {
+                        std::fill(pseudoSequential.begin(), pseudoSequential.end(), std::numeric_limits<uint64_t>::max());
 
-	}
+                        for (int i = 0; i < nbThread; i++) {
+                                Int candidateKey;
+                                Point candidatePoint;
+                                uint64_t sequentialIndex = 0;
+                                if (!acquirePseudoRandomBlock(candidateKey, candidatePoint, sequentialIndex)) {
+                                        break;
+                                }
 
-	delete[] keys;
-	delete[] p;
-	delete g;
+                                keys[i] = candidateKey;
+                                p[i] = candidatePoint;
+                                pseudoSequential[i] = sequentialIndex;
+                                assignedBlocks++;
+                        }
+
+                        if (assignedBlocks == 0) {
+                                break;
+                        }
+
+                        activeThreads = assignedBlocks;
+                        if (threadsPerGroup > 0) {
+                                int remainder = activeThreads % threadsPerGroup;
+                                if (remainder != 0) {
+                                        int pad = threadsPerGroup - remainder;
+                                        if (pad > nbThread - activeThreads) {
+                                                pad = nbThread - activeThreads;
+                                        }
+                                        for (int j = 0; j < pad; j++) {
+                                                int idx = activeThreads + j;
+                                                if (idx >= nbThread) {
+                                                        break;
+                                                }
+                                                p[idx] = p[assignedBlocks - 1];
+                                                keys[idx] = keys[assignedBlocks - 1];
+                                                pseudoSequential[idx] = std::numeric_limits<uint64_t>::max();
+                                        }
+                                        activeThreads += pad;
+                                }
+                        }
+
+                        ok = g->SetKeys(p, activeThreads);
+                }
+                else {
+                        if (ph->rKeyRequest) {
+                                getGPUStartingKeys(tRangeStart, tRangeEnd, g->GetGroupSize(), nbThread, keys, p);
+                                ok = g->SetKeys(p);
+                                ph->rKeyRequest = false;
+                        }
+                }
+
+                if (!ok) {
+                        break;
+                }
+
+                const bool queueNextBatch = !usePseudoRandomGpu;
+
+                // Call kernel
+                switch (searchMode) {
+                case (int)SEARCH_MODE_MA:
+                        ok = g->LaunchSEARCH_MODE_MA(found, false, queueNextBatch);
+                        for (int i = 0; i < (int)found.size() && !endOfSearch; i++) {
+                                ITEM it = found[i];
+                                if (coinType == COIN_BTC) {
+                                        std::string addr = secp->GetAddress(it.mode, it.hash);
+                                        if (checkPrivKey(addr, keys[it.thId], it.incr, it.mode)) {
+                                                nbFoundKey++;
+                                        }
+                                }
+                                else {
+                                        std::string addr = secp->GetAddressETH(it.hash);
+                                        if (checkPrivKeyETH(addr, keys[it.thId], it.incr)) {
+                                                nbFoundKey++;
+                                        }
+                                }
+                        }
+                        break;
+                case (int)SEARCH_MODE_MX:
+                        ok = g->LaunchSEARCH_MODE_MX(found, false, queueNextBatch);
+                        for (int i = 0; i < (int)found.size() && !endOfSearch; i++) {
+                                ITEM it = found[i];
+                                if (checkPrivKeyX(/*addr,*/ keys[it.thId], it.incr, it.mode)) {
+                                        nbFoundKey++;
+                                }
+                        }
+                        break;
+                case (int)SEARCH_MODE_SA:
+                        ok = g->LaunchSEARCH_MODE_SA(found, false, queueNextBatch);
+                        for (int i = 0; i < (int)found.size() && !endOfSearch; i++) {
+                                ITEM it = found[i];
+                                if (coinType == COIN_BTC) {
+                                        std::string addr = secp->GetAddress(it.mode, it.hash);
+                                        if (checkPrivKey(addr, keys[it.thId], it.incr, it.mode)) {
+                                                nbFoundKey++;
+                                        }
+                                }
+                                else {
+                                        std::string addr = secp->GetAddressETH(it.hash);
+                                        if (checkPrivKeyETH(addr, keys[it.thId], it.incr)) {
+                                                nbFoundKey++;
+                                        }
+                                }
+                        }
+                        break;
+                case (int)SEARCH_MODE_SX:
+                        ok = g->LaunchSEARCH_MODE_SX(found, false, queueNextBatch);
+                        for (int i = 0; i < (int)found.size() && !endOfSearch; i++) {
+                                ITEM it = found[i];
+                                if (checkPrivKeyX(/*addr,*/ keys[it.thId], it.incr, it.mode)) {
+                                        nbFoundKey++;
+                                }
+                        }
+                        break;
+                default:
+                        break;
+                }
+
+                if (ok) {
+                        if (usePseudoRandomGpu) {
+                                for (int i = 0; i < assignedBlocks; i++) {
+                                        if (pseudoSequential[i] != std::numeric_limits<uint64_t>::max()) {
+                                                notifyPseudoRandomBlockComplete(pseudoSequential[i]);
+                                        }
+                                }
+                                counters[thId] += (uint64_t)(STEP_SIZE)*assignedBlocks;
+                        }
+                        else {
+                                for (int i = 0; i < nbThread; i++) {
+                                        keys[i].Add((uint64_t)STEP_SIZE);
+                                }
+                                counters[thId] += (uint64_t)(STEP_SIZE)*nbThread; // Point
+                        }
+                }
+
+        }
+
+        delete[] keys;
+        delete[] p;
+        delete g;
 
 #else
 	ph->hasStarted = true;
