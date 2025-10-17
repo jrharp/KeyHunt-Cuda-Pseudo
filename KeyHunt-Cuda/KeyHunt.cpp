@@ -1404,7 +1404,6 @@ void KeyHunt::FindKeyGPU(TH_PARAM * ph)
         int currentAssignedBlocks = 0;
 
         const int compiledGroupSize = GPUEngine::GetCompiledGroupSize();
-        const uint64_t compiledGroupMidpoint = static_cast<uint64_t>(compiledGroupSize) / 2ULL;
 
         auto preparePseudoRandomBatch = [&](int bufferIndex, int& assignedBlocksOut, int& activeThreadsOut) {
                 auto& sequential = pseudoSequentialBuffers[bufferIndex];
@@ -1420,9 +1419,7 @@ void KeyHunt::FindKeyGPU(TH_PARAM * ph)
                         }
 
                         keyBuffers[bufferIndex][i] = block.key;
-                        Int startScalar(keyBuffers[bufferIndex] + i);
-                        startScalar.Add(compiledGroupMidpoint);
-                        pointBuffers[bufferIndex][i] = secp->ComputePublicKey(&startScalar);
+                        pointBuffers[bufferIndex][i] = block.startPoint;
                         sequential[i] = block.sequentialIndex;
                         assignedBlocksOut++;
                 }
