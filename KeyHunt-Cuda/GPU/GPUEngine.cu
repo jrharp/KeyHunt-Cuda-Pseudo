@@ -93,9 +93,7 @@ __global__ void compute_keys_mode_ma(uint32_t mode, uint8_t* bloomLookUp, int BL
         int xPtr = (blockIdx.x * blockDim.x) * 8;
         int yPtr = xPtr + 4 * blockDim.x;
         for (int iteration = 0; iteration < stepMultiplier; ++iteration) {
-                const int32_t iterationOffset = iteration * GRP_SIZE;
-                ComputeKeysSEARCH_MODE_MA(mode, keys + xPtr, keys + yPtr, bloomLookUp, BLOOM_BITS, BLOOM_HASHES, maxFound, found,
-                        iterationOffset);
+                ComputeKeysSEARCH_MODE_MA(mode, keys + xPtr, keys + yPtr, bloomLookUp, BLOOM_BITS, BLOOM_HASHES, maxFound, found);
         }
 
 }
@@ -107,9 +105,7 @@ __global__ void compute_keys_comp_mode_ma(uint32_t mode, uint8_t* bloomLookUp, i
         int xPtr = (blockIdx.x * blockDim.x) * 8;
         int yPtr = xPtr + 4 * blockDim.x;
         for (int iteration = 0; iteration < stepMultiplier; ++iteration) {
-                const int32_t iterationOffset = iteration * GRP_SIZE;
-                ComputeKeysSEARCH_MODE_MA(mode, keys + xPtr, keys + yPtr, bloomLookUp, BLOOM_BITS, BLOOM_HASHES, maxFound, found,
-                        iterationOffset);
+                ComputeKeysSEARCH_MODE_MA(mode, keys + xPtr, keys + yPtr, bloomLookUp, BLOOM_BITS, BLOOM_HASHES, maxFound, found);
         }
 
 }
@@ -122,8 +118,7 @@ __global__ void compute_keys_mode_sa(uint32_t mode, uint32_t* hash160, uint64_t*
         int xPtr = (blockIdx.x * blockDim.x) * 8;
         int yPtr = xPtr + 4 * blockDim.x;
         for (int iteration = 0; iteration < stepMultiplier; ++iteration) {
-                const int32_t iterationOffset = iteration * GRP_SIZE;
-                ComputeKeysSEARCH_MODE_SA(mode, keys + xPtr, keys + yPtr, hash160, maxFound, found, iterationOffset);
+                ComputeKeysSEARCH_MODE_SA(mode, keys + xPtr, keys + yPtr, hash160, maxFound, found);
         }
 
 }
@@ -135,8 +130,7 @@ __global__ void compute_keys_comp_mode_sa(uint32_t mode, uint32_t* hash160, uint
         int xPtr = (blockIdx.x * blockDim.x) * 8;
         int yPtr = xPtr + 4 * blockDim.x;
         for (int iteration = 0; iteration < stepMultiplier; ++iteration) {
-                const int32_t iterationOffset = iteration * GRP_SIZE;
-                ComputeKeysSEARCH_MODE_SA(mode, keys + xPtr, keys + yPtr, hash160, maxFound, found, iterationOffset);
+                ComputeKeysSEARCH_MODE_SA(mode, keys + xPtr, keys + yPtr, hash160, maxFound, found);
         }
 
 }
@@ -149,9 +143,7 @@ __global__ void compute_keys_comp_mode_mx(uint32_t mode, uint8_t* bloomLookUp, i
         int xPtr = (blockIdx.x * blockDim.x) * 8;
         int yPtr = xPtr + 4 * blockDim.x;
         for (int iteration = 0; iteration < stepMultiplier; ++iteration) {
-                const int32_t iterationOffset = iteration * GRP_SIZE;
-                ComputeKeysSEARCH_MODE_MX(mode, keys + xPtr, keys + yPtr, bloomLookUp, BLOOM_BITS, BLOOM_HASHES, maxFound, found,
-                        iterationOffset);
+                ComputeKeysSEARCH_MODE_MX(mode, keys + xPtr, keys + yPtr, bloomLookUp, BLOOM_BITS, BLOOM_HASHES, maxFound, found);
         }
 
 }
@@ -164,8 +156,7 @@ __global__ void compute_keys_comp_mode_sx(uint32_t mode, uint32_t* xpoint, uint6
         int xPtr = (blockIdx.x * blockDim.x) * 8;
         int yPtr = xPtr + 4 * blockDim.x;
         for (int iteration = 0; iteration < stepMultiplier; ++iteration) {
-                const int32_t iterationOffset = iteration * GRP_SIZE;
-                ComputeKeysSEARCH_MODE_SX(mode, keys + xPtr, keys + yPtr, xpoint, maxFound, found, iterationOffset);
+                ComputeKeysSEARCH_MODE_SX(mode, keys + xPtr, keys + yPtr, xpoint, maxFound, found);
         }
 
 }
@@ -180,9 +171,7 @@ __global__ void compute_keys_mode_eth_ma(uint8_t* bloomLookUp, int BLOOM_BITS, u
         int xPtr = (blockIdx.x * blockDim.x) * 8;
         int yPtr = xPtr + 4 * blockDim.x;
         for (int iteration = 0; iteration < stepMultiplier; ++iteration) {
-                const int32_t iterationOffset = iteration * GRP_SIZE;
-                ComputeKeysSEARCH_ETH_MODE_MA(keys + xPtr, keys + yPtr, bloomLookUp, BLOOM_BITS, BLOOM_HASHES, maxFound, found,
-                        iterationOffset);
+                ComputeKeysSEARCH_ETH_MODE_MA(keys + xPtr, keys + yPtr, bloomLookUp, BLOOM_BITS, BLOOM_HASHES, maxFound, found);
         }
 
 }
@@ -194,8 +183,7 @@ __global__ void compute_keys_mode_eth_sa(uint32_t* hash, uint64_t* keys, uint32_
         int xPtr = (blockIdx.x * blockDim.x) * 8;
         int yPtr = xPtr + 4 * blockDim.x;
         for (int iteration = 0; iteration < stepMultiplier; ++iteration) {
-                const int32_t iterationOffset = iteration * GRP_SIZE;
-                ComputeKeysSEARCH_ETH_MODE_SA(keys + xPtr, keys + yPtr, hash, maxFound, found, iterationOffset);
+                ComputeKeysSEARCH_ETH_MODE_SA(keys + xPtr, keys + yPtr, hash, maxFound, found);
         }
 
 }
@@ -939,16 +927,17 @@ bool GPUEngine::LaunchSEARCH_MODE_MA(std::vector<ITEM>& dataFound, bool spinWait
 
                 uint32_t* itemPtr = outputBufferPinned + (i * ITEM_SIZE_A32 + 1);
                 uint8_t* hash = (uint8_t*)(itemPtr + 2);
-                if (CheckBinary(hash, 20) > 0) {
+		if (CheckBinary(hash, 20) > 0) {
 
-                        ITEM it;
-                        it.thId = itemPtr[0];
-                        const uint32_t raw = itemPtr[1];
-                        it.mode = (raw & 0x80000000u) != 0;
-                        it.incr = (raw & 0x7FFFFFFFu);
-                        it.hash = (uint8_t*)(itemPtr + 2);
-                        dataFound.push_back(it);
-                }
+			ITEM it;
+			it.thId = itemPtr[0];
+			int16_t* ptr = (int16_t*)&(itemPtr[1]);
+			//it.endo = ptr[0] & 0x7FFF;
+			it.mode = (ptr[0] & 0x8000) != 0;
+			it.incr = ptr[1];
+			it.hash = (uint8_t*)(itemPtr + 2);
+			dataFound.push_back(it);
+		}
 	}
         if (!queueNextBatch) {
                 return true;
@@ -990,11 +979,12 @@ bool GPUEngine::LaunchSEARCH_MODE_SA(std::vector<ITEM>& dataFound, bool spinWait
                 uint32_t* itemPtr = outputBufferPinned + (i * ITEM_SIZE_A32 + 1);
                 ITEM it;
                 it.thId = itemPtr[0];
-                const uint32_t raw = itemPtr[1];
-                it.mode = (raw & 0x80000000u) != 0;
-                it.incr = (raw & 0x7FFFFFFFu);
-                it.hash = (uint8_t*)(itemPtr + 2);
-                dataFound.push_back(it);
+		int16_t* ptr = (int16_t*)&(itemPtr[1]);
+		//it.endo = ptr[0] & 0x7FFF;
+		it.mode = (ptr[0] & 0x8000) != 0;
+		it.incr = ptr[1];
+		it.hash = (uint8_t*)(itemPtr + 2);
+		dataFound.push_back(it);
 	}
         if (!queueNextBatch) {
                 return true;
@@ -1037,16 +1027,17 @@ bool GPUEngine::LaunchSEARCH_MODE_MX(std::vector<ITEM>& dataFound, bool spinWait
                 uint32_t* itemPtr = outputBufferPinned + (i * ITEM_SIZE_X32 + 1);
                 uint8_t* pubkey = (uint8_t*)(itemPtr + 2);
 
-                if (CheckBinary(pubkey, 32) > 0) {
+		if (CheckBinary(pubkey, 32) > 0) {
 
-                        ITEM it;
-                        it.thId = itemPtr[0];
-                        const uint32_t raw = itemPtr[1];
-                        it.mode = (raw & 0x80000000u) != 0;
-                        it.incr = (raw & 0x7FFFFFFFu);
-                        it.hash = (uint8_t*)(itemPtr + 2);
-                        dataFound.push_back(it);
-                }
+			ITEM it;
+			it.thId = itemPtr[0];
+			int16_t* ptr = (int16_t*)&(itemPtr[1]);
+			//it.endo = ptr[0] & 0x7FFF;
+			it.mode = (ptr[0] & 0x8000) != 0;
+			it.incr = ptr[1];
+			it.hash = (uint8_t*)(itemPtr + 2);
+			dataFound.push_back(it);
+		}
 	}
         if (!queueNextBatch) {
                 return true;
@@ -1089,13 +1080,14 @@ bool GPUEngine::LaunchSEARCH_MODE_SX(std::vector<ITEM>& dataFound, bool spinWait
                 uint32_t* itemPtr = outputBufferPinned + (i * ITEM_SIZE_X32 + 1);
                 uint8_t* pubkey = (uint8_t*)(itemPtr + 2);
 
-                ITEM it;
-                it.thId = itemPtr[0];
-                const uint32_t raw = itemPtr[1];
-                it.mode = (raw & 0x80000000u) != 0;
-                it.incr = (raw & 0x7FFFFFFFu);
-                it.hash = (uint8_t*)(itemPtr + 2);
-                dataFound.push_back(it);
+		ITEM it;
+		it.thId = itemPtr[0];
+		int16_t* ptr = (int16_t*)&(itemPtr[1]);
+		//it.endo = ptr[0] & 0x7FFF;
+		it.mode = (ptr[0] & 0x8000) != 0;
+		it.incr = ptr[1];
+		it.hash = (uint8_t*)(itemPtr + 2);
+		dataFound.push_back(it);
 	}
         if (!queueNextBatch) {
                 return true;

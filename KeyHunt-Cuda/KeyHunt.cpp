@@ -738,7 +738,7 @@ void KeyHunt::output(std::string addr, std::string pAddr, std::string pAddrHex, 
 
 // ----------------------------------------------------------------------------
 
-bool KeyHunt::checkPrivKey(std::string addr, Int& key, uint32_t incr, bool mode)
+bool KeyHunt::checkPrivKey(std::string addr, Int& key, int32_t incr, bool mode)
 {
 	Int k(&key), k2(&key);
 	k.Add((uint64_t)incr);
@@ -770,7 +770,7 @@ bool KeyHunt::checkPrivKey(std::string addr, Int& key, uint32_t incr, bool mode)
 	return true;
 }
 
-bool KeyHunt::checkPrivKeyETH(std::string addr, Int& key, uint32_t incr)
+bool KeyHunt::checkPrivKeyETH(std::string addr, Int& key, int32_t incr)
 {
 	Int k(&key), k2(&key);
 	k.Add((uint64_t)incr);
@@ -802,7 +802,7 @@ bool KeyHunt::checkPrivKeyETH(std::string addr, Int& key, uint32_t incr)
 	return true;
 }
 
-bool KeyHunt::checkPrivKeyX(Int& key, uint32_t incr, bool mode)
+bool KeyHunt::checkPrivKeyX(Int& key, int32_t incr, bool mode)
 {
 	Int k(&key);
 	k.Add((uint64_t)incr);
