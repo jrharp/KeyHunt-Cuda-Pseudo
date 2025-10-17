@@ -112,8 +112,7 @@ __device__ __forceinline__ void CheckPointSEARCH_MODE_MA(uint32_t* __restrict__ 
 		if (pos < maxFound) {
 			const uint32_t base = pos * ITEM_SIZE_A32;
 			out[base + 1] = tid;
-                        const uint32_t modeBit = (mode != 0) ? 0x80000000u : 0u;
-                        out[base + 2] = modeBit | static_cast<uint32_t>(incr);
+			out[base + 2] = static_cast<uint32_t>(incr << 16) | static_cast<uint32_t>(mode << 15);
 			#pragma unroll
 			for (int i = 0; i < 5; ++i) {
 				out[base + 3 + i] = _h[i];
@@ -134,8 +133,7 @@ __device__ __forceinline__ void CheckPointSEARCH_MODE_MX(uint32_t* __restrict__ 
 		if (pos < maxFound) {
 			const uint32_t base = pos * ITEM_SIZE_X32;
 			out[base + 1] = tid;
-                        const uint32_t modeBit = (mode != 0) ? 0x80000000u : 0u;
-                        out[base + 2] = modeBit | static_cast<uint32_t>(incr);
+			out[base + 2] = static_cast<uint32_t>(incr << 16) | static_cast<uint32_t>(mode << 15);
 			#pragma unroll
 			for (int i = 0; i < 8; ++i) {
 				out[base + 3 + i] = _h[i];
@@ -180,8 +178,7 @@ __device__ __forceinline__ void CheckPointSEARCH_MODE_SA(uint32_t* __restrict__ 
 		if (pos < maxFound) {
 			const uint32_t base = pos * ITEM_SIZE_A32;
 			out[base + 1] = tid;
-                        const uint32_t modeBit = (mode != 0) ? 0x80000000u : 0u;
-                        out[base + 2] = modeBit | static_cast<uint32_t>(incr);
+			out[base + 2] = static_cast<uint32_t>(incr << 16) | static_cast<uint32_t>(mode << 15);
 			#pragma unroll
 			for (int i = 0; i < 5; ++i) {
 				out[base + 3 + i] = _h[i];
@@ -202,8 +199,7 @@ __device__ __forceinline__ void CheckPointSEARCH_MODE_SX(uint32_t* __restrict__ 
 		if (pos < maxFound) {
 			const uint32_t base = pos * ITEM_SIZE_X32;
 			out[base + 1] = tid;
-                        const uint32_t modeBit = (mode != 0) ? 0x80000000u : 0u;
-                        out[base + 2] = modeBit | static_cast<uint32_t>(incr);
+			out[base + 2] = static_cast<uint32_t>(incr << 16) | static_cast<uint32_t>(mode << 15);
 			#pragma unroll
 			for (int i = 0; i < 8; ++i) {
 				out[base + 3 + i] = _h[i];
@@ -348,11 +344,10 @@ __device__ __noinline__ void CheckPubSEARCH_MODE_SX(uint32_t mode, uint64_t* px,
 
 // -----------------------------------------------------------------------------------------
 
-#define CHECK_HASH_SEARCH_MODE_MA(incr) CheckHashSEARCH_MODE_MA(mode, px, py, iterationOffset + (incr), bloomLookUp, BLOOM_BITS, BLOOM_HASHES, maxFound, out)
+#define CHECK_HASH_SEARCH_MODE_MA(incr) CheckHashSEARCH_MODE_MA(mode, px, py, incr, bloomLookUp, BLOOM_BITS, BLOOM_HASHES, maxFound, out)
 
 __device__ void ComputeKeysSEARCH_MODE_MA(uint32_t mode, uint64_t* startx, uint64_t* starty,
-        uint8_t* bloomLookUp, int BLOOM_BITS, uint8_t BLOOM_HASHES, uint32_t maxFound, uint32_t* out,
-        int32_t iterationOffset)
+	uint8_t* bloomLookUp, int BLOOM_BITS, uint8_t BLOOM_HASHES, uint32_t maxFound, uint32_t* out)
 {
 
 	uint64_t dx[GRP_SIZE / 2 + 1][4];
@@ -491,10 +486,10 @@ __device__ __noinline__ void CheckHashSEARCH_MODE_SA(uint32_t mode, uint64_t* px
 
 // -----------------------------------------------------------------------------------------
 
-#define CHECK_HASH_SEARCH_MODE_SA(incr) CheckHashSEARCH_MODE_SA(mode, px, py, iterationOffset + (incr), hash160, maxFound, out)
+#define CHECK_HASH_SEARCH_MODE_SA(incr) CheckHashSEARCH_MODE_SA(mode, px, py, incr, hash160, maxFound, out)
 
 __device__ void ComputeKeysSEARCH_MODE_SA(uint32_t mode, uint64_t* startx, uint64_t* starty,
-        uint32_t* hash160, uint32_t maxFound, uint32_t* out, int32_t iterationOffset)
+	uint32_t* hash160, uint32_t maxFound, uint32_t* out)
 {
 
 	uint64_t dx[GRP_SIZE / 2 + 1][4];
@@ -615,11 +610,10 @@ __device__ void ComputeKeysSEARCH_MODE_SA(uint32_t mode, uint64_t* startx, uint6
 
 // -----------------------------------------------------------------------------------------
 
-#define CHECK_PUB_SEARCH_MODE_MX(incr) CheckPubSEARCH_MODE_MX(mode, px, py, iterationOffset + (incr), bloomLookUp, BLOOM_BITS, BLOOM_HASHES, maxFound, out)
+#define CHECK_PUB_SEARCH_MODE_MX(incr) CheckPubSEARCH_MODE_MX(mode, px, py, incr, bloomLookUp, BLOOM_BITS, BLOOM_HASHES, maxFound, out)
 
 __device__ void ComputeKeysSEARCH_MODE_MX(uint32_t mode, uint64_t* startx, uint64_t* starty,
-        uint8_t* bloomLookUp, int BLOOM_BITS, uint8_t BLOOM_HASHES, uint32_t maxFound, uint32_t* out,
-        int32_t iterationOffset)
+	uint8_t* bloomLookUp, int BLOOM_BITS, uint8_t BLOOM_HASHES, uint32_t maxFound, uint32_t* out)
 {
 
 	uint64_t dx[GRP_SIZE / 2 + 1][4];
@@ -738,10 +732,10 @@ __device__ void ComputeKeysSEARCH_MODE_MX(uint32_t mode, uint64_t* startx, uint6
 
 // -----------------------------------------------------------------------------------------
 
-#define CHECK_PUB_SEARCH_MODE_SX(incr) CheckPubSEARCH_MODE_SX(mode, px, py, iterationOffset + (incr), xpoint, maxFound, out)
+#define CHECK_PUB_SEARCH_MODE_SX(incr) CheckPubSEARCH_MODE_SX(mode, px, py, incr, xpoint, maxFound, out)
 
 __device__ void ComputeKeysSEARCH_MODE_SX(uint32_t mode, uint64_t* startx, uint64_t* starty,
-        uint32_t* xpoint, uint32_t maxFound, uint32_t* out, int32_t iterationOffset)
+	uint32_t* xpoint, uint32_t maxFound, uint32_t* out)
 {
 
 	uint64_t dx[GRP_SIZE / 2 + 1][4];
@@ -873,7 +867,7 @@ __device__ __noinline__ void CheckPointSEARCH_ETH_MODE_MA(uint32_t* _h, int32_t 
 		uint32_t pos = atomicAdd(out, 1);
 		if (pos < maxFound) {
 			out[pos * ITEM_SIZE_A32 + 1] = tid;
-                        out[pos * ITEM_SIZE_A32 + 2] = static_cast<uint32_t>(incr);
+			out[pos * ITEM_SIZE_A32 + 2] = (uint32_t)(incr << 16);// | (uint32_t)(mode << 15);// | (uint32_t)(endo);
 			out[pos * ITEM_SIZE_A32 + 3] = _h[0];
 			out[pos * ITEM_SIZE_A32 + 4] = _h[1];
 			out[pos * ITEM_SIZE_A32 + 5] = _h[2];
@@ -902,11 +896,10 @@ __device__ __noinline__ void CheckHashSEARCH_ETH_MODE_MA(uint64_t* px, uint64_t*
 
 }
 
-#define CHECK_HASH_SEARCH_ETH_MODE_MA(incr) CheckHashSEARCH_ETH_MODE_MA(px, py, iterationOffset + (incr), bloomLookUp, BLOOM_BITS, BLOOM_HASHES, maxFound, out)
+#define CHECK_HASH_SEARCH_ETH_MODE_MA(incr) CheckHashSEARCH_ETH_MODE_MA(px, py, incr, bloomLookUp, BLOOM_BITS, BLOOM_HASHES, maxFound, out)
 
 __device__ void ComputeKeysSEARCH_ETH_MODE_MA(uint64_t* startx, uint64_t* starty,
-        uint8_t* bloomLookUp, int BLOOM_BITS, uint8_t BLOOM_HASHES, uint32_t maxFound, uint32_t* out,
-        int32_t iterationOffset)
+	uint8_t* bloomLookUp, int BLOOM_BITS, uint8_t BLOOM_HASHES, uint32_t maxFound, uint32_t* out)
 {
 
 	uint64_t dx[GRP_SIZE / 2 + 1][4];
@@ -1035,7 +1028,7 @@ __device__ __noinline__ void CheckPointSEARCH_MODE_SA(uint32_t* _h, int32_t incr
 		uint32_t pos = atomicAdd(out, 1);
 		if (pos < maxFound) {
 			out[pos * ITEM_SIZE_A32 + 1] = tid;
-                   out[pos * ITEM_SIZE_A32 + 2] = static_cast<uint32_t>(incr);
+			out[pos * ITEM_SIZE_A32 + 2] = (uint32_t)(incr << 16); // | (uint32_t)(mode << 15);// | (uint32_t)(endo);
 			out[pos * ITEM_SIZE_A32 + 3] = _h[0];
 			out[pos * ITEM_SIZE_A32 + 4] = _h[1];
 			out[pos * ITEM_SIZE_A32 + 5] = _h[2];
@@ -1061,10 +1054,10 @@ __device__ __noinline__ void CheckHashSEARCH_ETH_MODE_SA(uint64_t* px, uint64_t*
 	CheckHashCompSEARCH_ETH_MODE_SA(px, py, incr, hash, maxFound, out);
 
 }
-#define CHECK_HASH_SEARCH_ETH_MODE_SA(incr) CheckHashSEARCH_ETH_MODE_SA(px, py, iterationOffset + (incr), hash, maxFound, out)
+#define CHECK_HASH_SEARCH_ETH_MODE_SA(incr) CheckHashSEARCH_ETH_MODE_SA(px, py, incr, hash, maxFound, out)
 
 __device__ void ComputeKeysSEARCH_ETH_MODE_SA(uint64_t* startx, uint64_t* starty,
-        uint32_t* hash, uint32_t maxFound, uint32_t* out, int32_t iterationOffset)
+	uint32_t* hash, uint32_t maxFound, uint32_t* out)
 {
 
 	uint64_t dx[GRP_SIZE / 2 + 1][4];
