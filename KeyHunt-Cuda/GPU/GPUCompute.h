@@ -32,6 +32,17 @@ __device__ uint64_t* Gy = nullptr;
 
 // ---------------------------------------------------------------------------------------
 
+__device__ __forceinline__ void LoadGeneratorPoint(uint64_t* __restrict__ out,
+        const uint64_t* __restrict__ src)
+{
+#pragma unroll
+        for (int limb = 0; limb < 4; ++limb) {
+                out[limb] = GPU_LDG(src + limb);
+        }
+}
+
+// ---------------------------------------------------------------------------------------
+
 __device__ __forceinline__ int Test_Bit_Set_Bit(const uint8_t* __restrict__ buf, uint32_t bit)
 {
         const uint32_t byte = bit >> 3;
@@ -392,26 +403,36 @@ __device__ void ComputeKeysSEARCH_MODE_MA(uint32_t mode, uint64_t* startx, uint6
         uint64_t dx[GRP_SIZE / 2 + 1][4];
         uint64_t px[4];
         uint64_t py[4];
-	uint64_t pyn[4];
-	uint64_t sx[4];
-	uint64_t sy[4];
-	uint64_t dy[4];
-	uint64_t _s[4];
-	uint64_t _p2[4];
+        uint64_t pyn[4];
+        uint64_t sx[4];
+        uint64_t sy[4];
+        uint64_t dy[4];
+        uint64_t _s[4];
+        uint64_t _p2[4];
+        uint64_t twoGx[4];
+        uint64_t twoGy[4];
 
-	// Load starting key
-	__syncthreads();
-	Load256A(sx, startx);
-	Load256A(sy, starty);
+        LoadGeneratorPoint(twoGx, _2Gnx);
+        LoadGeneratorPoint(twoGy, _2Gny);
+
+        // Load starting key
+        __syncthreads();
+        Load256A(sx, startx);
+        Load256A(sy, starty);
 	Load256(px, sx);
 	Load256(py, sy);
 
 	// Fill group with delta x
 	uint32_t i;
-	for (i = 0; i < HSIZE; i++)
-		ModSub256(dx[i], Gx + 4 * i, sx);
-	ModSub256(dx[i], Gx + 4 * i, sx);   // For the first point
-	ModSub256(dx[i + 1], _2Gnx, sx); // For the next center point
+        for (i = 0; i < HSIZE; i++) {
+                uint64_t gxVal[4];
+                LoadGeneratorPoint(gxVal, Gx + 4 * i);
+                ModSub256(dx[i], gxVal, sx);
+        }
+        uint64_t centerGx[4];
+        LoadGeneratorPoint(centerGx, Gx + 4 * i);
+        ModSub256(dx[i], centerGx, sx);   // For the first point
+        ModSub256(dx[i + 1], twoGx, sx); // For the next center point
 
 	// Compute modular inverse
 	_ModInvGrouped(dx);
@@ -422,79 +443,87 @@ __device__ void ComputeKeysSEARCH_MODE_MA(uint32_t mode, uint64_t* startx, uint6
         // Check starting point
         CHECK_HASH_SEARCH_MODE_MA(baseOffset + static_cast<uint32_t>(GRP_SIZE / 2));
 
-	ModNeg256(pyn, py);
+        ModNeg256(pyn, py);
 
-	for (i = 0; i < HSIZE; i++) {
+        for (i = 0; i < HSIZE; i++) {
 
-		// P = StartPoint + i*G
-		Load256(px, sx);
-		Load256(py, sy);
-		ModSub256(dy, Gy + 4 * i, py);
+                // P = StartPoint + i*G
+                Load256(px, sx);
+                Load256(py, sy);
+                uint64_t gxVal[4];
+                uint64_t gyVal[4];
+                LoadGeneratorPoint(gxVal, Gx + 4 * i);
+                LoadGeneratorPoint(gyVal, Gy + 4 * i);
+                ModSub256(dy, gyVal, py);
 
-		_ModMult(_s, dy, dx[i]);                 //  s = (p2.y-p1.y)*inverse(p2.x-p1.x)
-		_ModSqr(_p2, _s);                        // _p2 = pow2(s)
+                _ModMult(_s, dy, dx[i]);                 //  s = (p2.y-p1.y)*inverse(p2.x-p1.x)
+                _ModSqr(_p2, _s);                        // _p2 = pow2(s)
 
-		ModSub256(px, _p2, px);
-		ModSub256(px, Gx + 4 * i);               // px = pow2(s) - p1.x - p2.x;
+                ModSub256(px, _p2, px);
+                ModSub256(px, gxVal);               // px = pow2(s) - p1.x - p2.x;
 
-		ModSub256(py, Gx + 4 * i, px);
-		_ModMult(py, _s);                        // py = - s*(ret.x-p2.x)
-		ModSub256(py, Gy + 4 * i);               // py = - p2.y - s*(ret.x-p2.x);
+                ModSub256(py, gxVal, px);
+                _ModMult(py, _s);                        // py = - s*(ret.x-p2.x)
+                ModSub256(py, gyVal);               // py = - p2.y - s*(ret.x-p2.x);
 
                 CHECK_HASH_SEARCH_MODE_MA(baseOffset + static_cast<uint32_t>(GRP_SIZE / 2) + (i + 1u));
 
-		// P = StartPoint - i*G, if (x,y) = i*G then (x,-y) = -i*G
-		Load256(px, sx);
-		ModSub256(dy, pyn, Gy + 4 * i);
+                // P = StartPoint - i*G, if (x,y) = i*G then (x,-y) = -i*G
+                Load256(px, sx);
+                ModSub256(dy, pyn, gyVal);
 
-		_ModMult(_s, dy, dx[i]);                //  s = (p2.y-p1.y)*inverse(p2.x-p1.x)
-		_ModSqr(_p2, _s);                       // _p = pow2(s)
+                _ModMult(_s, dy, dx[i]);                //  s = (p2.y-p1.y)*inverse(p2.x-p1.x)
+                _ModSqr(_p2, _s);                       // _p = pow2(s)
 
-		ModSub256(px, _p2, px);
-		ModSub256(px, Gx + 4 * i);              // px = pow2(s) - p1.x - p2.x;
+                ModSub256(px, _p2, px);
+                ModSub256(px, gxVal);              // px = pow2(s) - p1.x - p2.x;
 
-		ModSub256(py, px, Gx + 4 * i);
-		_ModMult(py, _s);                       // py = s*(ret.x-p2.x)
-		ModSub256(py, Gy + 4 * i, py);          // py = - p2.y - s*(ret.x-p2.x);
+                ModSub256(py, px, gxVal);
+                _ModMult(py, _s);                       // py = s*(ret.x-p2.x)
+                ModSub256(py, gyVal, py);          // py = - p2.y - s*(ret.x-p2.x);
 
                 CHECK_HASH_SEARCH_MODE_MA(baseOffset + (static_cast<uint32_t>(GRP_SIZE / 2) - (i + 1u)));
 
-	}
+        }
 
-	// First point (startP - (GRP_SZIE/2)*G)
-	Load256(px, sx);
-	Load256(py, sy);
-	ModNeg256(dy, Gy + 4 * i);
-	ModSub256(dy, py);
+        // First point (startP - (GRP_SZIE/2)*G)
+        Load256(px, sx);
+        Load256(py, sy);
+        uint64_t boundaryGx[4];
+        uint64_t boundaryGy[4];
+        LoadGeneratorPoint(boundaryGx, Gx + 4 * i);
+        LoadGeneratorPoint(boundaryGy, Gy + 4 * i);
+        ModNeg256(dy, boundaryGy);
+        ModSub256(dy, py);
 
-	_ModMult(_s, dy, dx[i]);                  //  s = (p2.y-p1.y)*inverse(p2.x-p1.x)
-	_ModSqr(_p2, _s);                         // _p = pow2(s)
+        _ModMult(_s, dy, dx[i]);                  //  s = (p2.y-p1.y)*inverse(p2.x-p1.x)
+        _ModSqr(_p2, _s);                         // _p = pow2(s)
 
-	ModSub256(px, _p2, px);
-	ModSub256(px, Gx + 4 * i);                // px = pow2(s) - p1.x - p2.x;
+        ModSub256(px, _p2, px);
+        ModSub256(px, boundaryGx);                // px = pow2(s) - p1.x - p2.x;
 
-	ModSub256(py, px, Gx + 4 * i);
-	_ModMult(py, _s);                         // py = s*(ret.x-p2.x)
-	ModSub256(py, Gy + 4 * i, py);            // py = - p2.y - s*(ret.x-p2.x);
+        ModSub256(py, px, boundaryGx);
+        _ModMult(py, _s);                         // py = s*(ret.x-p2.x)
+        ModSub256(py, boundaryGy, py);            // py = - p2.y - s*(ret.x-p2.x);
 
         CHECK_HASH_SEARCH_MODE_MA(baseOffset);
 
-	i++;
+        i++;
 
-	// Next start point (startP + GRP_SIZE*G)
-	Load256(px, sx);
-	Load256(py, sy);
-	ModSub256(dy, _2Gny, py);
+        // Next start point (startP + GRP_SIZE*G)
+        Load256(px, sx);
+        Load256(py, sy);
+        ModSub256(dy, twoGy, py);
 
-	_ModMult(_s, dy, dx[i]);              //  s = (p2.y-p1.y)*inverse(p2.x-p1.x)
-	_ModSqr(_p2, _s);                     // _p2 = pow2(s)
+        _ModMult(_s, dy, dx[i]);              //  s = (p2.y-p1.y)*inverse(p2.x-p1.x)
+        _ModSqr(_p2, _s);                     // _p2 = pow2(s)
 
-	ModSub256(px, _p2, px);
-	ModSub256(px, _2Gnx);                 // px = pow2(s) - p1.x - p2.x;
+        ModSub256(px, _p2, px);
+        ModSub256(px, twoGx);                 // px = pow2(s) - p1.x - p2.x;
 
-	ModSub256(py, _2Gnx, px);
-	_ModMult(py, _s);                     // py = - s*(ret.x-p2.x)
-	ModSub256(py, _2Gny);                 // py = - p2.y - s*(ret.x-p2.x);
+        ModSub256(py, twoGx, px);
+        _ModMult(py, _s);                     // py = - s*(ret.x-p2.x)
+        ModSub256(py, twoGy);                 // py = - p2.y - s*(ret.x-p2.x);
 
 
 	// Update starting point
@@ -534,14 +563,19 @@ __device__ void ComputeKeysSEARCH_MODE_SA(uint32_t mode, uint64_t* startx, uint6
 	uint64_t dx[GRP_SIZE / 2 + 1][4];
 	uint64_t px[4];
 	uint64_t py[4];
-	uint64_t pyn[4];
-	uint64_t sx[4];
-	uint64_t sy[4];
-	uint64_t dy[4];
-	uint64_t _s[4];
-	uint64_t _p2[4];
+        uint64_t pyn[4];
+        uint64_t sx[4];
+        uint64_t sy[4];
+        uint64_t dy[4];
+        uint64_t _s[4];
+        uint64_t _p2[4];
+        uint64_t twoGx[4];
+        uint64_t twoGy[4];
 
-	// Load starting key
+        LoadGeneratorPoint(twoGx, _2Gnx);
+        LoadGeneratorPoint(twoGy, _2Gny);
+
+        // Load starting key
 	__syncthreads();
 	Load256A(sx, startx);
 	Load256A(sy, starty);
@@ -550,10 +584,15 @@ __device__ void ComputeKeysSEARCH_MODE_SA(uint32_t mode, uint64_t* startx, uint6
 
 	// Fill group with delta x
 	uint32_t i;
-	for (i = 0; i < HSIZE; i++)
-		ModSub256(dx[i], Gx + 4 * i, sx);
-	ModSub256(dx[i], Gx + 4 * i, sx);   // For the first point
-	ModSub256(dx[i + 1], _2Gnx, sx); // For the next center point
+        for (i = 0; i < HSIZE; i++) {
+                uint64_t gxVal[4];
+                LoadGeneratorPoint(gxVal, Gx + 4 * i);
+                ModSub256(dx[i], gxVal, sx);
+        }
+        uint64_t centerGx[4];
+        LoadGeneratorPoint(centerGx, Gx + 4 * i);
+        ModSub256(dx[i], centerGx, sx);   // For the first point
+        ModSub256(dx[i + 1], twoGx, sx); // For the next center point
 
 	// Compute modular inverse
 	_ModInvGrouped(dx);
@@ -564,79 +603,87 @@ __device__ void ComputeKeysSEARCH_MODE_SA(uint32_t mode, uint64_t* startx, uint6
         // Check starting point
         CHECK_HASH_SEARCH_MODE_SA(baseOffset + static_cast<uint32_t>(GRP_SIZE / 2));
 
-	ModNeg256(pyn, py);
+        ModNeg256(pyn, py);
 
-	for (i = 0; i < HSIZE; i++) {
+        for (i = 0; i < HSIZE; i++) {
 
-		// P = StartPoint + i*G
-		Load256(px, sx);
-		Load256(py, sy);
-		ModSub256(dy, Gy + 4 * i, py);
+                // P = StartPoint + i*G
+                Load256(px, sx);
+                Load256(py, sy);
+                uint64_t gxVal[4];
+                uint64_t gyVal[4];
+                LoadGeneratorPoint(gxVal, Gx + 4 * i);
+                LoadGeneratorPoint(gyVal, Gy + 4 * i);
+                ModSub256(dy, gyVal, py);
 
-		_ModMult(_s, dy, dx[i]);             //  s = (p2.y-p1.y)*inverse(p2.x-p1.x)
-		_ModSqr(_p2, _s);                    // _p2 = pow2(s)
+                _ModMult(_s, dy, dx[i]);             //  s = (p2.y-p1.y)*inverse(p2.x-p1.x)
+                _ModSqr(_p2, _s);                    // _p2 = pow2(s)
 
-		ModSub256(px, _p2, px);
-		ModSub256(px, Gx + 4 * i);           // px = pow2(s) - p1.x - p2.x;
+                ModSub256(px, _p2, px);
+                ModSub256(px, gxVal);           // px = pow2(s) - p1.x - p2.x;
 
-		ModSub256(py, Gx + 4 * i, px);
-		_ModMult(py, _s);                    // py = - s*(ret.x-p2.x)
-		ModSub256(py, Gy + 4 * i);           // py = - p2.y - s*(ret.x-p2.x);
+                ModSub256(py, gxVal, px);
+                _ModMult(py, _s);                    // py = - s*(ret.x-p2.x)
+                ModSub256(py, gyVal);           // py = - p2.y - s*(ret.x-p2.x);
 
                 CHECK_HASH_SEARCH_MODE_SA(baseOffset + static_cast<uint32_t>(GRP_SIZE / 2) + (i + 1u));
 
-		// P = StartPoint - i*G, if (x,y) = i*G then (x,-y) = -i*G
-		Load256(px, sx);
-		ModSub256(dy, pyn, Gy + 4 * i);
+                // P = StartPoint - i*G, if (x,y) = i*G then (x,-y) = -i*G
+                Load256(px, sx);
+                ModSub256(dy, pyn, gyVal);
 
-		_ModMult(_s, dy, dx[i]);            //  s = (p2.y-p1.y)*inverse(p2.x-p1.x)
-		_ModSqr(_p2, _s);                   // _p = pow2(s)
+                _ModMult(_s, dy, dx[i]);            //  s = (p2.y-p1.y)*inverse(p2.x-p1.x)
+                _ModSqr(_p2, _s);                   // _p = pow2(s)
 
-		ModSub256(px, _p2, px);
-		ModSub256(px, Gx + 4 * i);          // px = pow2(s) - p1.x - p2.x;
+                ModSub256(px, _p2, px);
+                ModSub256(px, gxVal);          // px = pow2(s) - p1.x - p2.x;
 
-		ModSub256(py, px, Gx + 4 * i);
-		_ModMult(py, _s);                   // py = s*(ret.x-p2.x)
-		ModSub256(py, Gy + 4 * i, py);      // py = - p2.y - s*(ret.x-p2.x);
+                ModSub256(py, px, gxVal);
+                _ModMult(py, _s);                   // py = s*(ret.x-p2.x)
+                ModSub256(py, gyVal, py);      // py = - p2.y - s*(ret.x-p2.x);
 
                 CHECK_HASH_SEARCH_MODE_SA(baseOffset + (static_cast<uint32_t>(GRP_SIZE / 2) - (i + 1u)));
 
-	}
+        }
 
-	// First point (startP - (GRP_SZIE/2)*G)
-	Load256(px, sx);
-	Load256(py, sy);
-	ModNeg256(dy, Gy + 4 * i);
-	ModSub256(dy, py);
+        // First point (startP - (GRP_SZIE/2)*G)
+        Load256(px, sx);
+        Load256(py, sy);
+        uint64_t boundaryGx[4];
+        uint64_t boundaryGy[4];
+        LoadGeneratorPoint(boundaryGx, Gx + 4 * i);
+        LoadGeneratorPoint(boundaryGy, Gy + 4 * i);
+        ModNeg256(dy, boundaryGy);
+        ModSub256(dy, py);
 
-	_ModMult(_s, dy, dx[i]);              //  s = (p2.y-p1.y)*inverse(p2.x-p1.x)
-	_ModSqr(_p2, _s);                     // _p = pow2(s)
+        _ModMult(_s, dy, dx[i]);              //  s = (p2.y-p1.y)*inverse(p2.x-p1.x)
+        _ModSqr(_p2, _s);                     // _p = pow2(s)
 
-	ModSub256(px, _p2, px);
-	ModSub256(px, Gx + 4 * i);            // px = pow2(s) - p1.x - p2.x;
+        ModSub256(px, _p2, px);
+        ModSub256(px, boundaryGx);            // px = pow2(s) - p1.x - p2.x;
 
-	ModSub256(py, px, Gx + 4 * i);
-	_ModMult(py, _s);                     // py = s*(ret.x-p2.x)
-	ModSub256(py, Gy + 4 * i, py);        // py = - p2.y - s*(ret.x-p2.x);
+        ModSub256(py, px, boundaryGx);
+        _ModMult(py, _s);                     // py = s*(ret.x-p2.x)
+        ModSub256(py, boundaryGy, py);        // py = - p2.y - s*(ret.x-p2.x);
 
         CHECK_HASH_SEARCH_MODE_SA(baseOffset);
 
-	i++;
+        i++;
 
-	// Next start point (startP + GRP_SIZE*G)
-	Load256(px, sx);
-	Load256(py, sy);
-	ModSub256(dy, _2Gny, py);
+        // Next start point (startP + GRP_SIZE*G)
+        Load256(px, sx);
+        Load256(py, sy);
+        ModSub256(dy, twoGy, py);
 
-	_ModMult(_s, dy, dx[i]);             //  s = (p2.y-p1.y)*inverse(p2.x-p1.x)
-	_ModSqr(_p2, _s);                    // _p2 = pow2(s)
+        _ModMult(_s, dy, dx[i]);             //  s = (p2.y-p1.y)*inverse(p2.x-p1.x)
+        _ModSqr(_p2, _s);                    // _p2 = pow2(s)
 
-	ModSub256(px, _p2, px);
-	ModSub256(px, _2Gnx);                // px = pow2(s) - p1.x - p2.x;
+        ModSub256(px, _p2, px);
+        ModSub256(px, twoGx);                // px = pow2(s) - p1.x - p2.x;
 
-	ModSub256(py, _2Gnx, px);
-	_ModMult(py, _s);                    // py = - s*(ret.x-p2.x)
-	ModSub256(py, _2Gny);                // py = - p2.y - s*(ret.x-p2.x);
+        ModSub256(py, twoGx, px);
+        _ModMult(py, _s);                    // py = - s*(ret.x-p2.x)
+        ModSub256(py, twoGy);                // py = - p2.y - s*(ret.x-p2.x);
 
 	// Update starting point
 	__syncthreads();
@@ -659,14 +706,19 @@ __device__ void ComputeKeysSEARCH_MODE_MX(uint32_t mode, uint64_t* startx, uint6
 	uint64_t dx[GRP_SIZE / 2 + 1][4];
 	uint64_t px[4];
 	uint64_t py[4];
-	uint64_t pyn[4];
-	uint64_t sx[4];
-	uint64_t sy[4];
-	uint64_t dy[4];
-	uint64_t _s[4];
-	uint64_t _p2[4];
+        uint64_t pyn[4];
+        uint64_t sx[4];
+        uint64_t sy[4];
+        uint64_t dy[4];
+        uint64_t _s[4];
+        uint64_t _p2[4];
+        uint64_t twoGx[4];
+        uint64_t twoGy[4];
 
-	// Load starting key
+        LoadGeneratorPoint(twoGx, _2Gnx);
+        LoadGeneratorPoint(twoGy, _2Gny);
+
+        // Load starting key
 	__syncthreads();
 	Load256A(sx, startx);
 	Load256A(sy, starty);
@@ -675,10 +727,15 @@ __device__ void ComputeKeysSEARCH_MODE_MX(uint32_t mode, uint64_t* startx, uint6
 
 	// Fill group with delta x
 	uint32_t i;
-	for (i = 0; i < HSIZE; i++)
-		ModSub256(dx[i], Gx + 4 * i, sx);
-	ModSub256(dx[i], Gx + 4 * i, sx);   // For the first point
-	ModSub256(dx[i + 1], _2Gnx, sx); // For the next center point
+        for (i = 0; i < HSIZE; i++) {
+                uint64_t gxVal[4];
+                LoadGeneratorPoint(gxVal, Gx + 4 * i);
+                ModSub256(dx[i], gxVal, sx);
+        }
+        uint64_t centerGx[4];
+        LoadGeneratorPoint(centerGx, Gx + 4 * i);
+        ModSub256(dx[i], centerGx, sx);   // For the first point
+        ModSub256(dx[i + 1], twoGx, sx); // For the next center point
 
 	// Compute modular inverse
 	_ModInvGrouped(dx);
@@ -689,79 +746,87 @@ __device__ void ComputeKeysSEARCH_MODE_MX(uint32_t mode, uint64_t* startx, uint6
         // Check starting point
         CHECK_PUB_SEARCH_MODE_MX(baseOffset + static_cast<uint32_t>(GRP_SIZE / 2));
 
-	ModNeg256(pyn, py);
+        ModNeg256(pyn, py);
 
-	for (i = 0; i < HSIZE; i++) {
+        for (i = 0; i < HSIZE; i++) {
 
-		// P = StartPoint + i*G
-		Load256(px, sx);
-		Load256(py, sy);
-		ModSub256(dy, Gy + 4 * i, py);
+                // P = StartPoint + i*G
+                Load256(px, sx);
+                Load256(py, sy);
+                uint64_t gxVal[4];
+                uint64_t gyVal[4];
+                LoadGeneratorPoint(gxVal, Gx + 4 * i);
+                LoadGeneratorPoint(gyVal, Gy + 4 * i);
+                ModSub256(dy, gyVal, py);
 
-		_ModMult(_s, dy, dx[i]);                 //  s = (p2.y-p1.y)*inverse(p2.x-p1.x)
-		_ModSqr(_p2, _s);                        // _p2 = pow2(s)
+                _ModMult(_s, dy, dx[i]);                 //  s = (p2.y-p1.y)*inverse(p2.x-p1.x)
+                _ModSqr(_p2, _s);                        // _p2 = pow2(s)
 
-		ModSub256(px, _p2, px);
-		ModSub256(px, Gx + 4 * i);               // px = pow2(s) - p1.x - p2.x;
+                ModSub256(px, _p2, px);
+                ModSub256(px, gxVal);               // px = pow2(s) - p1.x - p2.x;
 
-		ModSub256(py, Gx + 4 * i, px);
-		_ModMult(py, _s);                        // py = - s*(ret.x-p2.x)
-		ModSub256(py, Gy + 4 * i);               // py = - p2.y - s*(ret.x-p2.x);
+                ModSub256(py, gxVal, px);
+                _ModMult(py, _s);                        // py = - s*(ret.x-p2.x)
+                ModSub256(py, gyVal);               // py = - p2.y - s*(ret.x-p2.x);
 
                 CHECK_PUB_SEARCH_MODE_MX(baseOffset + static_cast<uint32_t>(GRP_SIZE / 2) + (i + 1u));
 
-		// P = StartPoint - i*G, if (x,y) = i*G then (x,-y) = -i*G
-		Load256(px, sx);
-		ModSub256(dy, pyn, Gy + 4 * i);
+                // P = StartPoint - i*G, if (x,y) = i*G then (x,-y) = -i*G
+                Load256(px, sx);
+                ModSub256(dy, pyn, gyVal);
 
-		_ModMult(_s, dy, dx[i]);                //  s = (p2.y-p1.y)*inverse(p2.x-p1.x)
-		_ModSqr(_p2, _s);                       // _p = pow2(s)
+                _ModMult(_s, dy, dx[i]);                //  s = (p2.y-p1.y)*inverse(p2.x-p1.x)
+                _ModSqr(_p2, _s);                       // _p = pow2(s)
 
-		ModSub256(px, _p2, px);
-		ModSub256(px, Gx + 4 * i);              // px = pow2(s) - p1.x - p2.x;
+                ModSub256(px, _p2, px);
+                ModSub256(px, gxVal);              // px = pow2(s) - p1.x - p2.x;
 
-		ModSub256(py, px, Gx + 4 * i);
-		_ModMult(py, _s);                       // py = s*(ret.x-p2.x)
-		ModSub256(py, Gy + 4 * i, py);          // py = - p2.y - s*(ret.x-p2.x);
+                ModSub256(py, px, gxVal);
+                _ModMult(py, _s);                       // py = s*(ret.x-p2.x)
+                ModSub256(py, gyVal, py);          // py = - p2.y - s*(ret.x-p2.x);
 
                 CHECK_PUB_SEARCH_MODE_MX(baseOffset + (static_cast<uint32_t>(GRP_SIZE / 2) - (i + 1u)));
 
-	}
+        }
 
-	// First point (startP - (GRP_SZIE/2)*G)
-	Load256(px, sx);
-	Load256(py, sy);
-	ModNeg256(dy, Gy + 4 * i);
-	ModSub256(dy, py);
+        // First point (startP - (GRP_SZIE/2)*G)
+        Load256(px, sx);
+        Load256(py, sy);
+        uint64_t boundaryGx[4];
+        uint64_t boundaryGy[4];
+        LoadGeneratorPoint(boundaryGx, Gx + 4 * i);
+        LoadGeneratorPoint(boundaryGy, Gy + 4 * i);
+        ModNeg256(dy, boundaryGy);
+        ModSub256(dy, py);
 
-	_ModMult(_s, dy, dx[i]);            //  s = (p2.y-p1.y)*inverse(p2.x-p1.x)
-	_ModSqr(_p2, _s);                   // _p = pow2(s)
+        _ModMult(_s, dy, dx[i]);            //  s = (p2.y-p1.y)*inverse(p2.x-p1.x)
+        _ModSqr(_p2, _s);                   // _p = pow2(s)
 
-	ModSub256(px, _p2, px);
-	ModSub256(px, Gx + 4 * i);         // px = pow2(s) - p1.x - p2.x;
+        ModSub256(px, _p2, px);
+        ModSub256(px, boundaryGx);         // px = pow2(s) - p1.x - p2.x;
 
-	ModSub256(py, px, Gx + 4 * i);
-	_ModMult(py, _s);                  // py = s*(ret.x-p2.x)
-	ModSub256(py, Gy + 4 * i, py);     // py = - p2.y - s*(ret.x-p2.x);
+        ModSub256(py, px, boundaryGx);
+        _ModMult(py, _s);                  // py = s*(ret.x-p2.x)
+        ModSub256(py, boundaryGy, py);     // py = - p2.y - s*(ret.x-p2.x);
 
         CHECK_PUB_SEARCH_MODE_MX(baseOffset);
 
-	i++;
+        i++;
 
-	// Next start point (startP + GRP_SIZE*G)
-	Load256(px, sx);
-	Load256(py, sy);
-	ModSub256(dy, _2Gny, py);
+        // Next start point (startP + GRP_SIZE*G)
+        Load256(px, sx);
+        Load256(py, sy);
+        ModSub256(dy, twoGy, py);
 
-	_ModMult(_s, dy, dx[i]);          //  s = (p2.y-p1.y)*inverse(p2.x-p1.x)
-	_ModSqr(_p2, _s);                 // _p2 = pow2(s)
+        _ModMult(_s, dy, dx[i]);          //  s = (p2.y-p1.y)*inverse(p2.x-p1.x)
+        _ModSqr(_p2, _s);                 // _p2 = pow2(s)
 
-	ModSub256(px, _p2, px);
-	ModSub256(px, _2Gnx);             // px = pow2(s) - p1.x - p2.x;
+        ModSub256(px, _p2, px);
+        ModSub256(px, twoGx);             // px = pow2(s) - p1.x - p2.x;
 
-	ModSub256(py, _2Gnx, px);
-	_ModMult(py, _s);                 // py = - s*(ret.x-p2.x)
-	ModSub256(py, _2Gny);             // py = - p2.y - s*(ret.x-p2.x);
+        ModSub256(py, twoGx, px);
+        _ModMult(py, _s);                 // py = - s*(ret.x-p2.x)
+        ModSub256(py, twoGy);             // py = - p2.y - s*(ret.x-p2.x);
 
 	// Update starting point
 	__syncthreads();
@@ -781,14 +846,19 @@ __device__ void ComputeKeysSEARCH_MODE_SX(uint32_t mode, uint64_t* startx, uint6
 	uint64_t dx[GRP_SIZE / 2 + 1][4];
 	uint64_t px[4];
 	uint64_t py[4];
-	uint64_t pyn[4];
-	uint64_t sx[4];
-	uint64_t sy[4];
-	uint64_t dy[4];
-	uint64_t _s[4];
-	uint64_t _p2[4];
+        uint64_t pyn[4];
+        uint64_t sx[4];
+        uint64_t sy[4];
+        uint64_t dy[4];
+        uint64_t _s[4];
+        uint64_t _p2[4];
+        uint64_t twoGx[4];
+        uint64_t twoGy[4];
 
-	// Load starting key
+        LoadGeneratorPoint(twoGx, _2Gnx);
+        LoadGeneratorPoint(twoGy, _2Gny);
+
+        // Load starting key
 	__syncthreads();
 	Load256A(sx, startx);
 	Load256A(sy, starty);
@@ -797,10 +867,15 @@ __device__ void ComputeKeysSEARCH_MODE_SX(uint32_t mode, uint64_t* startx, uint6
 
 	// Fill group with delta x
 	uint32_t i;
-	for (i = 0; i < HSIZE; i++)
-		ModSub256(dx[i], Gx + 4 * i, sx);
-	ModSub256(dx[i], Gx + 4 * i, sx);      // For the first point
-	ModSub256(dx[i + 1], _2Gnx, sx);       // For the next center point
+        for (i = 0; i < HSIZE; i++) {
+                uint64_t gxVal[4];
+                LoadGeneratorPoint(gxVal, Gx + 4 * i);
+                ModSub256(dx[i], gxVal, sx);
+        }
+        uint64_t centerGx[4];
+        LoadGeneratorPoint(centerGx, Gx + 4 * i);
+        ModSub256(dx[i], centerGx, sx);      // For the first point
+        ModSub256(dx[i + 1], twoGx, sx);       // For the next center point
 
 	// Compute modular inverse
 	_ModInvGrouped(dx);
@@ -813,77 +888,85 @@ __device__ void ComputeKeysSEARCH_MODE_SX(uint32_t mode, uint64_t* startx, uint6
 
 	ModNeg256(pyn, py);
 
-	for (i = 0; i < HSIZE; i++) {
+        for (i = 0; i < HSIZE; i++) {
 
-		// P = StartPoint + i*G
-		Load256(px, sx);
-		Load256(py, sy);
-		ModSub256(dy, Gy + 4 * i, py);
+                // P = StartPoint + i*G
+                Load256(px, sx);
+                Load256(py, sy);
+                uint64_t gxVal[4];
+                uint64_t gyVal[4];
+                LoadGeneratorPoint(gxVal, Gx + 4 * i);
+                LoadGeneratorPoint(gyVal, Gy + 4 * i);
+                ModSub256(dy, gyVal, py);
 
-		_ModMult(_s, dy, dx[i]);           //  s = (p2.y-p1.y)*inverse(p2.x-p1.x)
-		_ModSqr(_p2, _s);                  // _p2 = pow2(s)
+                _ModMult(_s, dy, dx[i]);           //  s = (p2.y-p1.y)*inverse(p2.x-p1.x)
+                _ModSqr(_p2, _s);                  // _p2 = pow2(s)
 
-		ModSub256(px, _p2, px);
-		ModSub256(px, Gx + 4 * i);         // px = pow2(s) - p1.x - p2.x;
+                ModSub256(px, _p2, px);
+                ModSub256(px, gxVal);         // px = pow2(s) - p1.x - p2.x;
 
-		ModSub256(py, Gx + 4 * i, px);
-		_ModMult(py, _s);                  // py = - s*(ret.x-p2.x)
-		ModSub256(py, Gy + 4 * i);         // py = - p2.y - s*(ret.x-p2.x);
+                ModSub256(py, gxVal, px);
+                _ModMult(py, _s);                  // py = - s*(ret.x-p2.x)
+                ModSub256(py, gyVal);         // py = - p2.y - s*(ret.x-p2.x);
 
                 CHECK_PUB_SEARCH_MODE_SX(baseOffset + static_cast<uint32_t>(GRP_SIZE / 2) + (i + 1u));
 
-		// P = StartPoint - i*G, if (x,y) = i*G then (x,-y) = -i*G
-		Load256(px, sx);
-		ModSub256(dy, pyn, Gy + 4 * i);
+                // P = StartPoint - i*G, if (x,y) = i*G then (x,-y) = -i*G
+                Load256(px, sx);
+                ModSub256(dy, pyn, gyVal);
 
-		_ModMult(_s, dy, dx[i]);            //  s = (p2.y-p1.y)*inverse(p2.x-p1.x)
-		_ModSqr(_p2, _s);                   // _p = pow2(s)
+                _ModMult(_s, dy, dx[i]);            //  s = (p2.y-p1.y)*inverse(p2.x-p1.x)
+                _ModSqr(_p2, _s);                   // _p = pow2(s)
 
-		ModSub256(px, _p2, px);
-		ModSub256(px, Gx + 4 * i);         // px = pow2(s) - p1.x - p2.x;
+                ModSub256(px, _p2, px);
+                ModSub256(px, gxVal);         // px = pow2(s) - p1.x - p2.x;
 
-		ModSub256(py, px, Gx + 4 * i);
-		_ModMult(py, _s);                  // py = s*(ret.x-p2.x)
-		ModSub256(py, Gy + 4 * i, py);     // py = - p2.y - s*(ret.x-p2.x);
+                ModSub256(py, px, gxVal);
+                _ModMult(py, _s);                  // py = s*(ret.x-p2.x)
+                ModSub256(py, gyVal, py);     // py = - p2.y - s*(ret.x-p2.x);
 
                 CHECK_PUB_SEARCH_MODE_SX(baseOffset + (static_cast<uint32_t>(GRP_SIZE / 2) - (i + 1u)));
 
-	}
+        }
 
-	// First point (startP - (GRP_SZIE/2)*G)
-	Load256(px, sx);
-	Load256(py, sy);
-	ModNeg256(dy, Gy + 4 * i);
-	ModSub256(dy, py);
+        // First point (startP - (GRP_SZIE/2)*G)
+        Load256(px, sx);
+        Load256(py, sy);
+        uint64_t boundaryGx[4];
+        uint64_t boundaryGy[4];
+        LoadGeneratorPoint(boundaryGx, Gx + 4 * i);
+        LoadGeneratorPoint(boundaryGy, Gy + 4 * i);
+        ModNeg256(dy, boundaryGy);
+        ModSub256(dy, py);
 
-	_ModMult(_s, dy, dx[i]);           //  s = (p2.y-p1.y)*inverse(p2.x-p1.x)
-	_ModSqr(_p2, _s);                  // _p = pow2(s)
+        _ModMult(_s, dy, dx[i]);           //  s = (p2.y-p1.y)*inverse(p2.x-p1.x)
+        _ModSqr(_p2, _s);                  // _p = pow2(s)
 
-	ModSub256(px, _p2, px);
-	ModSub256(px, Gx + 4 * i);         // px = pow2(s) - p1.x - p2.x;
+        ModSub256(px, _p2, px);
+        ModSub256(px, boundaryGx);         // px = pow2(s) - p1.x - p2.x;
 
-	ModSub256(py, px, Gx + 4 * i);
-	_ModMult(py, _s);                  // py = s*(ret.x-p2.x)
-	ModSub256(py, Gy + 4 * i, py);     // py = - p2.y - s*(ret.x-p2.x);
+        ModSub256(py, px, boundaryGx);
+        _ModMult(py, _s);                  // py = s*(ret.x-p2.x)
+        ModSub256(py, boundaryGy, py);     // py = - p2.y - s*(ret.x-p2.x);
 
         CHECK_PUB_SEARCH_MODE_SX(baseOffset);
 
 	i++;
 
-	// Next start point (startP + GRP_SIZE*G)
-	Load256(px, sx);
-	Load256(py, sy);
-	ModSub256(dy, _2Gny, py);
+        // Next start point (startP + GRP_SIZE*G)
+        Load256(px, sx);
+        Load256(py, sy);
+        ModSub256(dy, twoGy, py);
 
-	_ModMult(_s, dy, dx[i]);           //  s = (p2.y-p1.y)*inverse(p2.x-p1.x)
-	_ModSqr(_p2, _s);                  // _p2 = pow2(s)
+        _ModMult(_s, dy, dx[i]);           //  s = (p2.y-p1.y)*inverse(p2.x-p1.x)
+        _ModSqr(_p2, _s);                  // _p2 = pow2(s)
 
-	ModSub256(px, _p2, px);
-	ModSub256(px, _2Gnx);              // px = pow2(s) - p1.x - p2.x;
+        ModSub256(px, _p2, px);
+        ModSub256(px, twoGx);              // px = pow2(s) - p1.x - p2.x;
 
-	ModSub256(py, _2Gnx, px);
-	_ModMult(py, _s);                  // py = - s*(ret.x-p2.x)
-	ModSub256(py, _2Gny);              // py = - p2.y - s*(ret.x-p2.x);
+        ModSub256(py, twoGx, px);
+        _ModMult(py, _s);                  // py = - s*(ret.x-p2.x)
+        ModSub256(py, twoGy);              // py = - p2.y - s*(ret.x-p2.x);
 
 	// Update starting point
 	__syncthreads();
@@ -950,14 +1033,19 @@ __device__ void ComputeKeysSEARCH_ETH_MODE_MA(uint64_t* startx, uint64_t* starty
 	uint64_t dx[GRP_SIZE / 2 + 1][4];
 	uint64_t px[4];
 	uint64_t py[4];
-	uint64_t pyn[4];
-	uint64_t sx[4];
-	uint64_t sy[4];
-	uint64_t dy[4];
-	uint64_t _s[4];
-	uint64_t _p2[4];
+        uint64_t pyn[4];
+        uint64_t sx[4];
+        uint64_t sy[4];
+        uint64_t dy[4];
+        uint64_t _s[4];
+        uint64_t _p2[4];
+        uint64_t twoGx[4];
+        uint64_t twoGy[4];
 
-	// Load starting key
+        LoadGeneratorPoint(twoGx, _2Gnx);
+        LoadGeneratorPoint(twoGy, _2Gny);
+
+        // Load starting key
 	__syncthreads();
 	Load256A(sx, startx);
 	Load256A(sy, starty);
@@ -966,10 +1054,15 @@ __device__ void ComputeKeysSEARCH_ETH_MODE_MA(uint64_t* startx, uint64_t* starty
 
 	// Fill group with delta x
 	uint32_t i;
-	for (i = 0; i < HSIZE; i++)
-		ModSub256(dx[i], Gx + 4 * i, sx);
-	ModSub256(dx[i], Gx + 4 * i, sx);   // For the first point
-	ModSub256(dx[i + 1], _2Gnx, sx); // For the next center point
+        for (i = 0; i < HSIZE; i++) {
+                uint64_t gxVal[4];
+                LoadGeneratorPoint(gxVal, Gx + 4 * i);
+                ModSub256(dx[i], gxVal, sx);
+        }
+        uint64_t centerGx[4];
+        LoadGeneratorPoint(centerGx, Gx + 4 * i);
+        ModSub256(dx[i], centerGx, sx);   // For the first point
+        ModSub256(dx[i + 1], twoGx, sx); // For the next center point
 
 	// Compute modular inverse
 	_ModInvGrouped(dx);
@@ -982,77 +1075,85 @@ __device__ void ComputeKeysSEARCH_ETH_MODE_MA(uint64_t* startx, uint64_t* starty
 
 	ModNeg256(pyn, py);
 
-	for (i = 0; i < HSIZE; i++) {
+        for (i = 0; i < HSIZE; i++) {
 
-		// P = StartPoint + i*G
-		Load256(px, sx);
-		Load256(py, sy);
-		ModSub256(dy, Gy + 4 * i, py);
+                // P = StartPoint + i*G
+                Load256(px, sx);
+                Load256(py, sy);
+                uint64_t gxVal[4];
+                uint64_t gyVal[4];
+                LoadGeneratorPoint(gxVal, Gx + 4 * i);
+                LoadGeneratorPoint(gyVal, Gy + 4 * i);
+                ModSub256(dy, gyVal, py);
 
-		_ModMult(_s, dy, dx[i]);                 //  s = (p2.y-p1.y)*inverse(p2.x-p1.x)
-		_ModSqr(_p2, _s);                        // _p2 = pow2(s)
+                _ModMult(_s, dy, dx[i]);                 //  s = (p2.y-p1.y)*inverse(p2.x-p1.x)
+                _ModSqr(_p2, _s);                        // _p2 = pow2(s)
 
-		ModSub256(px, _p2, px);
-		ModSub256(px, Gx + 4 * i);               // px = pow2(s) - p1.x - p2.x;
+                ModSub256(px, _p2, px);
+                ModSub256(px, gxVal);               // px = pow2(s) - p1.x - p2.x;
 
-		ModSub256(py, Gx + 4 * i, px);
-		_ModMult(py, _s);                        // py = - s*(ret.x-p2.x)
-		ModSub256(py, Gy + 4 * i);               // py = - p2.y - s*(ret.x-p2.x);
+                ModSub256(py, gxVal, px);
+                _ModMult(py, _s);                        // py = - s*(ret.x-p2.x)
+                ModSub256(py, gyVal);               // py = - p2.y - s*(ret.x-p2.x);
 
                 CHECK_HASH_SEARCH_ETH_MODE_MA(baseOffset + static_cast<uint32_t>(GRP_SIZE / 2) + (i + 1u));
 
-		// P = StartPoint - i*G, if (x,y) = i*G then (x,-y) = -i*G
-		Load256(px, sx);
-		ModSub256(dy, pyn, Gy + 4 * i);
+                // P = StartPoint - i*G, if (x,y) = i*G then (x,-y) = -i*G
+                Load256(px, sx);
+                ModSub256(dy, pyn, gyVal);
 
-		_ModMult(_s, dy, dx[i]);                //  s = (p2.y-p1.y)*inverse(p2.x-p1.x)
-		_ModSqr(_p2, _s);                       // _p = pow2(s)
+                _ModMult(_s, dy, dx[i]);                //  s = (p2.y-p1.y)*inverse(p2.x-p1.x)
+                _ModSqr(_p2, _s);                       // _p = pow2(s)
 
-		ModSub256(px, _p2, px);
-		ModSub256(px, Gx + 4 * i);              // px = pow2(s) - p1.x - p2.x;
+                ModSub256(px, _p2, px);
+                ModSub256(px, gxVal);              // px = pow2(s) - p1.x - p2.x;
 
-		ModSub256(py, px, Gx + 4 * i);
-		_ModMult(py, _s);                       // py = s*(ret.x-p2.x)
-		ModSub256(py, Gy + 4 * i, py);          // py = - p2.y - s*(ret.x-p2.x);
+                ModSub256(py, px, gxVal);
+                _ModMult(py, _s);                       // py = s*(ret.x-p2.x)
+                ModSub256(py, gyVal, py);          // py = - p2.y - s*(ret.x-p2.x);
 
                 CHECK_HASH_SEARCH_ETH_MODE_MA(baseOffset + (static_cast<uint32_t>(GRP_SIZE / 2) - (i + 1u)));
 
-	}
+        }
 
-	// First point (startP - (GRP_SZIE/2)*G)
-	Load256(px, sx);
-	Load256(py, sy);
-	ModNeg256(dy, Gy + 4 * i);
-	ModSub256(dy, py);
+        // First point (startP - (GRP_SZIE/2)*G)
+        Load256(px, sx);
+        Load256(py, sy);
+        uint64_t boundaryGx[4];
+        uint64_t boundaryGy[4];
+        LoadGeneratorPoint(boundaryGx, Gx + 4 * i);
+        LoadGeneratorPoint(boundaryGy, Gy + 4 * i);
+        ModNeg256(dy, boundaryGy);
+        ModSub256(dy, py);
 
-	_ModMult(_s, dy, dx[i]);                  //  s = (p2.y-p1.y)*inverse(p2.x-p1.x)
-	_ModSqr(_p2, _s);                         // _p = pow2(s)
+        _ModMult(_s, dy, dx[i]);                  //  s = (p2.y-p1.y)*inverse(p2.x-p1.x)
+        _ModSqr(_p2, _s);                         // _p = pow2(s)
 
-	ModSub256(px, _p2, px);
-	ModSub256(px, Gx + 4 * i);                // px = pow2(s) - p1.x - p2.x;
+        ModSub256(px, _p2, px);
+        ModSub256(px, boundaryGx);                // px = pow2(s) - p1.x - p2.x;
 
-	ModSub256(py, px, Gx + 4 * i);
-	_ModMult(py, _s);                         // py = s*(ret.x-p2.x)
-	ModSub256(py, Gy + 4 * i, py);            // py = - p2.y - s*(ret.x-p2.x);
+        ModSub256(py, px, boundaryGx);
+        _ModMult(py, _s);                         // py = s*(ret.x-p2.x)
+        ModSub256(py, boundaryGy, py);            // py = - p2.y - s*(ret.x-p2.x);
 
         CHECK_HASH_SEARCH_ETH_MODE_MA(baseOffset);
 
 	i++;
 
-	// Next start point (startP + GRP_SIZE*G)
-	Load256(px, sx);
-	Load256(py, sy);
-	ModSub256(dy, _2Gny, py);
+        // Next start point (startP + GRP_SIZE*G)
+        Load256(px, sx);
+        Load256(py, sy);
+        ModSub256(dy, twoGy, py);
 
-	_ModMult(_s, dy, dx[i]);              //  s = (p2.y-p1.y)*inverse(p2.x-p1.x)
-	_ModSqr(_p2, _s);                     // _p2 = pow2(s)
+        _ModMult(_s, dy, dx[i]);              //  s = (p2.y-p1.y)*inverse(p2.x-p1.x)
+        _ModSqr(_p2, _s);                     // _p2 = pow2(s)
 
-	ModSub256(px, _p2, px);
-	ModSub256(px, _2Gnx);                 // px = pow2(s) - p1.x - p2.x;
+        ModSub256(px, _p2, px);
+        ModSub256(px, twoGx);                 // px = pow2(s) - p1.x - p2.x;
 
-	ModSub256(py, _2Gnx, px);
-	_ModMult(py, _s);                     // py = - s*(ret.x-p2.x)
-	ModSub256(py, _2Gny);                 // py = - p2.y - s*(ret.x-p2.x);
+        ModSub256(py, twoGx, px);
+        _ModMult(py, _s);                     // py = - s*(ret.x-p2.x)
+        ModSub256(py, twoGy);                 // py = - p2.y - s*(ret.x-p2.x);
 
 
 	// Update starting point
@@ -1108,14 +1209,19 @@ __device__ void ComputeKeysSEARCH_ETH_MODE_SA(uint64_t* startx, uint64_t* starty
 	uint64_t dx[GRP_SIZE / 2 + 1][4];
 	uint64_t px[4];
 	uint64_t py[4];
-	uint64_t pyn[4];
-	uint64_t sx[4];
-	uint64_t sy[4];
-	uint64_t dy[4];
-	uint64_t _s[4];
-	uint64_t _p2[4];
+        uint64_t pyn[4];
+        uint64_t sx[4];
+        uint64_t sy[4];
+        uint64_t dy[4];
+        uint64_t _s[4];
+        uint64_t _p2[4];
+        uint64_t twoGx[4];
+        uint64_t twoGy[4];
 
-	// Load starting key
+        LoadGeneratorPoint(twoGx, _2Gnx);
+        LoadGeneratorPoint(twoGy, _2Gny);
+
+        // Load starting key
 	__syncthreads();
 	Load256A(sx, startx);
 	Load256A(sy, starty);
@@ -1124,10 +1230,15 @@ __device__ void ComputeKeysSEARCH_ETH_MODE_SA(uint64_t* startx, uint64_t* starty
 
 	// Fill group with delta x
 	uint32_t i;
-	for (i = 0; i < HSIZE; i++)
-		ModSub256(dx[i], Gx + 4 * i, sx);
-	ModSub256(dx[i], Gx + 4 * i, sx);   // For the first point
-	ModSub256(dx[i + 1], _2Gnx, sx); // For the next center point
+        for (i = 0; i < HSIZE; i++) {
+                uint64_t gxVal[4];
+                LoadGeneratorPoint(gxVal, Gx + 4 * i);
+                ModSub256(dx[i], gxVal, sx);
+        }
+        uint64_t centerGx[4];
+        LoadGeneratorPoint(centerGx, Gx + 4 * i);
+        ModSub256(dx[i], centerGx, sx);   // For the first point
+        ModSub256(dx[i + 1], twoGx, sx); // For the next center point
 
 	// Compute modular inverse
 	_ModInvGrouped(dx);
@@ -1140,77 +1251,85 @@ __device__ void ComputeKeysSEARCH_ETH_MODE_SA(uint64_t* startx, uint64_t* starty
 
 	ModNeg256(pyn, py);
 
-	for (i = 0; i < HSIZE; i++) {
+        for (i = 0; i < HSIZE; i++) {
 
-		// P = StartPoint + i*G
-		Load256(px, sx);
-		Load256(py, sy);
-		ModSub256(dy, Gy + 4 * i, py);
+                // P = StartPoint + i*G
+                Load256(px, sx);
+                Load256(py, sy);
+                uint64_t gxVal[4];
+                uint64_t gyVal[4];
+                LoadGeneratorPoint(gxVal, Gx + 4 * i);
+                LoadGeneratorPoint(gyVal, Gy + 4 * i);
+                ModSub256(dy, gyVal, py);
 
-		_ModMult(_s, dy, dx[i]);             //  s = (p2.y-p1.y)*inverse(p2.x-p1.x)
-		_ModSqr(_p2, _s);                    // _p2 = pow2(s)
+                _ModMult(_s, dy, dx[i]);             //  s = (p2.y-p1.y)*inverse(p2.x-p1.x)
+                _ModSqr(_p2, _s);                    // _p2 = pow2(s)
 
-		ModSub256(px, _p2, px);
-		ModSub256(px, Gx + 4 * i);           // px = pow2(s) - p1.x - p2.x;
+                ModSub256(px, _p2, px);
+                ModSub256(px, gxVal);           // px = pow2(s) - p1.x - p2.x;
 
-		ModSub256(py, Gx + 4 * i, px);
-		_ModMult(py, _s);                    // py = - s*(ret.x-p2.x)
-		ModSub256(py, Gy + 4 * i);           // py = - p2.y - s*(ret.x-p2.x);
+                ModSub256(py, gxVal, px);
+                _ModMult(py, _s);                    // py = - s*(ret.x-p2.x)
+                ModSub256(py, gyVal);           // py = - p2.y - s*(ret.x-p2.x);
 
                 CHECK_HASH_SEARCH_ETH_MODE_SA(baseOffset + static_cast<uint32_t>(GRP_SIZE / 2) + (i + 1u));
 
-		// P = StartPoint - i*G, if (x,y) = i*G then (x,-y) = -i*G
-		Load256(px, sx);
-		ModSub256(dy, pyn, Gy + 4 * i);
+                // P = StartPoint - i*G, if (x,y) = i*G then (x,-y) = -i*G
+                Load256(px, sx);
+                ModSub256(dy, pyn, gyVal);
 
-		_ModMult(_s, dy, dx[i]);            //  s = (p2.y-p1.y)*inverse(p2.x-p1.x)
-		_ModSqr(_p2, _s);                   // _p = pow2(s)
+                _ModMult(_s, dy, dx[i]);            //  s = (p2.y-p1.y)*inverse(p2.x-p1.x)
+                _ModSqr(_p2, _s);                   // _p = pow2(s)
 
-		ModSub256(px, _p2, px);
-		ModSub256(px, Gx + 4 * i);          // px = pow2(s) - p1.x - p2.x;
+                ModSub256(px, _p2, px);
+                ModSub256(px, gxVal);          // px = pow2(s) - p1.x - p2.x;
 
-		ModSub256(py, px, Gx + 4 * i);
-		_ModMult(py, _s);                   // py = s*(ret.x-p2.x)
-		ModSub256(py, Gy + 4 * i, py);      // py = - p2.y - s*(ret.x-p2.x);
+                ModSub256(py, px, gxVal);
+                _ModMult(py, _s);                   // py = s*(ret.x-p2.x)
+                ModSub256(py, gyVal, py);      // py = - p2.y - s*(ret.x-p2.x);
 
                 CHECK_HASH_SEARCH_ETH_MODE_SA(baseOffset + (static_cast<uint32_t>(GRP_SIZE / 2) - (i + 1u)));
 
-	}
+        }
 
-	// First point (startP - (GRP_SZIE/2)*G)
-	Load256(px, sx);
-	Load256(py, sy);
-	ModNeg256(dy, Gy + 4 * i);
-	ModSub256(dy, py);
+        // First point (startP - (GRP_SZIE/2)*G)
+        Load256(px, sx);
+        Load256(py, sy);
+        uint64_t boundaryGx[4];
+        uint64_t boundaryGy[4];
+        LoadGeneratorPoint(boundaryGx, Gx + 4 * i);
+        LoadGeneratorPoint(boundaryGy, Gy + 4 * i);
+        ModNeg256(dy, boundaryGy);
+        ModSub256(dy, py);
 
-	_ModMult(_s, dy, dx[i]);              //  s = (p2.y-p1.y)*inverse(p2.x-p1.x)
-	_ModSqr(_p2, _s);                     // _p = pow2(s)
+        _ModMult(_s, dy, dx[i]);              //  s = (p2.y-p1.y)*inverse(p2.x-p1.x)
+        _ModSqr(_p2, _s);                     // _p = pow2(s)
 
-	ModSub256(px, _p2, px);
-	ModSub256(px, Gx + 4 * i);            // px = pow2(s) - p1.x - p2.x;
+        ModSub256(px, _p2, px);
+        ModSub256(px, boundaryGx);            // px = pow2(s) - p1.x - p2.x;
 
-	ModSub256(py, px, Gx + 4 * i);
-	_ModMult(py, _s);                     // py = s*(ret.x-p2.x)
-	ModSub256(py, Gy + 4 * i, py);        // py = - p2.y - s*(ret.x-p2.x);
+        ModSub256(py, px, boundaryGx);
+        _ModMult(py, _s);                     // py = s*(ret.x-p2.x)
+        ModSub256(py, boundaryGy, py);        // py = - p2.y - s*(ret.x-p2.x);
 
         CHECK_HASH_SEARCH_ETH_MODE_SA(baseOffset);
 
 	i++;
 
-	// Next start point (startP + GRP_SIZE*G)
-	Load256(px, sx);
-	Load256(py, sy);
-	ModSub256(dy, _2Gny, py);
+        // Next start point (startP + GRP_SIZE*G)
+        Load256(px, sx);
+        Load256(py, sy);
+        ModSub256(dy, twoGy, py);
 
-	_ModMult(_s, dy, dx[i]);             //  s = (p2.y-p1.y)*inverse(p2.x-p1.x)
-	_ModSqr(_p2, _s);                    // _p2 = pow2(s)
+        _ModMult(_s, dy, dx[i]);             //  s = (p2.y-p1.y)*inverse(p2.x-p1.x)
+        _ModSqr(_p2, _s);                    // _p2 = pow2(s)
 
-	ModSub256(px, _p2, px);
-	ModSub256(px, _2Gnx);                // px = pow2(s) - p1.x - p2.x;
+        ModSub256(px, _p2, px);
+        ModSub256(px, twoGx);                // px = pow2(s) - p1.x - p2.x;
 
-	ModSub256(py, _2Gnx, px);
-	_ModMult(py, _s);                    // py = - s*(ret.x-p2.x)
-	ModSub256(py, _2Gny);                // py = - p2.y - s*(ret.x-p2.x);
+        ModSub256(py, twoGx, px);
+        _ModMult(py, _s);                    // py = - s*(ret.x-p2.x)
+        ModSub256(py, twoGy);                // py = - p2.y - s*(ret.x-p2.x);
 
 	// Update starting point
 	__syncthreads();
