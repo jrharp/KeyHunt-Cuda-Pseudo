@@ -476,6 +476,13 @@ int GPUEngine::GetThreadsPerGroup()
 
 // ----------------------------------------------------------------------------
 
+int GPUEngine::GetCompiledGroupSize()
+{
+        return GRP_SIZE;
+}
+
+// ----------------------------------------------------------------------------
+
 void GPUEngine::PrintCudaInfo()
 {
         const char* sComputeMode[] = {
