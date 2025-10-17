@@ -308,9 +308,10 @@ bool KeyHunt::acquirePseudoRandomBlock(Int& key, Point& startP, uint64_t& sequen
                 uint64_t blockIndex = permuteBlockIndex(idx);
                 sequentialIndex = idx;
 
-                uint64_t offset = blockIndex * blockSize;
+                Int offset(blockIndex);
+                offset.Mult(blockSize);
                 key = initialRangeStart;
-                key.Add(offset);
+                key.Add(&offset);
 
                 Int km(&key);
                 km.Add(blockSize / 2);
@@ -374,23 +375,34 @@ void KeyHunt::initializePseudoRandomState()
         if (searchMode != (int)SEARCH_MODE_SA || coinType != COIN_BTC)
                 return;
 
-        if (rangeDiff2.GetSize64() > 1) {
-                printf("Pseudo-random traversal disabled: range span exceeds 64 bits.\n");
+        if (rangeDiff2.GetBitLength() > 128) {
+                printf("Pseudo-random traversal disabled: range span exceeds 128 bits.\n");
                 return;
         }
 
-        uint64_t exclusiveRange = rangeDiff2.bits64[0];
-        if (exclusiveRange == 0)
+        Int inclusiveRange(&rangeDiff2);
+        inclusiveRange.AddOne();
+        if (inclusiveRange.IsZero())
                 return;
 
-        uint64_t inclusiveRange = exclusiveRange + 1;
+        const bool inclusiveRangeFits64 = (inclusiveRange.GetSize64() <= 1);
+        const uint64_t inclusiveRangeLow = inclusiveRangeFits64 ? inclusiveRange.bits64[0] : 0;
+
         uint64_t targetGroupSize = static_cast<uint64_t>(CPU_GRP_SIZE);
 #ifdef WITHGPU
         if (useGpu) {
                 targetGroupSize = std::max<uint64_t>(targetGroupSize, static_cast<uint64_t>(STEP_SIZE));
         }
 #endif
-        uint64_t cappedGroup = std::min<uint64_t>(targetGroupSize, inclusiveRange);
+        uint64_t cappedGroup = targetGroupSize;
+        Int targetGroupInt(targetGroupSize);
+        if (inclusiveRange.IsLowerOrEqual(&targetGroupInt)) {
+                if (!inclusiveRangeFits64) {
+                        printf("Pseudo-random traversal disabled: unable to represent the range with current limits.\n");
+                        return;
+                }
+                cappedGroup = inclusiveRangeLow;
+        }
 
         uint64_t candidateGroup = 1;
         while ((candidateGroup << 1) <= cappedGroup) {
@@ -403,12 +415,60 @@ void KeyHunt::initializePseudoRandomState()
                 return;
         }
 
+        auto countTrailingZeros = [](uint64_t value) {
+                unsigned int zeros = 0;
+                while ((value & 1ULL) == 0ULL) {
+                        zeros++;
+                        value >>= 1;
+                }
+                return zeros;
+        };
+
+        auto isMultipleOfPowerOfTwo = [&](uint64_t group) {
+                if (group == 0 || (group & (group - 1)) != 0)
+                        return false;
+
+                unsigned int zeroBits = countTrailingZeros(group);
+                if (zeroBits >= NB64BLOCK * 64)
+                        return false;
+
+                unsigned int wholeLimbs = zeroBits / 64;
+                for (unsigned int i = 0; i < wholeLimbs; ++i) {
+                        if (inclusiveRange.bits64[i] != 0)
+                                return false;
+                }
+
+                unsigned int offset = zeroBits % 64;
+                if (offset != 0) {
+                        uint64_t mask = (1ULL << offset) - 1ULL;
+                        if ((inclusiveRange.bits64[wholeLimbs] & mask) != 0)
+                                return false;
+                }
+
+                return true;
+        };
+
+        bool totalBlocksOverflowed = false;
+
+        auto computeTotalBlocks = [&](uint64_t group, uint64_t& totalBlocksOut) {
+                unsigned int zeroBits = countTrailingZeros(group);
+                Int quotient(&inclusiveRange);
+                quotient.ShiftR(zeroBits);
+
+                if (quotient.GetSize64() > 1) {
+                        totalBlocksOverflowed = true;
+                        return false;
+                }
+
+                totalBlocksOut = quotient.bits64[0];
+                return true;
+        };
+
         bool foundGroup = false;
         uint64_t totalBlocks = 0;
         uint64_t workingGroup = candidateGroup;
         while (workingGroup >= minGroupSize) {
-                if ((inclusiveRange % workingGroup) == 0) {
-                        totalBlocks = inclusiveRange / workingGroup;
+                if (isMultipleOfPowerOfTwo(workingGroup) && computeTotalBlocks(workingGroup, totalBlocks)) {
                         if (totalBlocks != 0 && (totalBlocks & (totalBlocks - 1)) == 0) {
                                 foundGroup = true;
                                 break;
@@ -418,7 +478,12 @@ void KeyHunt::initializePseudoRandomState()
         }
 
         if (!foundGroup) {
-                printf("Pseudo-random traversal disabled: unable to derive a suitable group size for the range.\n");
+                if (totalBlocksOverflowed) {
+                        printf("Pseudo-random traversal disabled: range span requires more than 2^64 blocks.\n");
+                }
+                else {
+                        printf("Pseudo-random traversal disabled: unable to derive a suitable group size for the range.\n");
+                }
                 return;
         }
 
@@ -435,7 +500,7 @@ void KeyHunt::initializePseudoRandomState()
                 cpuGroupSize = CPU_GRP_SIZE;
                 pseudoRandomCpuEnabled = false;
         }
-        pseudoState.totalKeys = inclusiveRange;
+        pseudoState.totalKeys = inclusiveRangeFits64 ? inclusiveRangeLow : std::numeric_limits<uint64_t>::max();
         pseudoState.totalBlocks = totalBlocks;
         pseudoState.blockMask = totalBlocks - 1;
 
