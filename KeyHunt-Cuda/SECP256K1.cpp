@@ -805,24 +805,29 @@ void Secp256K1::GetXBytes(bool compressed, Point& pubKey, unsigned char* publicK
 void Secp256K1::GetHash160(bool compressed, Point& pubKey, unsigned char* hash)
 {
 
-        unsigned char shapk[32];
+	unsigned char shapk[64];
 
-        if (!compressed) {
+	unsigned char publicKeyBytes[128];
 
-                uint32_t blocks[32];
-                KEYBUFFUNCOMP(blocks, pubKey);
-                sha256_from_prepared(blocks, 2, shapk);
+	if (!compressed) {
 
-        }
-        else {
+		// Full public key
+		publicKeyBytes[0] = 0x4;
+		pubKey.x.Get32Bytes(publicKeyBytes + 1);
+		pubKey.y.Get32Bytes(publicKeyBytes + 33);
+		sha256_65(publicKeyBytes, shapk);
 
-                uint32_t block[16];
-                KEYBUFFCOMP(block, pubKey);
-                sha256_from_prepared(block, 1, shapk);
+	}
+	else {
 
-        }
+		// Compressed public key
+		publicKeyBytes[0] = pubKey.y.IsEven() ? 0x2 : 0x3;
+		pubKey.x.Get32Bytes(publicKeyBytes + 1);
+		sha256_33(publicKeyBytes, shapk);
 
-        ripemd160_32(shapk, hash);
+	}
+
+	ripemd160_32(shapk, hash);
 
 }
 
