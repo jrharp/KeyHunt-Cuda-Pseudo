@@ -1307,7 +1307,7 @@ void KeyHunt::FindKeyCPU(TH_PARAM * ph)
 
 // ----------------------------------------------------------------------------
 
-void KeyHunt::getGPUStartingKeys(Int & tRangeStart, Int & tRangeEnd, int groupSize, int nbThread, Int * keys, Point * p)
+void KeyHunt::getGPUStartingKeys(Int & tRangeStart, Int & tRangeEnd, int compiledGroupSize, int nbThread, Int * keys, Point * p)
 {
 
 	Int tRangeDiff(tRangeEnd);
@@ -1323,6 +1323,8 @@ void KeyHunt::getGPUStartingKeys(Int & tRangeStart, Int & tRangeEnd, int groupSi
 	int rangeShowThreasold = 3;
 	int rangeShowCounter = 0;
 
+	const uint64_t midpoint = static_cast<uint64_t>(compiledGroupSize) / 2ULL;
+
 	for (int i = 0; i < nbThread; i++) {
 
 		tRangeEnd2.Set(&tRangeStart2);
@@ -1336,7 +1338,7 @@ void KeyHunt::getGPUStartingKeys(Int & tRangeStart, Int & tRangeEnd, int groupSi
 		tRangeStart2.Add(&tRangeDiff);
 
 		Int k(keys + i);
-		k.Add((uint64_t)(groupSize / 2));	// Starting key is at the middle of the group
+		k.Add(midpoint);	// Starting key is at the middle of the compiled GPU group
 		p[i] = secp->ComputePublicKey(&k);
 	}
 
@@ -1385,6 +1387,8 @@ void KeyHunt::FindKeyGPU(TH_PARAM * ph)
         std::vector<uint64_t> pseudoSequential(nbThread, std::numeric_limits<uint64_t>::max());
         std::vector<ITEM> found;
 
+        const int compiledGroupSize = g->GetCompiledGroupSize();
+        const uint64_t compiledGroupMidpoint = static_cast<uint64_t>(compiledGroupSize) / 2ULL;
         printf("GPU          : %s\n\n", g->deviceName.c_str());
 
         counters[thId] = 0;
@@ -1394,7 +1398,7 @@ void KeyHunt::FindKeyGPU(TH_PARAM * ph)
                 startPseudoRandomGpuPrefetch(nbThread);
         }
         if (!usePseudoRandomGpu) {
-                getGPUStartingKeys(tRangeStart, tRangeEnd, g->GetGroupSize(), nbThread, keys, p);
+                getGPUStartingKeys(tRangeStart, tRangeEnd, compiledGroupSize, nbThread, keys, p);
                 ok = g->SetKeys(p);
         }
 
@@ -1421,7 +1425,9 @@ void KeyHunt::FindKeyGPU(TH_PARAM * ph)
                                 }
 
                                 keys[i] = block.key;
-                                p[i] = block.startPoint;
+                                Int startScalar(keys + i);
+                                startScalar.Add(compiledGroupMidpoint);
+                                p[i] = secp->ComputePublicKey(&startScalar);
                                 pseudoSequential[i] = block.sequentialIndex;
                                 assignedBlocks++;
                         }
@@ -1455,7 +1461,7 @@ void KeyHunt::FindKeyGPU(TH_PARAM * ph)
                 }
                 else {
                         if (ph->rKeyRequest) {
-                                getGPUStartingKeys(tRangeStart, tRangeEnd, g->GetGroupSize(), nbThread, keys, p);
+                                getGPUStartingKeys(tRangeStart, tRangeEnd, compiledGroupSize, nbThread, keys, p);
                                 ok = g->SetKeys(p);
                                 ph->rKeyRequest = false;
                         }
