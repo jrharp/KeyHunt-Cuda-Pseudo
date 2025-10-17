@@ -68,8 +68,7 @@ Int Secp256K1::MulShift384(const Int& k, const std::array<uint64_t, 4>& g)
         accum[6] = static_cast<uint64_t>(accum[6]);
         accum[7] = static_cast<uint64_t>(accum[7]);
 
-        Int result;
-        result.CLEAR();
+        Int result(0);
         result.bits64[0] = static_cast<uint64_t>(accum[6]);
         result.bits64[1] = static_cast<uint64_t>(accum[7]);
         return result;
@@ -84,12 +83,15 @@ void Secp256K1::EnsureAffine(Point& p) const
 
 Point Secp256K1::ApplyLambda(const Point& p) const
 {
-        if (p.z.IsZero()) {
+        Int z = p.z;
+        if (z.IsZero()) {
                 return p;
         }
 
         Point r(p);
-        r.x.ModMulK1(&p.x, &betaConst);
+        Int px = p.x;
+        Int beta = betaConst;
+        r.x.ModMulK1(&px, &beta);
         return r;
 }
 
