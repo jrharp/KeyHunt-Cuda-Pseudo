@@ -147,6 +147,22 @@ private:
         bool streamCreated_ = false;
         bool eventCreated_ = false;
 
+        cudaGraph_t launchGraph_ = nullptr;
+        cudaGraphExec_t launchGraphExec_ = nullptr;
+        cudaGraphNode_t launchMemsetNode_ = nullptr;
+        cudaKernelNode_t launchKernelNode_ = nullptr;
+        dim3 graphGridDim_{};
+        dim3 graphBlockDim_{};
+        size_t graphSharedMem_ = 0;
+        const void* lastKernelPtr_ = nullptr;
+        bool graphInitialized_ = false;
+        bool useCudaGraphs_ = true;
+
+        void destroyGraph();
+
+        template <typename KernelFunc, typename... Args>
+        bool launchWithGraph(KernelFunc kernel, dim3 gridDim, dim3 blockDim, size_t sharedMemBytes, Args&... args);
+
 };
 
 #endif // GPUENGINEH
