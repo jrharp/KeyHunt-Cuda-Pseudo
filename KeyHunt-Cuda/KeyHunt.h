@@ -2,9 +2,12 @@
 #define KEYHUNTH
 
 #include <atomic>
+#include <condition_variable>
+#include <deque>
 #include <limits>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <unordered_set>
 #include <vector>
 #include "SECP256k1.h"
@@ -64,11 +67,16 @@ private:
         void persistPseudoRandomState(uint64_t completedCount);
         bool loadPseudoRandomState(uint64_t& resumeIndex) const;
         void notifyPseudoRandomBlockComplete(uint64_t sequentialIndex);
+        struct PseudoRandomBlock;
+        void startPseudoRandomGpuPrefetch(int targetQueueSize);
+        void stopPseudoRandomGpuPrefetch();
+        bool dequeuePseudoRandomGpuBlock(PseudoRandomBlock& block);
+        void pseudoRandomGpuWorker();
 
         std::string GetHex(std::vector<unsigned char>& buffer);
-	bool checkPrivKey(std::string addr, Int& key, int32_t incr, bool mode);
-	bool checkPrivKeyETH(std::string addr, Int& key, int32_t incr);
-	bool checkPrivKeyX(Int& key, int32_t incr, bool mode);
+        bool checkPrivKey(std::string addr, Int& key, int32_t incr, bool mode);
+        bool checkPrivKeyETH(std::string addr, Int& key, int32_t incr);
+        bool checkPrivKeyX(Int& key, int32_t incr, bool mode);
 
 	void checkMultiAddresses(bool compressed, Int key, int i, Point p1);
 	void checkMultiAddressesETH(Int key, int i, Point p1);
@@ -159,10 +167,24 @@ private:
         PseudoRandomState pseudoState;
         Int initialRangeStart;
 
+        struct PseudoRandomBlock {
+                Int key;
+                Point startPoint;
+                uint64_t sequentialIndex = 0;
+        };
+
+        std::vector<std::thread> pseudoGpuWorkers;
+        std::deque<PseudoRandomBlock> pseudoGpuQueue;
+        std::mutex pseudoGpuMutex;
+        std::condition_variable pseudoGpuCv;
+        std::atomic<int> pseudoGpuActiveWorkers{ 0 };
+        size_t pseudoGpuQueueLimit = 0;
+        std::atomic<bool> pseudoGpuStop{ false };
+
 #ifdef WIN64
         HANDLE ghMutex;
 #else
-	pthread_mutex_t  ghMutex;
+        pthread_mutex_t  ghMutex;
 #endif
 
 };
