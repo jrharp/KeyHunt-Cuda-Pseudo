@@ -17,11 +17,14 @@
 
 #ifndef SHA256_H
 #define SHA256_H
+#include <cstddef>
+#include <cstdint>
 #include <string>
 
 void sha256(uint8_t *input, int length, uint8_t *digest);
 void sha256_33(uint8_t *input, uint8_t *digest);
 void sha256_65(uint8_t *input, uint8_t *digest);
+void sha256_from_prepared(const uint32_t *words, std::size_t blockCount, uint8_t *digest);
 void sha256_checksum(uint8_t *input, int length, uint8_t *checksum);
 void sha256sse_1B(uint32_t *i0, uint32_t *i1, uint32_t *i2, uint32_t *i3,
                   uint8_t *d0, uint8_t *d1, uint8_t *d2, uint8_t *d3);
