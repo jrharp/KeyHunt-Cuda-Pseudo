@@ -29,10 +29,10 @@ void usage()
 	printf("-c, --check                              : Check the working of the codes\n");
 	printf("-u, --uncomp                             : Search uncompressed points\n");
 	printf("-b, --both                               : Search both uncompressed or compressed points\n");
-	printf("-g, --gpu                                : Enable GPU calculation\n");
+	printf("-g, --gpu                                : Enable GPU calculation (default when available)\n");
 	printf("--gpui GPU ids: 0,1,...                  : List of GPU(s) to use, default is 0\n");
 	printf("--gpux GPU gridsize: g0x,g0y,g1x,g1y,... : Specify GPU(s) kernel gridsize, default is 8*(Device MP count),128\n");
-	printf("-t, --thread N                           : Specify number of CPU thread, default is number of core\n");
+	printf("-t, --thread N                           : Specify number of CPU thread and disable GPU acceleration\n");
 	printf("-i, --in FILE                            : Read rmd160 hashes or xpoints from FILE, should be in binary format with sorted\n");
 	printf("-o, --out FILE                           : Write keys to FILE, default: Found.txt\n");
 	printf("-m, --mode MODE                          : Specify search mode where MODE is\n");
@@ -199,7 +199,14 @@ int main(int argc, char** argv)
 	Timer::Init();
 	rseed(Timer::getSeed32());
 
+	int defaultCpuThreads = Timer::getCoreNumber();
+#ifdef WITHGPU
+	bool gpuEnable = true;
+	int nbCPUThread = 0;
+#else
 	bool gpuEnable = false;
+	int nbCPUThread = defaultCpuThreads;
+#endif
 	bool gpuAutoGrid = true;
 	int compMode = SEARCH_COMPRESSED;
 	vector<int> gpuId = { 0 };
@@ -213,7 +220,6 @@ int main(int argc, char** argv)
 
 	std::vector<unsigned char> hashORxpoint;
 	bool singleAddress = false;
-	int nbCPUThread = Timer::getCoreNumber();
 
 	bool tSpecified = false;
 	bool useSSE = true;
@@ -303,8 +309,13 @@ int main(int argc, char** argv)
 				compMode = SEARCH_BOTH;
 			}
 			else if (optArg.equals("-g", "--gpu")) {
+#ifdef WITHGPU
 				gpuEnable = true;
 				nbCPUThread = 0;
+#else
+				printf("Error: GPU support is not available, recompile with -DWITHGPU.\n");
+				return -1;
+#endif
 			}
 			else if (optArg.equals("", "--gpui")) {
 				string ids = optArg.arg;
@@ -318,6 +329,7 @@ int main(int argc, char** argv)
 			else if (optArg.equals("-t", "--thread")) {
 				nbCPUThread = std::stoi(optArg.arg);
 				tSpecified = true;
+				gpuEnable = false;
 			}
 			else if (optArg.equals("-i", "--in")) {
 				inputFile = optArg.arg;
@@ -350,7 +362,13 @@ int main(int argc, char** argv)
 		}
 	}
 
-	// 
+#ifdef WITHGPU
+	if (!gpuEnable && !tSpecified) {
+		nbCPUThread = defaultCpuThreads;
+	}
+#endif
+
+	//
 	if (coinType == COIN_ETH && (searchMode == SEARCH_MODE_SX || searchMode == SEARCH_MODE_MX/* || compMode == SEARCH_COMPRESSED*/)) {
 		printf("Error: %s\n", "Wrong search or compress mode provided for ETH coin type");
 		usage();
@@ -476,11 +494,12 @@ int main(int argc, char** argv)
 		usage();
 		return -1;
 	}
-	if (nbCPUThread > 0 && gpuEnable) {
-		printf("Error: %s\n", "Invalid arguments, CPU and GPU, both can't be used together right now\n");
-		usage();
-		return -1;
+#ifdef WITHGPU
+	if (gpuEnable && nbCPUThread > 0) {
+		printf("Warning: CPU threads are disabled when GPU acceleration is active. Ignoring CPU thread setting.\n");
+		nbCPUThread = 0;
 	}
+#endif
 
 	// Let one CPU core free per gpu is gpu is enabled
 	// It will avoid to hang the system
@@ -497,7 +516,22 @@ int main(int argc, char** argv)
 		printf("COMP MODE    : %s\n", compMode == SEARCH_COMPRESSED ? "COMPRESSED" : (compMode == SEARCH_UNCOMPRESSED ? "UNCOMPRESSED" : "COMPRESSED & UNCOMPRESSED"));
 	printf("COIN TYPE    : %s\n", coinType == COIN_BTC ? "BITCOIN" : "ETHEREUM");
 	printf("SEARCH MODE  : %s\n", searchMode == (int)SEARCH_MODE_MA ? "Multi Address" : (searchMode == (int)SEARCH_MODE_SA ? "Single Address" : (searchMode == (int)SEARCH_MODE_MX ? "Multi X Points" : "Single X Point")));
-	printf("DEVICE       : %s\n", (gpuEnable && nbCPUThread > 0) ? "CPU & GPU" : ((!gpuEnable && nbCPUThread > 0) ? "CPU" : "GPU"));
+	bool useGpuDevice = gpuEnable;
+	bool useCpuDevice = (nbCPUThread > 0);
+	const char* deviceLabel;
+	if (useGpuDevice && useCpuDevice) {
+		deviceLabel = "CPU & GPU";
+	}
+	else if (useGpuDevice) {
+		deviceLabel = "GPU";
+	}
+	else if (useCpuDevice) {
+		deviceLabel = "CPU";
+	}
+	else {
+		deviceLabel = "NONE";
+	}
+	printf("DEVICE       : %s\n", deviceLabel);
 	printf("CPU THREAD   : %d\n", nbCPUThread);
 	if (gpuEnable) {
 		printf("GPU IDS      : ");

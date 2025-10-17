@@ -24,7 +24,7 @@ A lot of gratitude to all the developers whose codes has been used here.
 - To convert Ethereum addresses list(text format) to keccak160 hashes binary file use provided python script ```eth_addresses_to_bin.py```
 - After getting binary files from python scripts, use ```BinSort``` tool provided with KeyHunt-Cuda to sort these binary files.
 - Don't use XPoint[s] mode with ```uncompressed``` compression type.
-- CPU and GPU can not be used together, because the program divides the whole input range into equal parts for all the threads, so use either CPU or GPU so that the whole range can increment by all the threads with consistency.
+- CPU and GPU can not be used together; when GPU support is enabled the CPU search threads are automatically disabled so that the GPU can process the entire keyspace efficiently.
 - Minimum entries for bloom filter is >= 2.
 
 ## addresses_to_hash160.py
@@ -59,10 +59,10 @@ Where TARGETS is one address/xpont, or multiple hashes/xpoints file
 -c, --check                              : Check the working of the codes
 -u, --uncomp                             : Search uncompressed points
 -b, --both                               : Search both uncompressed or compressed points
--g, --gpu                                : Enable GPU calculation
+-g, --gpu                                : Enable GPU calculation (default when supported)
 --gpui GPU ids: 0,1,...                  : List of GPU(s) to use, default is 0
 --gpux GPU gridsize: g0x,g0y,g1x,g1y,... : Specify GPU(s) kernel gridsize, default is 8*(Device MP count),128
--t, --thread N                           : Specify number of CPU thread, default is number of core
+-t, --thread N                           : Specify number of CPU thread and disable GPU acceleration
 -i, --in FILE                            : Read rmd160 hashes or xpoints from FILE, should be in binary format with sorted
 -o, --out FILE                           : Write keys to FILE, default: Found.txt
 -m, --mode MODE                          : Specify search mode where MODE is
@@ -178,7 +178,7 @@ BYE
 ### GPU mode:
 ## Multiple addresses mode:
 ```
-KeyHunt-Cuda.exe -t 0 -g --gpui 0 --gpux 256,256 -m addresses --coin BTC -o Found.txt --range 1:1fffffffff -i puzzle_1_37_hash160_out_sorted.bin
+KeyHunt-Cuda.exe --gpui 0 --gpux 256,256 -m addresses --coin BTC -o Found.txt --range 1:1fffffffff -i puzzle_1_37_hash160_out_sorted.bin
 
 KeyHunt-Cuda v1.07
 
