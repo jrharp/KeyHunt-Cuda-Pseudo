@@ -504,12 +504,6 @@ void KeyHunt::initializePseudoRandomState()
                 targetGroupSize = std::max<uint64_t>(targetGroupSize, gpuTarget);
         }
 #endif
-        if (targetGroupSize <= (std::numeric_limits<uint64_t>::max() / 2ULL)) {
-                targetGroupSize *= 2ULL;
-        }
-        else {
-                targetGroupSize = std::numeric_limits<uint64_t>::max();
-        }
         uint64_t cappedGroup = targetGroupSize;
         Int targetGroupInt(targetGroupSize);
         if (inclusiveRange.IsLowerOrEqual(&targetGroupInt)) {
