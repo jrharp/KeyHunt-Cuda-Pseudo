@@ -1329,7 +1329,7 @@ void KeyHunt::getGPUStartingKeys(Int & tRangeStart, Int & tRangeEnd, int compile
 	int rangeShowThreasold = 3;
 	int rangeShowCounter = 0;
 
-        const uint64_t midpoint = static_cast<uint64_t>(groupSize) / 2ULL;
+        const uint64_t midpoint = static_cast<uint64_t>(compiledGroupSize) / 2ULL;
 
 	for (int i = 0; i < nbThread; i++) {
 
@@ -1394,6 +1394,8 @@ void KeyHunt::FindKeyGPU(TH_PARAM * ph)
         std::vector<ITEM> found;
 
         const int groupSize = g->GetGroupSize();
+        const int compiledGroupSize = GPUEngine::GetCompiledGroupSize();
+        const uint64_t compiledGroupMidpoint = static_cast<uint64_t>(compiledGroupSize) / 2ULL;
         printf("GPU          : %s\n\n", g->deviceName.c_str());
 
         counters[thId] = 0;
@@ -1403,7 +1405,7 @@ void KeyHunt::FindKeyGPU(TH_PARAM * ph)
                 startPseudoRandomGpuPrefetch(nbThread);
         }
         if (!usePseudoRandomGpu) {
-                getGPUStartingKeys(tRangeStart, tRangeEnd, groupSize, nbThread, keys, p);
+                getGPUStartingKeys(tRangeStart, tRangeEnd, compiledGroupSize, nbThread, keys, p);
                 ok = g->SetKeys(p);
         }
 
@@ -1466,7 +1468,7 @@ void KeyHunt::FindKeyGPU(TH_PARAM * ph)
                 }
                 else {
                         if (ph->rKeyRequest) {
-                                getGPUStartingKeys(tRangeStart, tRangeEnd, groupSize, nbThread, keys, p);
+                                getGPUStartingKeys(tRangeStart, tRangeEnd, compiledGroupSize, nbThread, keys, p);
                                 ok = g->SetKeys(p);
                                 ph->rKeyRequest = false;
                         }
