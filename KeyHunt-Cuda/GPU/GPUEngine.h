@@ -58,12 +58,14 @@ class GPUEngine
 
 public:
 
-	GPUEngine(Secp256K1* secp, int nbThreadGroup, int nbThreadPerGroup, int gpuId, uint32_t maxFound, 
-		int searchMode, int compMode, int coinType, int64_t BLOOM_SIZE, uint64_t BLOOM_BITS, 
-		uint8_t BLOOM_HASHES, const uint8_t* BLOOM_DATA, uint8_t* DATA, uint64_t TOTAL_COUNT, bool rKey);
+        GPUEngine(Secp256K1* secp, int nbThreadGroup, int nbThreadPerGroup, int gpuId, uint32_t maxFound,
+                int searchMode, int compMode, int coinType, int64_t BLOOM_SIZE, uint64_t BLOOM_BITS,
+                uint8_t BLOOM_HASHES, const uint8_t* BLOOM_DATA, uint8_t* DATA, uint64_t TOTAL_COUNT, bool rKey,
+                int stepMultiplier);
 
-	GPUEngine(Secp256K1* secp, int nbThreadGroup, int nbThreadPerGroup, int gpuId, uint32_t maxFound, 
-		int searchMode, int compMode, int coinType, const uint32_t* hashORxpoint, bool rKey);
+        GPUEngine(Secp256K1* secp, int nbThreadGroup, int nbThreadPerGroup, int gpuId, uint32_t maxFound,
+                int searchMode, int compMode, int coinType, const uint32_t* hashORxpoint, bool rKey,
+                int stepMultiplier);
 
 	~GPUEngine();
 
@@ -76,6 +78,8 @@ public:
 
         int GetNbThread();
         int GetGroupSize();
+        uint64_t GetStepSize() const;
+        int GetStepMultiplier() const;
         int GetThreadsPerGroup();
         static int GetCompiledGroupSize();
 
@@ -100,6 +104,7 @@ private:
         int nbThread = 0;
         int nbThreadPerGroup = 0;
         int activeThreadCount = 0;
+        int stepMultiplier = 1;
 
         uint32_t* inputHashORxpoint = nullptr;
         uint32_t* inputHashORxpointPinned = nullptr;

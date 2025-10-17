@@ -39,13 +39,15 @@ class KeyHunt
 
 public:
 
-	KeyHunt(const std::string& inputFile, int compMode, int searchMode, int coinType, bool useGpu, 
-		const std::string& outputFile, bool useSSE, uint32_t maxFound, uint64_t rKey, 
-		const std::string& rangeStart, const std::string& rangeEnd, bool& should_exit);
+        KeyHunt(const std::string& inputFile, int compMode, int searchMode, int coinType, bool useGpu,
+                const std::string& outputFile, bool useSSE, uint32_t maxFound, uint64_t rKey,
+                const std::string& rangeStart, const std::string& rangeEnd, bool& should_exit,
+                int gpuStepMultiplier = 1);
 
-	KeyHunt(const std::vector<unsigned char>& hashORxpoint, int compMode, int searchMode, int coinType, 
-		bool useGpu, const std::string& outputFile, bool useSSE, uint32_t maxFound, uint64_t rKey, 
-		const std::string& rangeStart, const std::string& rangeEnd, bool& should_exit);
+        KeyHunt(const std::vector<unsigned char>& hashORxpoint, int compMode, int searchMode, int coinType,
+                bool useGpu, const std::string& outputFile, bool useSSE, uint32_t maxFound, uint64_t rKey,
+                const std::string& rangeStart, const std::string& rangeEnd, bool& should_exit,
+                int gpuStepMultiplier = 1);
 
 	~KeyHunt();
 
@@ -120,6 +122,8 @@ private:
         bool useSSE;
 
         int cpuGroupSize = CPU_GRP_SIZE;
+        int gpuStepMultiplierRequested = 1;
+        int gpuStepMultiplierEffective = 1;
 
 	Int rangeStart;
 	Int rangeEnd;

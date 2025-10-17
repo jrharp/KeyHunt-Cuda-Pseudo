@@ -28,13 +28,13 @@ Point _2Gn;
 // ----------------------------------------------------------------------------
 
 KeyHunt::KeyHunt(const std::string& inputFile, int compMode, int searchMode, int coinType, bool useGpu,
-	const std::string& outputFile, bool useSSE, uint32_t maxFound, uint64_t rKey,
-	const std::string& rangeStart, const std::string& rangeEnd, bool& should_exit)
+        const std::string& outputFile, bool useSSE, uint32_t maxFound, uint64_t rKey,
+        const std::string& rangeStart, const std::string& rangeEnd, bool& should_exit, int gpuStepMultiplier)
 {
-	this->compMode = compMode;
-	this->useGpu = useGpu;
-	this->outputFile = outputFile;
-	this->useSSE = useSSE;
+        this->compMode = compMode;
+        this->useGpu = useGpu;
+        this->outputFile = outputFile;
+        this->useSSE = useSSE;
 	this->nbGPUThread = 0;
 	this->inputFile = inputFile;
 	this->maxFound = maxFound;
@@ -44,12 +44,13 @@ KeyHunt::KeyHunt(const std::string& inputFile, int compMode, int searchMode, int
         this->rangeStart.SetBase16(rangeStart.c_str());
         this->initialRangeStart.Set(&this->rangeStart);
         this->rangeEnd.SetBase16(rangeEnd.c_str());
-	this->rangeDiff2.Set(&this->rangeEnd);
-	this->rangeDiff2.Sub(&this->rangeStart);
-	this->lastrKey = 0;
+        this->rangeDiff2.Set(&this->rangeEnd);
+        this->rangeDiff2.Sub(&this->rangeStart);
+        this->lastrKey = 0;
+        this->gpuStepMultiplierRequested = std::max(1, gpuStepMultiplier);
 
-	secp = new Secp256K1();
-	secp->Init();
+        secp = new Secp256K1();
+        secp->Init();
 
 	// load file
 	FILE* wfd;
@@ -136,13 +137,13 @@ KeyHunt::KeyHunt(const std::string& inputFile, int compMode, int searchMode, int
 // ----------------------------------------------------------------------------
 
 KeyHunt::KeyHunt(const std::vector<unsigned char>& hashORxpoint, int compMode, int searchMode, int coinType,
-	bool useGpu, const std::string& outputFile, bool useSSE, uint32_t maxFound, uint64_t rKey,
-	const std::string& rangeStart, const std::string& rangeEnd, bool& should_exit)
+        bool useGpu, const std::string& outputFile, bool useSSE, uint32_t maxFound, uint64_t rKey,
+        const std::string& rangeStart, const std::string& rangeEnd, bool& should_exit, int gpuStepMultiplier)
 {
-	this->compMode = compMode;
-	this->useGpu = useGpu;
-	this->outputFile = outputFile;
-	this->useSSE = useSSE;
+        this->compMode = compMode;
+        this->useGpu = useGpu;
+        this->outputFile = outputFile;
+        this->useSSE = useSSE;
 	this->nbGPUThread = 0;
 	this->maxFound = maxFound;
 	this->rKey = rKey;
@@ -151,12 +152,13 @@ KeyHunt::KeyHunt(const std::vector<unsigned char>& hashORxpoint, int compMode, i
         this->rangeStart.SetBase16(rangeStart.c_str());
         this->initialRangeStart.Set(&this->rangeStart);
         this->rangeEnd.SetBase16(rangeEnd.c_str());
-	this->rangeDiff2.Set(&this->rangeEnd);
-	this->rangeDiff2.Sub(&this->rangeStart);
-	this->targetCounter = 1;
+        this->rangeDiff2.Set(&this->rangeEnd);
+        this->rangeDiff2.Sub(&this->rangeStart);
+        this->targetCounter = 1;
+        this->gpuStepMultiplierRequested = std::max(1, gpuStepMultiplier);
 
-	secp = new Secp256K1();
-	secp->Init();
+        secp = new Secp256K1();
+        secp->Init();
 
 	if (this->searchMode == (int)SEARCH_MODE_SA) {
 		assert(hashORxpoint.size() == 20);
@@ -360,6 +362,7 @@ void KeyHunt::initializePseudoRandomState()
         pseudoRandomEnabled = false;
         pseudoRandomCpuEnabled = false;
         cpuGroupSize = CPU_GRP_SIZE;
+        gpuStepMultiplierEffective = useGpu ? gpuStepMultiplierRequested : 1;
         pseudoState.totalKeys = 0;
         pseudoState.totalBlocks = 0;
         pseudoState.blockMask = 0;
@@ -391,7 +394,8 @@ void KeyHunt::initializePseudoRandomState()
         uint64_t targetGroupSize = static_cast<uint64_t>(CPU_GRP_SIZE);
 #ifdef WITHGPU
         if (useGpu) {
-                targetGroupSize = std::max<uint64_t>(targetGroupSize, static_cast<uint64_t>(STEP_SIZE));
+                const uint64_t gpuTarget = static_cast<uint64_t>(STEP_SIZE) * static_cast<uint64_t>(gpuStepMultiplierRequested);
+                targetGroupSize = std::max<uint64_t>(targetGroupSize, gpuTarget);
         }
 #endif
         uint64_t cappedGroup = targetGroupSize;
@@ -489,6 +493,7 @@ void KeyHunt::initializePseudoRandomState()
 
         pseudoState.blockKeyCount = workingGroup;
         if (pseudoState.blockKeyCount == 0) {
+                gpuStepMultiplierEffective = useGpu ? gpuStepMultiplierRequested : 1;
                 return;
         }
 
@@ -499,6 +504,25 @@ void KeyHunt::initializePseudoRandomState()
         else {
                 cpuGroupSize = CPU_GRP_SIZE;
                 pseudoRandomCpuEnabled = false;
+        }
+
+        if (useGpu) {
+                if (pseudoState.blockKeyCount >= static_cast<uint64_t>(STEP_SIZE)) {
+                        uint64_t multiplier = pseudoState.blockKeyCount / static_cast<uint64_t>(STEP_SIZE);
+                        if (multiplier == 0) {
+                                multiplier = 1;
+                        }
+                        if (multiplier > static_cast<uint64_t>(gpuStepMultiplierRequested)) {
+                                multiplier = static_cast<uint64_t>(gpuStepMultiplierRequested);
+                        }
+                        gpuStepMultiplierEffective = static_cast<int>(std::max<uint64_t>(1, multiplier));
+                }
+                else {
+                        gpuStepMultiplierEffective = 1;
+                }
+        }
+        else {
+                gpuStepMultiplierEffective = 1;
         }
         pseudoState.totalKeys = inclusiveRangeFits64 ? inclusiveRangeLow : std::numeric_limits<uint64_t>::max();
         pseudoState.totalBlocks = totalBlocks;
@@ -1236,15 +1260,16 @@ void KeyHunt::FindKeyGPU(TH_PARAM * ph)
         case (int)SEARCH_MODE_MA:
         case (int)SEARCH_MODE_MX:
                 g = new GPUEngine(secp, ph->gridSizeX, ph->gridSizeY, ph->gpuId, maxFound, searchMode, compMode, coinType,
-                        BLOOM_N, bloom->get_bits(), bloom->get_hashes(), bloom->get_bf(), DATA, TOTAL_COUNT, retainInputKeys);
+                        BLOOM_N, bloom->get_bits(), bloom->get_hashes(), bloom->get_bf(), DATA, TOTAL_COUNT, retainInputKeys,
+                        gpuStepMultiplierEffective);
                 break;
         case (int)SEARCH_MODE_SA:
                 g = new GPUEngine(secp, ph->gridSizeX, ph->gridSizeY, ph->gpuId, maxFound, searchMode, compMode, coinType,
-                        hash160Keccak, retainInputKeys);
+                        hash160Keccak, retainInputKeys, gpuStepMultiplierEffective);
                 break;
         case (int)SEARCH_MODE_SX:
                 g = new GPUEngine(secp, ph->gridSizeX, ph->gridSizeY, ph->gpuId, maxFound, searchMode, compMode, coinType,
-                        xpoint, retainInputKeys);
+                        xpoint, retainInputKeys, gpuStepMultiplierEffective);
                 break;
         default:
                 printf("Invalid search mode format");
@@ -1402,20 +1427,22 @@ void KeyHunt::FindKeyGPU(TH_PARAM * ph)
                 }
 
                 if (ok) {
+                        const uint64_t stepSize = g->GetStepSize();
                         if (usePseudoRandomGpu) {
                                 for (int i = 0; i < assignedBlocks; i++) {
                                         if (pseudoSequential[i] != std::numeric_limits<uint64_t>::max()) {
                                                 notifyPseudoRandomBlockComplete(pseudoSequential[i]);
                                         }
                                 }
-                                counters[thId] += (uint64_t)(STEP_SIZE)*assignedBlocks;
+                                counters[thId] += stepSize * static_cast<uint64_t>(assignedBlocks);
                         }
                         else {
                                 for (int i = 0; i < nbThread; i++) {
-                                        keys[i].Add((uint64_t)STEP_SIZE);
+                                        keys[i].Add(stepSize);
                                 }
-                                counters[thId] += (uint64_t)(STEP_SIZE)*nbThread; // Point
+                                counters[thId] += stepSize * static_cast<uint64_t>(nbThread); // Point
                         }
+                }
                 }
 
         }

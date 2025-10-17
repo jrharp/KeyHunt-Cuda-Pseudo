@@ -20,6 +20,7 @@
 #include <cuda_runtime.h>
 #include <device_launch_parameters.h>
 
+#include <algorithm>
 #include <array>
 #include <cstdio>
 #include <cstdlib>
@@ -86,62 +87,77 @@ constexpr std::array<SmToCores, 20> kSmToCores = { {
 
 // mode multiple addresses
 __global__ void compute_keys_mode_ma(uint32_t mode, uint8_t* bloomLookUp, int BLOOM_BITS, uint8_t BLOOM_HASHES,
-	uint64_t* keys, uint32_t maxFound, uint32_t* found)
+        uint64_t* keys, uint32_t maxFound, uint32_t* found, int stepMultiplier)
 {
 
-	int xPtr = (blockIdx.x * blockDim.x) * 8;
-	int yPtr = xPtr + 4 * blockDim.x;
-	ComputeKeysSEARCH_MODE_MA(mode, keys + xPtr, keys + yPtr, bloomLookUp, BLOOM_BITS, BLOOM_HASHES, maxFound, found);
+        int xPtr = (blockIdx.x * blockDim.x) * 8;
+        int yPtr = xPtr + 4 * blockDim.x;
+        for (int iteration = 0; iteration < stepMultiplier; ++iteration) {
+                ComputeKeysSEARCH_MODE_MA(mode, keys + xPtr, keys + yPtr, bloomLookUp, BLOOM_BITS, BLOOM_HASHES, maxFound, found);
+        }
 
 }
 
 __global__ void compute_keys_comp_mode_ma(uint32_t mode, uint8_t* bloomLookUp, int BLOOM_BITS, uint8_t BLOOM_HASHES, uint64_t* keys,
-	uint32_t maxFound, uint32_t* found)
+        uint32_t maxFound, uint32_t* found, int stepMultiplier)
 {
 
-	int xPtr = (blockIdx.x * blockDim.x) * 8;
-	int yPtr = xPtr + 4 * blockDim.x;
-	ComputeKeysSEARCH_MODE_MA(mode, keys + xPtr, keys + yPtr, bloomLookUp, BLOOM_BITS, BLOOM_HASHES, maxFound, found);
+        int xPtr = (blockIdx.x * blockDim.x) * 8;
+        int yPtr = xPtr + 4 * blockDim.x;
+        for (int iteration = 0; iteration < stepMultiplier; ++iteration) {
+                ComputeKeysSEARCH_MODE_MA(mode, keys + xPtr, keys + yPtr, bloomLookUp, BLOOM_BITS, BLOOM_HASHES, maxFound, found);
+        }
 
 }
 
 // mode single address
-__global__ void compute_keys_mode_sa(uint32_t mode, uint32_t* hash160, uint64_t* keys, uint32_t maxFound, uint32_t* found)
+__global__ void compute_keys_mode_sa(uint32_t mode, uint32_t* hash160, uint64_t* keys, uint32_t maxFound, uint32_t* found,
+        int stepMultiplier)
 {
 
-	int xPtr = (blockIdx.x * blockDim.x) * 8;
-	int yPtr = xPtr + 4 * blockDim.x;
-	ComputeKeysSEARCH_MODE_SA(mode, keys + xPtr, keys + yPtr, hash160, maxFound, found);
+        int xPtr = (blockIdx.x * blockDim.x) * 8;
+        int yPtr = xPtr + 4 * blockDim.x;
+        for (int iteration = 0; iteration < stepMultiplier; ++iteration) {
+                ComputeKeysSEARCH_MODE_SA(mode, keys + xPtr, keys + yPtr, hash160, maxFound, found);
+        }
 
 }
 
-__global__ void compute_keys_comp_mode_sa(uint32_t mode, uint32_t* hash160, uint64_t* keys, uint32_t maxFound, uint32_t* found)
+__global__ void compute_keys_comp_mode_sa(uint32_t mode, uint32_t* hash160, uint64_t* keys, uint32_t maxFound, uint32_t* found,
+        int stepMultiplier)
 {
 
-	int xPtr = (blockIdx.x * blockDim.x) * 8;
-	int yPtr = xPtr + 4 * blockDim.x;
-	ComputeKeysSEARCH_MODE_SA(mode, keys + xPtr, keys + yPtr, hash160, maxFound, found);
+        int xPtr = (blockIdx.x * blockDim.x) * 8;
+        int yPtr = xPtr + 4 * blockDim.x;
+        for (int iteration = 0; iteration < stepMultiplier; ++iteration) {
+                ComputeKeysSEARCH_MODE_SA(mode, keys + xPtr, keys + yPtr, hash160, maxFound, found);
+        }
 
 }
 
 // mode multiple x points
 __global__ void compute_keys_comp_mode_mx(uint32_t mode, uint8_t* bloomLookUp, int BLOOM_BITS, uint8_t BLOOM_HASHES, uint64_t* keys,
-	uint32_t maxFound, uint32_t* found)
+        uint32_t maxFound, uint32_t* found, int stepMultiplier)
 {
 
-	int xPtr = (blockIdx.x * blockDim.x) * 8;
-	int yPtr = xPtr + 4 * blockDim.x;
-	ComputeKeysSEARCH_MODE_MX(mode, keys + xPtr, keys + yPtr, bloomLookUp, BLOOM_BITS, BLOOM_HASHES, maxFound, found);
+        int xPtr = (blockIdx.x * blockDim.x) * 8;
+        int yPtr = xPtr + 4 * blockDim.x;
+        for (int iteration = 0; iteration < stepMultiplier; ++iteration) {
+                ComputeKeysSEARCH_MODE_MX(mode, keys + xPtr, keys + yPtr, bloomLookUp, BLOOM_BITS, BLOOM_HASHES, maxFound, found);
+        }
 
 }
 
 // mode single x point
-__global__ void compute_keys_comp_mode_sx(uint32_t mode, uint32_t* xpoint, uint64_t* keys, uint32_t maxFound, uint32_t* found)
+__global__ void compute_keys_comp_mode_sx(uint32_t mode, uint32_t* xpoint, uint64_t* keys, uint32_t maxFound, uint32_t* found,
+        int stepMultiplier)
 {
 
-	int xPtr = (blockIdx.x * blockDim.x) * 8;
-	int yPtr = xPtr + 4 * blockDim.x;
-	ComputeKeysSEARCH_MODE_SX(mode, keys + xPtr, keys + yPtr, xpoint, maxFound, found);
+        int xPtr = (blockIdx.x * blockDim.x) * 8;
+        int yPtr = xPtr + 4 * blockDim.x;
+        for (int iteration = 0; iteration < stepMultiplier; ++iteration) {
+                ComputeKeysSEARCH_MODE_SX(mode, keys + xPtr, keys + yPtr, xpoint, maxFound, found);
+        }
 
 }
 
@@ -149,21 +165,26 @@ __global__ void compute_keys_comp_mode_sx(uint32_t mode, uint32_t* xpoint, uint6
 // ethereum
 
 __global__ void compute_keys_mode_eth_ma(uint8_t* bloomLookUp, int BLOOM_BITS, uint8_t BLOOM_HASHES, uint64_t* keys,
-	uint32_t maxFound, uint32_t* found)
+        uint32_t maxFound, uint32_t* found, int stepMultiplier)
 {
 
-	int xPtr = (blockIdx.x * blockDim.x) * 8;
-	int yPtr = xPtr + 4 * blockDim.x;
-	ComputeKeysSEARCH_ETH_MODE_MA(keys + xPtr, keys + yPtr, bloomLookUp, BLOOM_BITS, BLOOM_HASHES, maxFound, found);
+        int xPtr = (blockIdx.x * blockDim.x) * 8;
+        int yPtr = xPtr + 4 * blockDim.x;
+        for (int iteration = 0; iteration < stepMultiplier; ++iteration) {
+                ComputeKeysSEARCH_ETH_MODE_MA(keys + xPtr, keys + yPtr, bloomLookUp, BLOOM_BITS, BLOOM_HASHES, maxFound, found);
+        }
 
 }
 
-__global__ void compute_keys_mode_eth_sa(uint32_t* hash, uint64_t* keys, uint32_t maxFound, uint32_t* found)
+__global__ void compute_keys_mode_eth_sa(uint32_t* hash, uint64_t* keys, uint32_t maxFound, uint32_t* found,
+        int stepMultiplier)
 {
 
-	int xPtr = (blockIdx.x * blockDim.x) * 8;
-	int yPtr = xPtr + 4 * blockDim.x;
-	ComputeKeysSEARCH_ETH_MODE_SA(keys + xPtr, keys + yPtr, hash, maxFound, found);
+        int xPtr = (blockIdx.x * blockDim.x) * 8;
+        int yPtr = xPtr + 4 * blockDim.x;
+        for (int iteration = 0; iteration < stepMultiplier; ++iteration) {
+                ComputeKeysSEARCH_ETH_MODE_SA(keys + xPtr, keys + yPtr, hash, maxFound, found);
+        }
 
 }
 
@@ -192,7 +213,8 @@ int _ConvertSMVer2Cores(int major, int minor)
 
 GPUEngine::GPUEngine(Secp256K1* secp, int nbThreadGroup, int nbThreadPerGroup, int gpuId, uint32_t maxFound,
         int searchMode, int compMode, int coinType, int64_t BLOOM_SIZE, uint64_t BLOOM_BITS,
-        uint8_t BLOOM_HASHES, const uint8_t* BLOOM_DATA, uint8_t* DATA, uint64_t TOTAL_COUNT, bool rKey)
+        uint8_t BLOOM_HASHES, const uint8_t* BLOOM_DATA, uint8_t* DATA, uint64_t TOTAL_COUNT, bool rKey,
+        int stepMultiplier)
 {
 
         // Initialise CUDA
@@ -201,6 +223,7 @@ GPUEngine::GPUEngine(Secp256K1* secp, int nbThreadGroup, int nbThreadPerGroup, i
         this->compMode = compMode;
         this->coinType = coinType;
         this->rKey = rKey;
+        this->stepMultiplier = std::max(1, stepMultiplier);
 
         this->BLOOM_SIZE = BLOOM_SIZE;
         this->BLOOM_BITS = BLOOM_BITS;
@@ -290,7 +313,8 @@ GPUEngine::GPUEngine(Secp256K1* secp, int nbThreadGroup, int nbThreadPerGroup, i
 // ----------------------------------------------------------------------------
 
 GPUEngine::GPUEngine(Secp256K1* secp, int nbThreadGroup, int nbThreadPerGroup, int gpuId, uint32_t maxFound,
-        int searchMode, int compMode, int coinType, const uint32_t* hashORxpoint, bool rKey)
+        int searchMode, int compMode, int coinType, const uint32_t* hashORxpoint, bool rKey,
+        int stepMultiplier)
 {
 
         // Initialise CUDA
@@ -299,6 +323,7 @@ GPUEngine::GPUEngine(Secp256K1* secp, int nbThreadGroup, int nbThreadPerGroup, i
         this->compMode = compMode;
         this->coinType = coinType;
         this->rKey = rKey;
+        this->stepMultiplier = std::max(1, stepMultiplier);
 
         initialised = false;
 
@@ -464,7 +489,21 @@ void GPUEngine::InitGenratorTable(Secp256K1* secp)
 
 int GPUEngine::GetGroupSize()
 {
-        return GRP_SIZE;
+        return GRP_SIZE * stepMultiplier;
+}
+
+// ----------------------------------------------------------------------------
+
+uint64_t GPUEngine::GetStepSize() const
+{
+        return static_cast<uint64_t>(GRP_SIZE) * static_cast<uint64_t>(stepMultiplier);
+}
+
+// ----------------------------------------------------------------------------
+
+int GPUEngine::GetStepMultiplier() const
+{
+        return stepMultiplier;
 }
 
 // ----------------------------------------------------------------------------
@@ -631,16 +670,16 @@ bool GPUEngine::callKernelSEARCH_MODE_MA()
         if (coinType == COIN_BTC) {
                 if (compMode == SEARCH_COMPRESSED) {
                         compute_keys_comp_mode_ma << < activeThreadCount / nbThreadPerGroup, nbThreadPerGroup, 0, stream_ >> >
-                                (compMode, inputBloomLookUp, BLOOM_BITS, BLOOM_HASHES, inputKey, maxFound, outputBuffer);
+                                (compMode, inputBloomLookUp, BLOOM_BITS, BLOOM_HASHES, inputKey, maxFound, outputBuffer, stepMultiplier);
                 }
                 else {
                         compute_keys_mode_ma << < activeThreadCount / nbThreadPerGroup, nbThreadPerGroup, 0, stream_ >> >
-                                (compMode, inputBloomLookUp, BLOOM_BITS, BLOOM_HASHES, inputKey, maxFound, outputBuffer);
+                                (compMode, inputBloomLookUp, BLOOM_BITS, BLOOM_HASHES, inputKey, maxFound, outputBuffer, stepMultiplier);
                 }
         }
         else {
                 compute_keys_mode_eth_ma << < activeThreadCount / nbThreadPerGroup, nbThreadPerGroup, 0, stream_ >> >
-                        (inputBloomLookUp, BLOOM_BITS, BLOOM_HASHES, inputKey, maxFound, outputBuffer);
+                        (inputBloomLookUp, BLOOM_BITS, BLOOM_HASHES, inputKey, maxFound, outputBuffer, stepMultiplier);
         }
 
         CUDA_CHECK(cudaPeekAtLastError());
@@ -671,7 +710,7 @@ bool GPUEngine::callKernelSEARCH_MODE_MX()
         // Call the kernel (Perform STEP_SIZE keys per thread)
         if (compMode == SEARCH_COMPRESSED) {
                 compute_keys_comp_mode_mx << < activeThreadCount / nbThreadPerGroup, nbThreadPerGroup, 0, stream_ >> >
-                        (compMode, inputBloomLookUp, BLOOM_BITS, BLOOM_HASHES, inputKey, maxFound, outputBuffer);
+                        (compMode, inputBloomLookUp, BLOOM_BITS, BLOOM_HASHES, inputKey, maxFound, outputBuffer, stepMultiplier);
         }
         else {
                 printf("GPUEngine: PubKeys search doesn't support uncompressed\n");
@@ -706,16 +745,16 @@ bool GPUEngine::callKernelSEARCH_MODE_SA()
         if (coinType == COIN_BTC) {
                 if (compMode == SEARCH_COMPRESSED) {
                         compute_keys_comp_mode_sa << < activeThreadCount / nbThreadPerGroup, nbThreadPerGroup, 0, stream_ >> >
-                                (compMode, inputHashORxpoint, inputKey, maxFound, outputBuffer);
+                                (compMode, inputHashORxpoint, inputKey, maxFound, outputBuffer, stepMultiplier);
                 }
                 else {
                         compute_keys_mode_sa << < activeThreadCount / nbThreadPerGroup, nbThreadPerGroup, 0, stream_ >> >
-                                (compMode, inputHashORxpoint, inputKey, maxFound, outputBuffer);
+                                (compMode, inputHashORxpoint, inputKey, maxFound, outputBuffer, stepMultiplier);
                 }
         }
         else {
                 compute_keys_mode_eth_sa << < activeThreadCount / nbThreadPerGroup, nbThreadPerGroup, 0, stream_ >> >
-                        (inputHashORxpoint, inputKey, maxFound, outputBuffer);
+                        (inputHashORxpoint, inputKey, maxFound, outputBuffer, stepMultiplier);
         }
 
         CUDA_CHECK(cudaPeekAtLastError());
@@ -746,7 +785,7 @@ bool GPUEngine::callKernelSEARCH_MODE_SX()
         // Call the kernel (Perform STEP_SIZE keys per thread)
         if (compMode == SEARCH_COMPRESSED) {
                 compute_keys_comp_mode_sx << < activeThreadCount / nbThreadPerGroup, nbThreadPerGroup, 0, stream_ >> >
-                        (compMode, inputHashORxpoint, inputKey, maxFound, outputBuffer);
+                        (compMode, inputHashORxpoint, inputKey, maxFound, outputBuffer, stepMultiplier);
         }
         else {
                 printf("GPUEngine: PubKeys search doesn't support uncompressed\n");
