@@ -612,13 +612,13 @@ void Int::SubOne() {
 
 // ------------------------------------------------
 
-bool Int::IsPositive() {
+bool Int::IsPositive() const {
 	return (int64_t)(bits64[NB64BLOCK - 1]) >= 0;
 }
 
 // ------------------------------------------------
 
-bool Int::IsNegative() {
+bool Int::IsNegative() const {
 	return (int64_t)(bits64[NB64BLOCK - 1]) < 0;
 }
 
@@ -917,8 +917,8 @@ double Int::ToDouble() {
 
 // ------------------------------------------------
 
-int Int::GetBitLength() {
-	Int t(this);
+int Int::GetBitLength() const {
+	Int t(*this);
 	if (IsNegative())
 		t.Neg();
 
