@@ -55,6 +55,7 @@ public:
 
 private:
 
+        void configurePseudoRandomGpuAggregation(const std::vector<int>& gpuId, const std::vector<int>& gridSize);
         void InitGenratorTable();
         void initializePseudoRandomState();
         bool acquirePseudoRandomBlock(Int& key, Point& startP, uint64_t& sequentialIndex);
@@ -140,6 +141,8 @@ private:
                 uint64_t blockMask = 0;
                 unsigned int blockBits = 0;
                 uint64_t blockKeyCount = 0;
+                uint64_t baseBlockKeyCount = 0;
+                uint32_t aggregationShift = 0;
                 std::atomic<uint64_t> nextCounter{ 0 };
                 std::string stateFile;
                 mutable std::mutex fileMutex;
@@ -154,6 +157,7 @@ private:
         bool pseudoRandomCpuEnabled = false;
         PseudoRandomState pseudoState;
         Int initialRangeStart;
+        uint32_t pseudoRandomAggregationHint = 0;
 
 #ifdef WIN64
         HANDLE ghMutex;

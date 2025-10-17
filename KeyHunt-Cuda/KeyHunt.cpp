@@ -123,13 +123,10 @@ KeyHunt::KeyHunt(const std::string& inputFile, int compMode, int searchMode, int
 		printf("Loaded       : %s Ethereum addresses\n", formatThousands(i).c_str());
 	}
 
-	printf("\n");
+        printf("\n");
 
         bloom->print();
         printf("\n");
-
-        initializePseudoRandomState();
-        InitGenratorTable();
 
 }
 
@@ -171,9 +168,6 @@ KeyHunt::KeyHunt(const std::vector<unsigned char>& hashORxpoint, int compMode, i
 		}
 	}
         printf("\n");
-
-        initializePseudoRandomState();
-        InitGenratorTable();
 }
 
 // ----------------------------------------------------------------------------
@@ -234,6 +228,20 @@ bool KeyHunt::loadPseudoRandomState(uint64_t& resumeIndex) const
         if (!in.good())
                 return false;
 
+        uint64_t storedBlockSize = 0;
+        uint32_t storedShift = 0;
+
+        if (in >> storedBlockSize) {
+                if (!(in >> storedShift)) {
+                        storedShift = 0;
+                }
+
+                if (storedBlockSize != pseudoState.blockKeyCount || storedShift != pseudoState.aggregationShift) {
+                        printf("Pseudo-random traversal state is incompatible with the current block configuration. Restarting from the beginning.\n");
+                        return false;
+                }
+        }
+
         resumeIndex = value;
         return true;
 }
@@ -259,6 +267,8 @@ void KeyHunt::persistPseudoRandomState(uint64_t completedCount)
         }
 
         out << completedCount << '\n';
+        out << pseudoState.blockKeyCount << '\n';
+        out << pseudoState.aggregationShift << '\n';
         if (!out.good()) {
                 if (!pseudoState.persistWarningShown) {
                         printf("Warning: unable to persist pseudo-random state to %s\n", pseudoState.stateFile.c_str());
@@ -313,9 +323,11 @@ bool KeyHunt::acquirePseudoRandomBlock(Int& key, Point& startP, uint64_t& sequen
                 key = initialRangeStart;
                 key.Add(&offset);
 
-                Int km(&key);
-                km.Add(blockSize / 2);
-                startP = secp->ComputePublicKey(&km);
+                if (pseudoState.aggregationShift == 0 || pseudoState.baseBlockKeyCount == 0) {
+                        Int km(&key);
+                        km.Add(blockSize / 2);
+                        startP = secp->ComputePublicKey(&km);
+                }
                 return true;
         }
 }
@@ -365,6 +377,8 @@ void KeyHunt::initializePseudoRandomState()
         pseudoState.blockMask = 0;
         pseudoState.blockBits = 0;
         pseudoState.blockKeyCount = 0;
+        pseudoState.baseBlockKeyCount = 0;
+        pseudoState.aggregationShift = 0;
         pseudoState.nextCounter.store(0);
         pseudoState.stateFile.clear();
         pseudoState.lastPersisted = std::numeric_limits<uint64_t>::max();
@@ -487,13 +501,47 @@ void KeyHunt::initializePseudoRandomState()
                 return;
         }
 
-        pseudoState.blockKeyCount = workingGroup;
-        if (pseudoState.blockKeyCount == 0) {
+        pseudoState.baseBlockKeyCount = workingGroup;
+        if (pseudoState.baseBlockKeyCount == 0) {
                 return;
         }
 
-        if (pseudoState.blockKeyCount <= static_cast<uint64_t>(CPU_GRP_SIZE)) {
-                cpuGroupSize = static_cast<int>(pseudoState.blockKeyCount);
+        uint64_t aggregatedGroup = workingGroup;
+        uint64_t aggregatedTotalBlocks = totalBlocks;
+        uint32_t usedAggregationShift = 0;
+
+        if (pseudoRandomAggregationHint > 0) {
+                uint32_t desiredShift = pseudoRandomAggregationHint;
+                if (desiredShift > 63)
+                        desiredShift = 63;
+
+                for (int shift = static_cast<int>(desiredShift); shift > 0; --shift) {
+                        if (workingGroup > (std::numeric_limits<uint64_t>::max() >> shift))
+                                continue;
+
+                        uint64_t candidateAggregatedGroup = workingGroup << shift;
+                        uint64_t candidateTotalBlocks = 0;
+                        if (!isMultipleOfPowerOfTwo(candidateAggregatedGroup))
+                                continue;
+
+                        if (!computeTotalBlocks(candidateAggregatedGroup, candidateTotalBlocks))
+                                continue;
+
+                        if (candidateTotalBlocks == 0 || (candidateTotalBlocks & (candidateTotalBlocks - 1)) != 0)
+                                continue;
+
+                        aggregatedGroup = candidateAggregatedGroup;
+                        aggregatedTotalBlocks = candidateTotalBlocks;
+                        usedAggregationShift = static_cast<uint32_t>(shift);
+                        break;
+                }
+        }
+
+        pseudoState.blockKeyCount = aggregatedGroup;
+        pseudoState.aggregationShift = usedAggregationShift;
+
+        if (pseudoState.baseBlockKeyCount <= static_cast<uint64_t>(CPU_GRP_SIZE) && pseudoState.aggregationShift == 0) {
+                cpuGroupSize = static_cast<int>(pseudoState.baseBlockKeyCount);
                 pseudoRandomCpuEnabled = true;
         }
         else {
@@ -501,10 +549,10 @@ void KeyHunt::initializePseudoRandomState()
                 pseudoRandomCpuEnabled = false;
         }
         pseudoState.totalKeys = inclusiveRangeFits64 ? inclusiveRangeLow : std::numeric_limits<uint64_t>::max();
-        pseudoState.totalBlocks = totalBlocks;
-        pseudoState.blockMask = totalBlocks - 1;
+        pseudoState.totalBlocks = aggregatedTotalBlocks;
+        pseudoState.blockMask = aggregatedTotalBlocks - 1;
 
-        uint64_t tmp = totalBlocks;
+        uint64_t tmp = pseudoState.totalBlocks;
         unsigned int bits = 0;
         while (tmp > 1) {
                 bits++;
@@ -531,11 +579,69 @@ void KeyHunt::initializePseudoRandomState()
         }
 
         pseudoRandomEnabled = true;
-        printf("Pseudo-random traversal enabled (%" PRIu64 " blocks, block size %" PRIu64 "). State file: %s\n",
-                pseudoState.totalBlocks, pseudoState.blockKeyCount, pseudoState.stateFile.c_str());
+        if (pseudoState.aggregationShift > 0 && pseudoState.baseBlockKeyCount > 0) {
+                printf("Pseudo-random traversal enabled (%" PRIu64 " blocks, block size %" PRIu64 " = %" PRIu64 " x 2^%u). State file: %s\n",
+                        pseudoState.totalBlocks, pseudoState.blockKeyCount, pseudoState.baseBlockKeyCount,
+                        pseudoState.aggregationShift, pseudoState.stateFile.c_str());
+        }
+        else {
+                printf("Pseudo-random traversal enabled (%" PRIu64 " blocks, block size %" PRIu64 "). State file: %s\n",
+                        pseudoState.totalBlocks, pseudoState.blockKeyCount, pseudoState.stateFile.c_str());
+        }
         if (rKey > 0) {
                 printf("Note: random base key refresh is disabled while pseudo-random traversal is active.\n");
         }
+}
+
+// ----------------------------------------------------------------------------
+
+void KeyHunt::configurePseudoRandomGpuAggregation(const std::vector<int>& gpuId, const std::vector<int>& gridSize)
+{
+#ifdef WITHGPU
+        uint32_t newHint = 0;
+        if (useGpu && !gpuId.empty()) {
+                uint64_t minGpuThreads = std::numeric_limits<uint64_t>::max();
+                for (size_t i = 0; i < gpuId.size(); ++i) {
+                        int deviceId = gpuId[i];
+                        int groupCount = gridSize.size() > (i * 2) ? gridSize[i * 2] : -1;
+                        int threadsPerGroup = gridSize.size() > (i * 2 + 1) ? gridSize[i * 2 + 1] : 0;
+
+                        if (threadsPerGroup <= 0) {
+                                threadsPerGroup = 128;
+                        }
+
+                        if (groupCount == -1) {
+                                cudaDeviceProp deviceProp{};
+                                if (cudaGetDeviceProperties(&deviceProp, deviceId) != cudaSuccess) {
+                                        continue;
+                                }
+                                groupCount = deviceProp.multiProcessorCount * 8;
+                        }
+
+                        if (groupCount <= 0) {
+                                continue;
+                        }
+
+                        uint64_t totalThreads = static_cast<uint64_t>(groupCount) * static_cast<uint64_t>(threadsPerGroup);
+                        if (totalThreads == 0) {
+                                continue;
+                        }
+
+                        minGpuThreads = std::min(minGpuThreads, totalThreads);
+                }
+
+                if (minGpuThreads != std::numeric_limits<uint64_t>::max()) {
+                        while (((uint64_t)1 << (newHint + 1)) <= minGpuThreads && (newHint + 1) < 64) {
+                                ++newHint;
+                        }
+                }
+        }
+
+        pseudoRandomAggregationHint = newHint;
+#else
+        (void)gpuId;
+        (void)gridSize;
+#endif
 }
 
 // ----------------------------------------------------------------------------
@@ -1258,6 +1364,7 @@ void KeyHunt::FindKeyGPU(TH_PARAM * ph)
         Point* p = new Point[nbThread];
         Int* keys = new Int[nbThread];
         std::vector<uint64_t> pseudoSequential(nbThread, std::numeric_limits<uint64_t>::max());
+        std::vector<uint64_t> aggregatesUsed;
         std::vector<ITEM> found;
 
         printf("GPU          : %s\n\n", g->deviceName.c_str());
@@ -1285,26 +1392,55 @@ void KeyHunt::FindKeyGPU(TH_PARAM * ph)
 
                 if (usePseudoRandomGpu) {
                         std::fill(pseudoSequential.begin(), pseudoSequential.end(), std::numeric_limits<uint64_t>::max());
+                        aggregatesUsed.clear();
+                        aggregatesUsed.reserve(nbThread);
 
-                        for (int i = 0; i < nbThread; i++) {
-                                Int candidateKey;
-                                Point candidatePoint;
+                        const uint64_t baseBlockSize = (pseudoState.baseBlockKeyCount > 0) ?
+                                pseudoState.baseBlockKeyCount : pseudoState.blockKeyCount;
+                        const uint64_t blocksPerAggregate = (pseudoState.aggregationShift > 0) ?
+                                (1ULL << pseudoState.aggregationShift) : 1ULL;
+
+                        int threadIndex = 0;
+                        while (threadIndex < nbThread) {
+                                Int aggregateKey;
+                                Point aggregatePoint;
                                 uint64_t sequentialIndex = 0;
-                                if (!acquirePseudoRandomBlock(candidateKey, candidatePoint, sequentialIndex)) {
+                                if (!acquirePseudoRandomBlock(aggregateKey, aggregatePoint, sequentialIndex)) {
                                         break;
                                 }
 
-                                keys[i] = candidateKey;
-                                p[i] = candidatePoint;
-                                pseudoSequential[i] = sequentialIndex;
-                                assignedBlocks++;
+                                aggregatesUsed.push_back(sequentialIndex);
+
+                                uint64_t limit = blocksPerAggregate;
+                                for (uint64_t sub = 0; sub < limit && threadIndex < nbThread; ++sub) {
+                                        Int candidateKey(&aggregateKey);
+                                        if (sub != 0) {
+                                                candidateKey.Add(baseBlockSize * sub);
+                                        }
+
+                                        Point candidatePoint;
+                                        if (pseudoState.aggregationShift == 0) {
+                                                candidatePoint = aggregatePoint;
+                                        }
+                                        else {
+                                                Int midpoint(&candidateKey);
+                                                midpoint.Add(baseBlockSize / 2);
+                                                candidatePoint = secp->ComputePublicKey(&midpoint);
+                                        }
+
+                                        keys[threadIndex] = candidateKey;
+                                        p[threadIndex] = candidatePoint;
+                                        pseudoSequential[threadIndex] = sequentialIndex;
+                                        threadIndex++;
+                                        assignedBlocks++;
+                                }
                         }
 
                         if (assignedBlocks == 0) {
                                 break;
                         }
 
-                        activeThreads = assignedBlocks;
+                        activeThreads = threadIndex;
                         if (threadsPerGroup > 0) {
                                 int remainder = activeThreads % threadsPerGroup;
                                 if (remainder != 0) {
@@ -1403,9 +1539,20 @@ void KeyHunt::FindKeyGPU(TH_PARAM * ph)
 
                 if (ok) {
                         if (usePseudoRandomGpu) {
-                                for (int i = 0; i < assignedBlocks; i++) {
-                                        if (pseudoSequential[i] != std::numeric_limits<uint64_t>::max()) {
-                                                notifyPseudoRandomBlockComplete(pseudoSequential[i]);
+                                if (!aggregatesUsed.empty()) {
+                                        if (pseudoState.aggregationShift == 0) {
+                                                for (uint64_t seq : aggregatesUsed) {
+                                                        notifyPseudoRandomBlockComplete(seq);
+                                                }
+                                        }
+                                        else {
+                                                std::vector<uint64_t> aggregatesToNotify = aggregatesUsed;
+                                                std::sort(aggregatesToNotify.begin(), aggregatesToNotify.end());
+                                                aggregatesToNotify.erase(std::unique(aggregatesToNotify.begin(),
+                                                        aggregatesToNotify.end()), aggregatesToNotify.end());
+                                                for (uint64_t seq : aggregatesToNotify) {
+                                                        notifyPseudoRandomBlockComplete(seq);
+                                                }
                                         }
                                 }
                                 counters[thId] += (uint64_t)(STEP_SIZE)*assignedBlocks;
@@ -1512,13 +1659,17 @@ void KeyHunt::Search(int nbThread, std::vector<int> gpuId, std::vector<int> grid
 
 	double t0;
 	double t1;
-	endOfSearch = false;
-	nbCPUThread = nbThread;
-	nbGPUThread = (useGpu ? (int)gpuId.size() : 0);
-	nbFoundKey = 0;
+        endOfSearch = false;
+        nbCPUThread = nbThread;
+        nbGPUThread = (useGpu ? (int)gpuId.size() : 0);
+        nbFoundKey = 0;
 
-	// setup ranges
-	SetupRanges(nbCPUThread + nbGPUThread);
+        configurePseudoRandomGpuAggregation(gpuId, gridSize);
+        initializePseudoRandomState();
+        InitGenratorTable();
+
+        // setup ranges
+        SetupRanges(nbCPUThread + nbGPUThread);
 
 	memset(counters, 0, sizeof(counters));
 
