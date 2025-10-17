@@ -160,6 +160,10 @@ private:
                 uint64_t lowestUnpersisted = 0;
                 uint64_t lastPersisted = std::numeric_limits<uint64_t>::max();
                 bool persistWarningShown = false;
+                mutable uint64_t persistedBlockKeyCount = 0;
+                mutable bool persistedBlockKeyCountValid = false;
+                mutable uint64_t persistedTotalBlocks = 0;
+                mutable bool persistedTotalBlocksValid = false;
         };
 
         bool pseudoRandomEnabled = false;

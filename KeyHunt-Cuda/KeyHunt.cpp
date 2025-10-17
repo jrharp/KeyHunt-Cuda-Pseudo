@@ -16,6 +16,8 @@
 #include <inttypes.h>
 #include <limits>
 #include <cstdio>
+#include <filesystem>
+#include <sstream>
 #ifndef WIN64
 #include <pthread.h>
 #endif
@@ -222,21 +224,131 @@ void KeyHunt::InitGenratorTable()
 
 // ----------------------------------------------------------------------------
 
+namespace {
+
+struct PersistedStateData {
+        uint64_t completedBlocks = 0;
+        bool hasCompletedBlocks = false;
+        uint64_t blockKeyCount = 0;
+        bool hasBlockKeyCount = false;
+        uint64_t totalBlocks = 0;
+        bool hasTotalBlocks = false;
+};
+
+std::string trimCopy(const std::string& input)
+{
+        const size_t first = input.find_first_not_of(" \t\r\n");
+        if (first == std::string::npos)
+                return std::string();
+        const size_t last = input.find_last_not_of(" \t\r\n");
+        return input.substr(first, last - first + 1);
+}
+
+bool parseUint64(const std::string& text, uint64_t& value)
+{
+        if (text.empty())
+                return false;
+
+        std::istringstream ss(text);
+        ss >> value;
+        if (!ss)
+                return false;
+
+        char extra = '\0';
+        ss >> extra;
+        if (!ss.fail())
+                return false;
+
+        return true;
+}
+
+bool loadStateFile(const std::string& path, PersistedStateData& data)
+{
+        if (path.empty())
+                return false;
+
+        std::ifstream in(path);
+        if (!in.good())
+                return false;
+
+        std::string line;
+        while (std::getline(in, line)) {
+                std::string trimmed = trimCopy(line);
+                if (trimmed.empty() || trimmed[0] == '#')
+                        continue;
+
+                const size_t eqPos = trimmed.find('=');
+                if (eqPos != std::string::npos) {
+                        std::string key = trimCopy(trimmed.substr(0, eqPos));
+                        std::string valueText = trimCopy(trimmed.substr(eqPos + 1));
+                        uint64_t parsedValue = 0;
+                        if (!parseUint64(valueText, parsedValue))
+                                continue;
+
+                        if (key == "completed_blocks") {
+                                data.completedBlocks = parsedValue;
+                                data.hasCompletedBlocks = true;
+                        }
+                        else if (key == "block_key_count") {
+                                data.blockKeyCount = parsedValue;
+                                data.hasBlockKeyCount = true;
+                        }
+                        else if (key == "total_blocks") {
+                                data.totalBlocks = parsedValue;
+                                data.hasTotalBlocks = true;
+                        }
+                        continue;
+                }
+
+                uint64_t parsedValue = 0;
+                if (!parseUint64(trimmed, parsedValue))
+                        continue;
+
+                if (!data.hasCompletedBlocks) {
+                        data.completedBlocks = parsedValue;
+                        data.hasCompletedBlocks = true;
+                }
+                else if (!data.hasBlockKeyCount) {
+                        data.blockKeyCount = parsedValue;
+                        data.hasBlockKeyCount = true;
+                }
+                else if (!data.hasTotalBlocks) {
+                        data.totalBlocks = parsedValue;
+                        data.hasTotalBlocks = true;
+                }
+        }
+
+        return data.hasCompletedBlocks;
+}
+
+}
+
 bool KeyHunt::loadPseudoRandomState(uint64_t& resumeIndex) const
 {
         if (pseudoState.stateFile.empty())
                 return false;
 
-        std::ifstream in(pseudoState.stateFile);
-        if (!in.good())
+        PersistedStateData data;
+        if (loadStateFile(pseudoState.stateFile, data)) {
+                resumeIndex = data.completedBlocks;
+                pseudoState.persistedBlockKeyCount = data.blockKeyCount;
+                pseudoState.persistedBlockKeyCountValid = data.hasBlockKeyCount;
+                pseudoState.persistedTotalBlocks = data.totalBlocks;
+                pseudoState.persistedTotalBlocksValid = data.hasTotalBlocks;
+                return true;
+        }
+
+        std::filesystem::path backupPath(pseudoState.stateFile);
+        backupPath += ".bak";
+        PersistedStateData backupData;
+        if (!loadStateFile(backupPath.string(), backupData))
                 return false;
 
-        uint64_t value = 0;
-        in >> value;
-        if (!in.good())
-                return false;
-
-        resumeIndex = value;
+        resumeIndex = backupData.completedBlocks;
+        pseudoState.persistedBlockKeyCount = backupData.blockKeyCount;
+        pseudoState.persistedBlockKeyCountValid = backupData.hasBlockKeyCount;
+        pseudoState.persistedTotalBlocks = backupData.totalBlocks;
+        pseudoState.persistedTotalBlocksValid = backupData.hasTotalBlocks;
         return true;
 }
 
@@ -251,7 +363,12 @@ void KeyHunt::persistPseudoRandomState(uint64_t completedCount)
                 return;
 
         std::lock_guard<std::mutex> guard(pseudoState.fileMutex);
-        std::ofstream out(pseudoState.stateFile, std::ios::trunc);
+
+        const std::filesystem::path statePath(pseudoState.stateFile);
+        const std::filesystem::path tempPath = statePath.string() + ".tmp";
+        const std::filesystem::path backupPath = statePath.string() + ".bak";
+
+        std::ofstream out(tempPath, std::ios::trunc);
         if (!out.is_open()) {
                 if (!pseudoState.persistWarningShown) {
                         printf("Warning: unable to persist pseudo-random state to %s\n", pseudoState.stateFile.c_str());
@@ -260,8 +377,18 @@ void KeyHunt::persistPseudoRandomState(uint64_t completedCount)
                 return;
         }
 
-        out << completedCount << '\n';
+        out << "completed_blocks=" << completedCount << '\n';
+        if (pseudoState.blockKeyCount != 0) {
+                out << "block_key_count=" << pseudoState.blockKeyCount << '\n';
+        }
+        if (pseudoState.totalBlocks != 0) {
+                out << "total_blocks=" << pseudoState.totalBlocks << '\n';
+        }
+        out.flush();
         if (!out.good()) {
+                out.close();
+                std::error_code cleanupEc;
+                std::filesystem::remove(tempPath, cleanupEc);
                 if (!pseudoState.persistWarningShown) {
                         printf("Warning: unable to persist pseudo-random state to %s\n", pseudoState.stateFile.c_str());
                         pseudoState.persistWarningShown = true;
@@ -269,8 +396,46 @@ void KeyHunt::persistPseudoRandomState(uint64_t completedCount)
                 return;
         }
 
+        out.close();
+
+        std::error_code ec;
+        std::filesystem::rename(statePath, backupPath, ec);
+        if (ec && ec != std::errc::no_such_file_or_directory) {
+                std::error_code cleanupEc;
+                std::filesystem::remove(tempPath, cleanupEc);
+                if (!pseudoState.persistWarningShown) {
+                        printf("Warning: unable to persist pseudo-random state to %s\n", pseudoState.stateFile.c_str());
+                        pseudoState.persistWarningShown = true;
+                }
+                return;
+        }
+
+        ec.clear();
+        std::filesystem::rename(tempPath, statePath, ec);
+        if (ec) {
+                std::error_code restoreEc;
+                std::filesystem::rename(backupPath, statePath, restoreEc);
+                std::error_code cleanupEc;
+                std::filesystem::remove(tempPath, cleanupEc);
+                if (!pseudoState.persistWarningShown) {
+                        printf("Warning: unable to persist pseudo-random state to %s\n", pseudoState.stateFile.c_str());
+                        pseudoState.persistWarningShown = true;
+                }
+                return;
+        }
+
+        std::filesystem::remove(backupPath, ec);
+
         pseudoState.lastPersisted = completedCount;
         pseudoState.persistWarningShown = false;
+        if (pseudoState.blockKeyCount != 0) {
+                pseudoState.persistedBlockKeyCount = pseudoState.blockKeyCount;
+                pseudoState.persistedBlockKeyCountValid = true;
+        }
+        if (pseudoState.totalBlocks != 0) {
+                pseudoState.persistedTotalBlocks = pseudoState.totalBlocks;
+                pseudoState.persistedTotalBlocksValid = true;
+        }
 }
 
 // ----------------------------------------------------------------------------
@@ -480,6 +645,10 @@ void KeyHunt::initializePseudoRandomState()
         pseudoState.persistWarningShown = false;
         pseudoState.lowestUnpersisted = 0;
         pseudoState.completedBlocks.clear();
+        pseudoState.persistedBlockKeyCount = 0;
+        pseudoState.persistedBlockKeyCountValid = false;
+        pseudoState.persistedTotalBlocks = 0;
+        pseudoState.persistedTotalBlocksValid = false;
 
         if (searchMode != (int)SEARCH_MODE_SA || coinType != COIN_BTC)
                 return;
@@ -652,12 +821,68 @@ void KeyHunt::initializePseudoRandomState()
 
         uint64_t resumeIndex = 0;
         if (loadPseudoRandomState(resumeIndex)) {
-                if (resumeIndex >= pseudoState.totalBlocks)
-                        resumeIndex = resumeIndex % pseudoState.totalBlocks;
+                const uint64_t persistedResumeIndex = resumeIndex;
+                if (pseudoState.totalBlocks != 0 && resumeIndex >= pseudoState.totalBlocks)
+                        resumeIndex %= pseudoState.totalBlocks;
                 pseudoState.nextCounter.store(resumeIndex);
                 pseudoState.lastPersisted = resumeIndex;
                 pseudoState.lowestUnpersisted = resumeIndex;
                 printf("Pseudo-random traversal resume index: %" PRIu64 "\n", resumeIndex);
+
+                uint64_t percentBlocks = pseudoState.totalBlocks;
+                if (pseudoState.persistedTotalBlocksValid && pseudoState.persistedTotalBlocks != 0)
+                        percentBlocks = pseudoState.persistedTotalBlocks;
+
+                bool percentAvailable = percentBlocks != 0;
+                long double percentValue = 0.0L;
+                if (percentAvailable) {
+                        percentValue = (static_cast<long double>(persistedResumeIndex) / static_cast<long double>(percentBlocks)) * 100.0L;
+                        if (percentValue > 100.0L)
+                                percentValue = 100.0L;
+                }
+
+                uint64_t blockKeyForAddresses = pseudoState.blockKeyCount;
+                bool fromPersistedBlockKey = false;
+                if (pseudoState.persistedBlockKeyCountValid && pseudoState.persistedBlockKeyCount != 0) {
+                        blockKeyForAddresses = pseudoState.persistedBlockKeyCount;
+                        fromPersistedBlockKey = true;
+                }
+
+                if (pseudoState.persistedTotalBlocksValid && pseudoState.persistedTotalBlocks != 0 && pseudoState.persistedTotalBlocks != pseudoState.totalBlocks) {
+                        printf("Note: persisted total block count (%" PRIu64 ") differs from current total (%" PRIu64 ").\n",
+                                pseudoState.persistedTotalBlocks, pseudoState.totalBlocks);
+                }
+
+                if (blockKeyForAddresses != 0) {
+                        Int resumeInt(persistedResumeIndex);
+                        Int blockSizeInt(blockKeyForAddresses);
+                        Int totalAddresses;
+                        totalAddresses.Mult(&resumeInt, &blockSizeInt);
+
+                        std::string totalAddressesStr;
+                        if (totalAddresses.GetSize64() <= 1) {
+                                totalAddressesStr = formatThousands(totalAddresses.bits64[0]);
+                        }
+                        else {
+                                totalAddressesStr = totalAddresses.GetBase10();
+                        }
+
+                        if (fromPersistedBlockKey && pseudoState.persistedBlockKeyCount != pseudoState.blockKeyCount && pseudoState.blockKeyCount != 0) {
+                                printf("Note: persisted block size (%" PRIu64 ") differs from current block size (%" PRIu64 ").\n",
+                                        pseudoState.persistedBlockKeyCount, pseudoState.blockKeyCount);
+                        }
+
+                        if (percentAvailable) {
+                                printf("Resumed progress: %s addresses scanned (%.6Lf%% of range).\n",
+                                        totalAddressesStr.c_str(), percentValue);
+                        }
+                        else {
+                                printf("Resumed progress: %s addresses scanned.\n", totalAddressesStr.c_str());
+                        }
+                }
+                else if (percentAvailable) {
+                        printf("Resumed progress: %.6Lf%% of range completed.\n", percentValue);
+                }
         }
 
         pseudoRandomEnabled = true;
