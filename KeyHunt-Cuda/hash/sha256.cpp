@@ -15,6 +15,7 @@
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
 */
 
+#include <cstddef>
 #include <string.h>
 #include "sha256.h"
 
@@ -473,6 +474,33 @@ void sha256_65(unsigned char *input, unsigned char *digest)
     _sha256::Initialize(s);
     _sha256::Transform(s, input);
     _sha256::Transform(s, input + 64);
+
+    WRITEBE32(digest, s[0]);
+    WRITEBE32(digest + 4, s[1]);
+    WRITEBE32(digest + 8, s[2]);
+    WRITEBE32(digest + 12, s[3]);
+    WRITEBE32(digest + 16, s[4]);
+    WRITEBE32(digest + 20, s[5]);
+    WRITEBE32(digest + 24, s[6]);
+    WRITEBE32(digest + 28, s[7]);
+
+}
+
+void sha256_from_prepared(const uint32_t *words, std::size_t blockCount, unsigned char *digest)
+{
+
+    uint32_t s[8];
+    unsigned char chunk[64];
+
+    _sha256::Initialize(s);
+
+    for (std::size_t i = 0; i < blockCount; ++i) {
+        const uint32_t *block = words + (i * 16);
+        for (int j = 0; j < 16; ++j) {
+            WRITEBE32(chunk + (j * 4), block[j]);
+        }
+        _sha256::Transform(s, chunk);
+    }
 
     WRITEBE32(digest, s[0]);
     WRITEBE32(digest + 4, s[1]);
