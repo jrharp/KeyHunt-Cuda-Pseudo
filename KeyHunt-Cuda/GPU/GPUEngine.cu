@@ -135,28 +135,38 @@ __global__ void compute_keys_comp_mode_ma(uint32_t mode, uint8_t* bloomLookUp, u
 }
 
 // mode single address
-__global__ void compute_keys_mode_sa(uint32_t mode, uint32_t* hash160, uint64_t* keys, uint32_t maxFound, uint32_t* found,
+__global__ void compute_keys_mode_sa(uint32_t mode, const uint32_t* __restrict__ hash160, uint64_t* keys, uint32_t maxFound, uint32_t* found,
         int stepMultiplier)
 {
 
         int xPtr = (blockIdx.x * blockDim.x) * 8;
         int yPtr = xPtr + 4 * blockDim.x;
+        __shared__ uint32_t sharedHash160[5];
+        if (threadIdx.x < 5) {
+                sharedHash160[threadIdx.x] = hash160[threadIdx.x];
+        }
+        __syncthreads();
         for (int iteration = 0; iteration < stepMultiplier; ++iteration) {
                 const uint32_t baseOffset = static_cast<uint32_t>(iteration) * static_cast<uint32_t>(GRP_SIZE);
-                ComputeKeysSEARCH_MODE_SA(mode, keys + xPtr, keys + yPtr, hash160, maxFound, found, baseOffset);
+                ComputeKeysSEARCH_MODE_SA(mode, keys + xPtr, keys + yPtr, sharedHash160, maxFound, found, baseOffset);
         }
 
 }
 
-__global__ void compute_keys_comp_mode_sa(uint32_t mode, uint32_t* hash160, uint64_t* keys, uint32_t maxFound, uint32_t* found,
+__global__ void compute_keys_comp_mode_sa(uint32_t mode, const uint32_t* __restrict__ hash160, uint64_t* keys, uint32_t maxFound, uint32_t* found,
         int stepMultiplier)
 {
 
         int xPtr = (blockIdx.x * blockDim.x) * 8;
         int yPtr = xPtr + 4 * blockDim.x;
+        __shared__ uint32_t sharedHash160[5];
+        if (threadIdx.x < 5) {
+                sharedHash160[threadIdx.x] = hash160[threadIdx.x];
+        }
+        __syncthreads();
         for (int iteration = 0; iteration < stepMultiplier; ++iteration) {
                 const uint32_t baseOffset = static_cast<uint32_t>(iteration) * static_cast<uint32_t>(GRP_SIZE);
-                ComputeKeysSEARCH_MODE_SA(mode, keys + xPtr, keys + yPtr, hash160, maxFound, found, baseOffset);
+                ComputeKeysSEARCH_MODE_SA(mode, keys + xPtr, keys + yPtr, sharedHash160, maxFound, found, baseOffset);
         }
 
 }
@@ -209,15 +219,20 @@ __global__ void compute_keys_mode_eth_ma(uint8_t* bloomLookUp, uint64_t BLOOM_BI
 
 }
 
-__global__ void compute_keys_mode_eth_sa(uint32_t* hash, uint64_t* keys, uint32_t maxFound, uint32_t* found,
+__global__ void compute_keys_mode_eth_sa(const uint32_t* __restrict__ hash, uint64_t* keys, uint32_t maxFound, uint32_t* found,
         int stepMultiplier)
 {
 
         int xPtr = (blockIdx.x * blockDim.x) * 8;
         int yPtr = xPtr + 4 * blockDim.x;
+        __shared__ uint32_t sharedHash[5];
+        if (threadIdx.x < 5) {
+                sharedHash[threadIdx.x] = hash[threadIdx.x];
+        }
+        __syncthreads();
         for (int iteration = 0; iteration < stepMultiplier; ++iteration) {
                 const uint32_t baseOffset = static_cast<uint32_t>(iteration) * static_cast<uint32_t>(GRP_SIZE);
-                ComputeKeysSEARCH_ETH_MODE_SA(keys + xPtr, keys + yPtr, hash, maxFound, found, baseOffset);
+                ComputeKeysSEARCH_ETH_MODE_SA(keys + xPtr, keys + yPtr, sharedHash, maxFound, found, baseOffset);
         }
 
 }

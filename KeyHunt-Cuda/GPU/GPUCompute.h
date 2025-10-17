@@ -194,14 +194,15 @@ __device__ __forceinline__ bool Hash160Equals(const uint32_t* __restrict__ candi
 
 // ---------------------------------------------------------------------------------------
 
-__device__ __forceinline__ bool MatchXPoint(const uint32_t* __restrict__ _h, const uint32_t* __restrict__ xpoint)
+__device__ __forceinline__ bool MatchXPoint(const uint32_t* __restrict__ candidate,
+        const uint32_t* __restrict__ xpoint)
 {
-	bool match = true;
-	#pragma unroll
-	for (int i = 0; i < 8; ++i) {
-		match &= (_h[i] == xpoint[i]);
-	}
-	return match;
+        uint32_t diff = 0u;
+        #pragma unroll
+        for (int i = 0; i < 8; ++i) {
+                diff |= candidate[i] ^ xpoint[i];
+        }
+        return diff == 0u;
 }
 
 // ---------------------------------------------------------------------------------------
@@ -209,7 +210,9 @@ __device__ __forceinline__ bool MatchXPoint(const uint32_t* __restrict__ _h, con
 __device__ __forceinline__ void CheckPointSEARCH_MODE_SA(uint32_t* __restrict__ _h, uint32_t offset, int32_t mode,
         const uint32_t* __restrict__ hash160, uint32_t maxFound, uint32_t* __restrict__ out)
 {
-        const uint32_t tid = (blockIdx.x * blockDim.x) + threadIdx.x;
+        if (!MatchHash(hashCandidate, hash160)) {
+                return;
+        }
 
         if (Hash160Equals(_h, hash160)) {
                 const uint32_t pos = atomicAdd(out, 1u);
@@ -1176,7 +1179,9 @@ __device__ void ComputeKeysSEARCH_ETH_MODE_MA(uint64_t* startx, uint64_t* starty
 __device__ __noinline__ void CheckPointSEARCH_MODE_SA(uint32_t* _h, uint32_t offset,
         const uint32_t* __restrict__ hash, uint32_t maxFound, uint32_t* out)
 {
-        uint32_t tid = (blockIdx.x * blockDim.x) + threadIdx.x;
+        if (!MatchHash(hashCandidate, hash)) {
+                return;
+        }
 
         if (Hash160Equals(_h, hash)) {
                 uint32_t pos = atomicAdd(out, 1);
