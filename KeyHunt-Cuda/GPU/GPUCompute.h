@@ -181,47 +181,54 @@ __device__ __forceinline__ void CheckPointSEARCH_MODE_MX(uint32_t* __restrict__ 
 
 // ---------------------------------------------------------------------------------------
 
-__device__ __forceinline__ bool MatchHash(const uint32_t* __restrict__ _h, const uint32_t* __restrict__ hash)
+__device__ __forceinline__ bool MatchHash(const uint32_t* __restrict__ candidate,
+        const uint32_t* __restrict__ hash)
 {
-	bool match = true;
-	#pragma unroll
-	for (int i = 0; i < 5; ++i) {
-		match &= (_h[i] == hash[i]);
-	}
-	return match;
+        uint32_t diff = 0u;
+        #pragma unroll
+        for (int i = 0; i < 5; ++i) {
+                diff |= candidate[i] ^ hash[i];
+        }
+        return diff == 0u;
 }
 
 // ---------------------------------------------------------------------------------------
 
-__device__ __forceinline__ bool MatchXPoint(const uint32_t* __restrict__ _h, const uint32_t* __restrict__ xpoint)
+__device__ __forceinline__ bool MatchXPoint(const uint32_t* __restrict__ candidate,
+        const uint32_t* __restrict__ xpoint)
 {
-	bool match = true;
-	#pragma unroll
-	for (int i = 0; i < 8; ++i) {
-		match &= (_h[i] == xpoint[i]);
-	}
-	return match;
+        uint32_t diff = 0u;
+        #pragma unroll
+        for (int i = 0; i < 8; ++i) {
+                diff |= candidate[i] ^ xpoint[i];
+        }
+        return diff == 0u;
 }
 
 // ---------------------------------------------------------------------------------------
 
-__device__ __forceinline__ void CheckPointSEARCH_MODE_SA(uint32_t* __restrict__ _h, uint32_t offset, int32_t mode,
-        uint32_t* __restrict__ hash160, uint32_t maxFound, uint32_t* __restrict__ out)
+__device__ __forceinline__ void CheckPointSEARCH_MODE_SA(const uint32_t* __restrict__ hashCandidate,
+        uint32_t offset, int32_t mode, const uint32_t* __restrict__ hash160, uint32_t maxFound,
+        uint32_t* __restrict__ out)
 {
+        if (!MatchHash(hashCandidate, hash160)) {
+                return;
+        }
+
+        const uint32_t pos = atomicAdd(out, 1u);
+        if (pos >= maxFound) {
+                return;
+        }
+
         const uint32_t tid = (blockIdx.x * blockDim.x) + threadIdx.x;
+        uint32_t* const basePtr = out + pos * ITEM_SIZE_A32 + 1;
+        const uint32_t packed = (mode ? 0x80000000u : 0u) | (offset & 0x7FFFFFFFu);
 
-        if (MatchHash(_h, hash160)) {
-                const uint32_t pos = atomicAdd(out, 1u);
-                if (pos < maxFound) {
-                        const uint32_t base = pos * ITEM_SIZE_A32;
-                        out[base + 1] = tid;
-                        const uint32_t packed = (mode ? 0x80000000u : 0u) | (offset & 0x7FFFFFFFu);
-                        out[base + 2] = packed;
-                        #pragma unroll
-                        for (int i = 0; i < 5; ++i) {
-                                out[base + 3 + i] = _h[i];
-                        }
-                }
+        basePtr[0] = tid;
+        basePtr[1] = packed;
+        #pragma unroll
+        for (int i = 0; i < 5; ++i) {
+                basePtr[2 + i] = hashCandidate[i];
         }
 }
 
@@ -265,7 +272,7 @@ __device__ __noinline__ void CheckHashCompSEARCH_MODE_MA(uint64_t* px, uint8_t i
 #define CHECK_POINT_SEARCH_MODE_SA(_h,offset,mode)  CheckPointSEARCH_MODE_SA(_h,offset,mode,hash160,maxFound,out)
 
 __device__ __noinline__ void CheckHashCompSEARCH_MODE_SA(uint64_t* px, uint8_t isOdd, uint32_t offset,
-        uint32_t* hash160, uint32_t maxFound, uint32_t* out)
+        const uint32_t* __restrict__ hash160, uint32_t maxFound, uint32_t* out)
 {
         uint32_t h[5];
         _GetHash160Comp(px, isOdd, (uint8_t*)h);
@@ -285,7 +292,7 @@ __device__ __noinline__ void CheckHashUnCompSEARCH_MODE_MA(uint64_t* px, uint64_
 // ---------------------------------------------------------------------------------------
 
 __device__ __noinline__ void CheckHashUnCompSEARCH_MODE_SA(uint64_t* px, uint64_t* py, uint32_t offset,
-        uint32_t* hash160, uint32_t maxFound, uint32_t* out)
+        const uint32_t* __restrict__ hash160, uint32_t maxFound, uint32_t* out)
 {
         uint32_t h[5];
         _GetHash160(px, py, (uint8_t*)h);
@@ -536,7 +543,7 @@ __device__ void ComputeKeysSEARCH_MODE_MA(uint32_t mode, uint64_t* startx, uint6
 // -----------------------------------------------------------------------------------------
 
 __device__ __noinline__ void CheckHashSEARCH_MODE_SA(uint32_t mode, uint64_t* px, uint64_t* py, uint32_t offset,
-        uint32_t* hash160, uint32_t maxFound, uint32_t* out)
+        const uint32_t* __restrict__ hash160, uint32_t maxFound, uint32_t* out)
 {
         switch (mode) {
         case SEARCH_COMPRESSED:
@@ -557,12 +564,12 @@ __device__ __noinline__ void CheckHashSEARCH_MODE_SA(uint32_t mode, uint64_t* px
 #define CHECK_HASH_SEARCH_MODE_SA(offset) CheckHashSEARCH_MODE_SA(mode, px, py, offset, hash160, maxFound, out)
 
 __device__ void ComputeKeysSEARCH_MODE_SA(uint32_t mode, uint64_t* startx, uint64_t* starty,
-        uint32_t* hash160, uint32_t maxFound, uint32_t* out, uint32_t baseOffset)
+        const uint32_t* __restrict__ hash160, uint32_t maxFound, uint32_t* out, uint32_t baseOffset)
 {
 
-	uint64_t dx[GRP_SIZE / 2 + 1][4];
-	uint64_t px[4];
-	uint64_t py[4];
+        uint64_t dx[GRP_SIZE / 2 + 1][4];
+        uint64_t px[4];
+        uint64_t py[4];
         uint64_t pyn[4];
         uint64_t sx[4];
         uint64_t sy[4];
@@ -571,6 +578,13 @@ __device__ void ComputeKeysSEARCH_MODE_SA(uint32_t mode, uint64_t* startx, uint6
         uint64_t _p2[4];
         uint64_t twoGx[4];
         uint64_t twoGy[4];
+
+        uint32_t hash160Local[5];
+        #pragma unroll
+        for (int idx = 0; idx < 5; ++idx) {
+                hash160Local[idx] = hash160[idx];
+        }
+        hash160 = hash160Local;
 
         LoadGeneratorPoint(twoGx, _2Gnx);
         LoadGeneratorPoint(twoGy, _2Gny);
@@ -1165,29 +1179,33 @@ __device__ void ComputeKeysSEARCH_ETH_MODE_MA(uint64_t* startx, uint64_t* starty
 
 
 
-__device__ __noinline__ void CheckPointSEARCH_MODE_SA(uint32_t* _h, uint32_t offset,
-        uint32_t* hash, uint32_t maxFound, uint32_t* out)
+__device__ __noinline__ void CheckPointSEARCH_MODE_SA(const uint32_t* __restrict__ hashCandidate,
+        uint32_t offset, const uint32_t* __restrict__ hash, uint32_t maxFound, uint32_t* out)
 {
-        uint32_t tid = (blockIdx.x * blockDim.x) + threadIdx.x;
+        if (!MatchHash(hashCandidate, hash)) {
+                return;
+        }
 
-        if (MatchHash(_h, hash)) {
-                uint32_t pos = atomicAdd(out, 1);
-                if (pos < maxFound) {
-                        out[pos * ITEM_SIZE_A32 + 1] = tid;
-                        out[pos * ITEM_SIZE_A32 + 2] = offset & 0x7FFFFFFF;
-                        out[pos * ITEM_SIZE_A32 + 3] = _h[0];
-			out[pos * ITEM_SIZE_A32 + 4] = _h[1];
-			out[pos * ITEM_SIZE_A32 + 5] = _h[2];
-			out[pos * ITEM_SIZE_A32 + 6] = _h[3];
-			out[pos * ITEM_SIZE_A32 + 7] = _h[4];
-		}
-	}
+        const uint32_t pos = atomicAdd(out, 1u);
+        if (pos >= maxFound) {
+                return;
+        }
+
+        const uint32_t tid = (blockIdx.x * blockDim.x) + threadIdx.x;
+        uint32_t* const basePtr = out + pos * ITEM_SIZE_A32 + 1;
+
+        basePtr[0] = tid;
+        basePtr[1] = offset & 0x7FFFFFFF;
+        #pragma unroll
+        for (int i = 0; i < 5; ++i) {
+                basePtr[2 + i] = hashCandidate[i];
+        }
 }
 
 #define CHECK_POINT_SEARCH_ETH_MODE_SA(_h,offset)  CheckPointSEARCH_MODE_SA(_h,offset,hash,maxFound,out)
 
 __device__ __noinline__ void CheckHashCompSEARCH_ETH_MODE_SA(uint64_t* px, uint64_t* py, uint32_t offset,
-        uint32_t* hash, uint32_t maxFound, uint32_t* out)
+        const uint32_t* __restrict__ hash, uint32_t maxFound, uint32_t* out)
 {
         uint32_t h[5];
         _GetHashKeccak160(px, py, h);
@@ -1195,7 +1213,7 @@ __device__ __noinline__ void CheckHashCompSEARCH_ETH_MODE_SA(uint64_t* px, uint6
 }
 
 __device__ __noinline__ void CheckHashSEARCH_ETH_MODE_SA(uint64_t* px, uint64_t* py, uint32_t offset,
-        uint32_t* hash, uint32_t maxFound, uint32_t* out)
+        const uint32_t* __restrict__ hash, uint32_t maxFound, uint32_t* out)
 {
         CheckHashCompSEARCH_ETH_MODE_SA(px, py, offset, hash, maxFound, out);
 
@@ -1203,11 +1221,11 @@ __device__ __noinline__ void CheckHashSEARCH_ETH_MODE_SA(uint64_t* px, uint64_t*
 #define CHECK_HASH_SEARCH_ETH_MODE_SA(offset) CheckHashSEARCH_ETH_MODE_SA(px, py, offset, hash, maxFound, out)
 
 __device__ void ComputeKeysSEARCH_ETH_MODE_SA(uint64_t* startx, uint64_t* starty,
-        uint32_t* hash, uint32_t maxFound, uint32_t* out, uint32_t baseOffset)
+        const uint32_t* __restrict__ hash, uint32_t maxFound, uint32_t* out, uint32_t baseOffset)
 {
 
-	uint64_t dx[GRP_SIZE / 2 + 1][4];
-	uint64_t px[4];
+        uint64_t dx[GRP_SIZE / 2 + 1][4];
+        uint64_t px[4];
 	uint64_t py[4];
         uint64_t pyn[4];
         uint64_t sx[4];
@@ -1217,6 +1235,13 @@ __device__ void ComputeKeysSEARCH_ETH_MODE_SA(uint64_t* startx, uint64_t* starty
         uint64_t _p2[4];
         uint64_t twoGx[4];
         uint64_t twoGy[4];
+
+        uint32_t hashLocal[5];
+        #pragma unroll
+        for (int idx = 0; idx < 5; ++idx) {
+                hashLocal[idx] = hash[idx];
+        }
+        hash = hashLocal;
 
         LoadGeneratorPoint(twoGx, _2Gnx);
         LoadGeneratorPoint(twoGy, _2Gny);
