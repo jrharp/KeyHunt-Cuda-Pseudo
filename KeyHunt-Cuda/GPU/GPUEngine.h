@@ -113,6 +113,10 @@ private:
         uint8_t* inputBloomLookUp = nullptr;
         uint8_t* inputBloomLookUpPinned = nullptr;
 
+        uint64_t bloomFastModReciprocal_ = 0;
+        uint32_t bloomMask_ = 0;
+        uint32_t bloomIsPowerOfTwo_ = 0;
+
         uint64_t* inputKey = nullptr;
         uint64_t* inputKeyPinned = nullptr;
 
