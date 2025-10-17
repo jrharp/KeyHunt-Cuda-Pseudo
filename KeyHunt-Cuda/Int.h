@@ -87,8 +87,8 @@ public:
 	bool IsZero();
 	bool IsOne();
 	bool IsStrictPositive();
-	bool IsPositive();
-	bool IsNegative();
+	bool IsPositive() const;
+	bool IsNegative() const;
 	bool IsEven();
 	bool IsOdd();
 	bool IsProbablePrime();
@@ -145,7 +145,7 @@ public:
 	// Size
 	int GetSize();       // Number of significant 32bit limbs
 	int GetSize64();     // Number of significant 64bit limbs
-	int GetBitLength();  // Number of significant bits
+	int GetBitLength() const;  // Number of significant bits
 
 	// Setter
 	void SetInt32(uint32_t value);
