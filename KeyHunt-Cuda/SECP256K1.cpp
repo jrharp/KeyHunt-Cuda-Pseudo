@@ -19,11 +19,160 @@
 #include "hash/sha256.h"
 #include "hash/ripemd160.h"
 #include "hash/keccak160.h"
+#include "IntGroup.h"
 #include "Base58.h"
+#include <algorithm>
 #include <string.h>
+
+namespace {
+static const std::array<uint64_t, 4> GLV_G1 = {
+        0xE893209A45DBB031ULL,
+        0x3DAA8A1471E8CA7FULL,
+        0xE86C90E49284EB15ULL,
+        0x3086D221A7D46BCDULL
+};
+
+static const std::array<uint64_t, 4> GLV_G2 = {
+        0x1571B4AE8AC47F71ULL,
+        0x221208AC9DF506C6ULL,
+        0x6F547FA90ABFE4C4ULL,
+        0xE4437ED6010E8828ULL
+};
+}
 
 Secp256K1::Secp256K1()
 {
+}
+
+Int Secp256K1::MulShift384(const Int& k, const std::array<uint64_t, 4>& g)
+{
+        unsigned __int128 accum[8] = {};
+        for (int i = 0; i < 4; ++i) {
+                uint64_t ki = k.bits64[i];
+                for (int j = 0; j < 4; ++j) {
+                        accum[i + j] += static_cast<unsigned __int128>(ki) * g[j];
+                }
+        }
+
+        for (int i = 0; i < 7; ++i) {
+                unsigned __int128 carry = accum[i] >> 64;
+                accum[i] = static_cast<uint64_t>(accum[i]);
+                accum[i + 1] += carry;
+        }
+        accum[5] += (static_cast<unsigned __int128>(1) << 63);
+        for (int i = 5; i < 7; ++i) {
+                unsigned __int128 carry = accum[i] >> 64;
+                accum[i] = static_cast<uint64_t>(accum[i]);
+                accum[i + 1] += carry;
+        }
+        accum[6] = static_cast<uint64_t>(accum[6]);
+        accum[7] = static_cast<uint64_t>(accum[7]);
+
+        Int result;
+        result.CLEAR();
+        result.bits64[0] = static_cast<uint64_t>(accum[6]);
+        result.bits64[1] = static_cast<uint64_t>(accum[7]);
+        return result;
+}
+
+void Secp256K1::EnsureAffine(Point& p) const
+{
+        if (!p.z.IsOne() && !p.z.IsZero()) {
+                p.Reduce();
+        }
+}
+
+Point Secp256K1::ApplyLambda(const Point& p) const
+{
+        if (p.z.IsZero()) {
+                return p;
+        }
+
+        Point r(p);
+        r.x.ModMulK1(&p.x, &betaConst);
+        return r;
+}
+
+std::vector<int8_t> Secp256K1::BuildWNAF(const Int& scalar, int width)
+{
+        std::vector<int8_t> digits;
+        Int k((Int*)&scalar);
+        const uint32_t window = 1u << width;
+        const uint32_t mask = window - 1;
+
+        while (!k.IsZero()) {
+                int32_t digit = 0;
+                if (k.IsOdd()) {
+                        uint32_t low = k.bits[0] & mask;
+                        digit = static_cast<int32_t>(low);
+                        if (digit >= static_cast<int32_t>(window >> 1)) {
+                                digit -= static_cast<int32_t>(window);
+                                k.Add(static_cast<uint64_t>(-digit));
+                        }
+                        else {
+                                k.Sub(static_cast<uint64_t>(digit));
+                        }
+                }
+                digits.push_back(static_cast<int8_t>(digit));
+                k.ShiftR(1);
+        }
+
+        return digits;
+}
+
+Point Secp256K1::SelectPrecomputed(const std::array<Point, 8>& table, int8_t digit)
+{
+        Point r(table[(std::abs(digit) - 1) >> 1]);
+        if (digit < 0) {
+                r.y.ModNeg();
+        }
+        return r;
+}
+
+void Secp256K1::PrecomputeGLVTables()
+{
+        Point base(G);
+        EnsureAffine(base);
+        Point twoG = DoubleDirect(base);
+        EnsureAffine(twoG);
+        for (size_t i = 0; i < wnafOddMultiples.size(); ++i) {
+                wnafOddMultiples[i] = base;
+                if (i + 1 < wnafOddMultiples.size()) {
+                        base = AddDirect(base, twoG);
+                        EnsureAffine(base);
+                }
+        }
+
+        Point lambdaBase = ApplyLambda(G);
+        EnsureAffine(lambdaBase);
+        Point lambdaTwo = DoubleDirect(lambdaBase);
+        EnsureAffine(lambdaTwo);
+        for (size_t i = 0; i < wnafLambdaMultiples.size(); ++i) {
+                wnafLambdaMultiples[i] = lambdaBase;
+                if (i + 1 < wnafLambdaMultiples.size()) {
+                        lambdaBase = AddDirect(lambdaBase, lambdaTwo);
+                        EnsureAffine(lambdaBase);
+                }
+        }
+}
+
+void Secp256K1::SplitLambda(const Int& k, Int& r1, Int& r2)
+{
+        Int c1 = MulShift384(k, GLV_G1);
+        Int c2 = MulShift384(k, GLV_G2);
+
+        Int term1(&c1);
+        term1.ModMulK1order(&minusB1);
+        Int term2(&c2);
+        term2.ModMulK1order(&minusB2);
+
+        r2.ModAddK1order(&term1, &term2);
+
+        Int lambdaTerm(&r2);
+        lambdaTerm.ModMulK1order(&lambdaConst);
+
+        r1.Set((Int*)&k);
+        r1.ModSubK1order(&lambdaTerm);
 }
 
 void Secp256K1::Init()
@@ -38,23 +187,30 @@ void Secp256K1::Init()
 
 	// Generator point and order
 	G.x.SetBase16("79BE667EF9DCBBAC55A06295CE870B07029BFCDB2DCE28D959F2815B16F81798");
-	G.y.SetBase16("483ADA7726A3C4655DA4FBFC0E1108A8FD17B448A68554199C47D08FFB10D4B8");
-	G.z.SetInt32(1);
-	order.SetBase16("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141");
+        G.y.SetBase16("483ADA7726A3C4655DA4FBFC0E1108A8FD17B448A68554199C47D08FFB10D4B8");
+        G.z.SetInt32(1);
+        order.SetBase16("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141");
 
-	Int::InitK1(&order);
+        Int::InitK1(&order);
 
-	// Compute Generator table
-	Point N(G);
-	for (int i = 0; i < 32; i++) {
-		GTable[i * 256] = N;
+        lambdaConst.SetBase16("5363AD4CC05C30E0A5261C028812645A122E22EA20816678DF02967C1B23BD72");
+        betaConst.SetBase16("7AE96A2B657C07106E64479EAC3434E99CF0497512F58995C1396C28719501EE");
+        minusB1.SetBase16("00000000000000000000000000000000E4437ED6010E88286F547FA90ABFE4C3");
+        minusB2.SetBase16("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFE8A280AC50774346DD765CDA83DB1562C");
+
+        // Compute Generator table
+        Point N(G);
+        for (int i = 0; i < 32; i++) {
+                GTable[i * 256] = N;
 		N = DoubleDirect(N);
 		for (int j = 1; j < 255; j++) {
 			GTable[i * 256 + j] = N;
 			N = AddDirect(N, GTable[i * 256]);
-		}
-		GTable[i * 256 + 255] = N; // Dummy point for check function
-	}
+                }
+                GTable[i * 256 + 255] = N; // Dummy point for check function
+        }
+
+        PrecomputeGLVTables();
 
 }
 
@@ -157,37 +313,109 @@ void Secp256K1::Check()
 
 Point Secp256K1::ComputePublicKey(Int* privKey)
 {
+        if (privKey->IsZero()) {
+                Point zero;
+                zero.Clear();
+                return zero;
+        }
 
-	int i = 0;
-	uint8_t b;
-	Point Q;
-	Q.Clear();
+        Int k1;
+        Int k2;
+        SplitLambda(*privKey, k1, k2);
 
-	// Search first significant byte
-	for (i = 0; i < 32; i++) {
-		b = privKey->GetByte(i);
-		if (b)
-			break;
-	}
-	Q = GTable[256 * i + (b - 1)];
-	i++;
+        const int width = 5;
+        std::vector<int8_t> wnaf1 = BuildWNAF(k1, width);
+        std::vector<int8_t> wnaf2 = BuildWNAF(k2, width);
+        size_t maxBits = std::max(wnaf1.size(), wnaf2.size());
 
-	for (; i < 32; i++) {
-		b = privKey->GetByte(i);
-		if (b)
-			Q = Add2(Q, GTable[256 * i + (b - 1)]);
-	}
+        Point R;
+        R.Clear();
 
-	Q.Reduce();
-	return Q;
+        for (size_t pos = maxBits; pos-- > 0;) {
+                if (!R.isZero()) {
+                        R = Double(R);
+                }
 
+                if (pos < wnaf1.size()) {
+                        int8_t digit = wnaf1[pos];
+                        if (digit) {
+                                Point addend = SelectPrecomputed(wnafOddMultiples, digit);
+                                if (R.isZero()) {
+                                        R = addend;
+                                }
+                                else {
+                                        R = Add2(R, addend);
+                                }
+                        }
+                }
+
+                if (pos < wnaf2.size()) {
+                        int8_t digit = wnaf2[pos];
+                        if (digit) {
+                                Point addend = SelectPrecomputed(wnafLambdaMultiples, digit);
+                                if (R.isZero()) {
+                                        R = addend;
+                                }
+                                else {
+                                        R = Add2(R, addend);
+                                }
+                        }
+                }
+        }
+
+        if (!R.isZero()) {
+                R.Reduce();
+        }
+        return R;
+}
+
+void Secp256K1::ComputePublicKeys(Int* privKeys, size_t count, Point* outPoints)
+{
+        for (size_t i = 0; i < count; ++i) {
+                outPoints[i] = ComputePublicKey(&privKeys[i]);
+        }
 }
 
 Point Secp256K1::NextKey(Point& key)
 {
-	// Input key must be reduced and different from G
-	// in order to use AddDirect
-	return AddDirect(key, G);
+        // Input key must be reduced and different from G
+        // in order to use AddDirect
+        return AddDirect(key, G);
+}
+
+void Secp256K1::NextKeyBatch(Point* keys, size_t count)
+{
+        if (count == 0) {
+                return;
+        }
+
+        std::vector<Int> dx(count);
+        std::vector<Int> dy(count);
+        for (size_t i = 0; i < count; ++i) {
+                EnsureAffine(keys[i]);
+                dx[i].ModSub(&G.x, &keys[i].x);
+                dy[i].ModSub(&G.y, &keys[i].y);
+        }
+
+        IntGroup group(static_cast<int>(count));
+        group.Set(dx.data());
+        group.ModInv();
+
+        for (size_t i = 0; i < count; ++i) {
+                Int slope;
+                slope.ModMulK1(&dy[i], &dx[i]);
+                Int sx2;
+                sx2.ModSquareK1(&slope);
+
+                Point result;
+                result.z.SetInt32(1);
+                result.x.ModSub(&sx2, &keys[i].x);
+                result.x.ModSub(&G.x);
+                result.y.ModSub(&G.x, &result.x);
+                result.y.ModMulK1(&slope);
+                result.y.ModSub(&G.y);
+                keys[i] = result;
+        }
 }
 
 Int Secp256K1::DecodePrivateKey(char* key, bool* compressed)
