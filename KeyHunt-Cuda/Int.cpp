@@ -31,6 +31,7 @@ Int _ONE((uint64_t)1);
 // ------------------------------------------------
 
 Int::Int() {
+        CLEAR();
 }
 
 Int::Int(Int* a) {
@@ -452,12 +453,12 @@ bool Int::IsOne() {
 	return IsEqual(&_ONE);
 }
 
-bool Int::IsZero() {
+bool Int::IsZero() const {
 
 #if NB64BLOCK > 5
-	return (bits64[8] | bits64[7] | bits64[6] | bits64[5] | bits64[4] | bits64[3] | bits64[2] | bits64[1] | bits64[0]) == 0;
+        return (bits64[8] | bits64[7] | bits64[6] | bits64[5] | bits64[4] | bits64[3] | bits64[2] | bits64[1] | bits64[0]) == 0;
 #else
-	return (bits64[4] | bits64[3] | bits64[2] | bits64[1] | bits64[0]) == 0;
+        return (bits64[4] | bits64[3] | bits64[2] | bits64[1] | bits64[0]) == 0;
 #endif
 
 }

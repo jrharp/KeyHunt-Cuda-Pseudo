@@ -69,7 +69,6 @@ Int Secp256K1::MulShift384(const Int& k, const std::array<uint64_t, 4>& g)
         accum[7] = static_cast<uint64_t>(accum[7]);
 
         Int result;
-        result.CLEAR();
         result.bits64[0] = static_cast<uint64_t>(accum[6]);
         result.bits64[1] = static_cast<uint64_t>(accum[7]);
         return result;
