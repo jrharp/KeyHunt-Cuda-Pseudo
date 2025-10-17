@@ -229,6 +229,7 @@ GPUEngine::GPUEngine(Secp256K1* secp, int nbThreadGroup, int nbThreadPerGroup, i
         }
 
         this->nbThread = nbThreadGroup * nbThreadPerGroup;
+        this->activeThreadCount = this->nbThread;
         this->maxFound = maxFound;
         this->outputSize = (maxFound * ITEM_SIZE_A + 4);
         if (this->searchMode == (int)SEARCH_MODE_MX) {
@@ -320,6 +321,7 @@ GPUEngine::GPUEngine(Secp256K1* secp, int nbThreadGroup, int nbThreadPerGroup, i
         }
 
         this->nbThread = nbThreadGroup * nbThreadPerGroup;
+        this->activeThreadCount = this->nbThread;
         this->maxFound = maxFound;
         this->outputSize = (maxFound * ITEM_SIZE_A + 4);
         if (this->searchMode == (int)SEARCH_MODE_SX) {
@@ -462,7 +464,14 @@ void GPUEngine::InitGenratorTable(Secp256K1* secp)
 
 int GPUEngine::GetGroupSize()
 {
-	return GRP_SIZE;
+        return GRP_SIZE;
+}
+
+// ----------------------------------------------------------------------------
+
+int GPUEngine::GetThreadsPerGroup()
+{
+        return nbThreadPerGroup;
 }
 
 // ----------------------------------------------------------------------------
@@ -600,22 +609,30 @@ bool GPUEngine::callKernelSEARCH_MODE_MA()
                 return false;
         }
 
+        if (activeThreadCount <= 0) {
+                return false;
+        }
+
+        if (nbThreadPerGroup <= 0) {
+                return false;
+        }
+
         // Reset nbFound
         CUDA_CHECK(cudaMemsetAsync(outputBuffer, 0, sizeof(uint32_t), stream_));
 
         // Call the kernel (Perform STEP_SIZE keys per thread)
         if (coinType == COIN_BTC) {
                 if (compMode == SEARCH_COMPRESSED) {
-                        compute_keys_comp_mode_ma << < nbThread / nbThreadPerGroup, nbThreadPerGroup, 0, stream_ >> >
+                        compute_keys_comp_mode_ma << < activeThreadCount / nbThreadPerGroup, nbThreadPerGroup, 0, stream_ >> >
                                 (compMode, inputBloomLookUp, BLOOM_BITS, BLOOM_HASHES, inputKey, maxFound, outputBuffer);
                 }
                 else {
-                        compute_keys_mode_ma << < nbThread / nbThreadPerGroup, nbThreadPerGroup, 0, stream_ >> >
+                        compute_keys_mode_ma << < activeThreadCount / nbThreadPerGroup, nbThreadPerGroup, 0, stream_ >> >
                                 (compMode, inputBloomLookUp, BLOOM_BITS, BLOOM_HASHES, inputKey, maxFound, outputBuffer);
                 }
         }
         else {
-                compute_keys_mode_eth_ma << < nbThread / nbThreadPerGroup, nbThreadPerGroup, 0, stream_ >> >
+                compute_keys_mode_eth_ma << < activeThreadCount / nbThreadPerGroup, nbThreadPerGroup, 0, stream_ >> >
                         (inputBloomLookUp, BLOOM_BITS, BLOOM_HASHES, inputKey, maxFound, outputBuffer);
         }
 
@@ -633,12 +650,20 @@ bool GPUEngine::callKernelSEARCH_MODE_MX()
                 return false;
         }
 
+        if (activeThreadCount <= 0) {
+                return false;
+        }
+
+        if (nbThreadPerGroup <= 0) {
+                return false;
+        }
+
         // Reset nbFound
         CUDA_CHECK(cudaMemsetAsync(outputBuffer, 0, sizeof(uint32_t), stream_));
 
         // Call the kernel (Perform STEP_SIZE keys per thread)
         if (compMode == SEARCH_COMPRESSED) {
-                compute_keys_comp_mode_mx << < nbThread / nbThreadPerGroup, nbThreadPerGroup, 0, stream_ >> >
+                compute_keys_comp_mode_mx << < activeThreadCount / nbThreadPerGroup, nbThreadPerGroup, 0, stream_ >> >
                         (compMode, inputBloomLookUp, BLOOM_BITS, BLOOM_HASHES, inputKey, maxFound, outputBuffer);
         }
         else {
@@ -659,22 +684,30 @@ bool GPUEngine::callKernelSEARCH_MODE_SA()
                 return false;
         }
 
+        if (activeThreadCount <= 0) {
+                return false;
+        }
+
+        if (nbThreadPerGroup <= 0) {
+                return false;
+        }
+
         // Reset nbFound
         CUDA_CHECK(cudaMemsetAsync(outputBuffer, 0, sizeof(uint32_t), stream_));
 
         // Call the kernel (Perform STEP_SIZE keys per thread)
         if (coinType == COIN_BTC) {
                 if (compMode == SEARCH_COMPRESSED) {
-                        compute_keys_comp_mode_sa << < nbThread / nbThreadPerGroup, nbThreadPerGroup, 0, stream_ >> >
+                        compute_keys_comp_mode_sa << < activeThreadCount / nbThreadPerGroup, nbThreadPerGroup, 0, stream_ >> >
                                 (compMode, inputHashORxpoint, inputKey, maxFound, outputBuffer);
                 }
                 else {
-                        compute_keys_mode_sa << < nbThread / nbThreadPerGroup, nbThreadPerGroup, 0, stream_ >> >
+                        compute_keys_mode_sa << < activeThreadCount / nbThreadPerGroup, nbThreadPerGroup, 0, stream_ >> >
                                 (compMode, inputHashORxpoint, inputKey, maxFound, outputBuffer);
                 }
         }
         else {
-                compute_keys_mode_eth_sa << < nbThread / nbThreadPerGroup, nbThreadPerGroup, 0, stream_ >> >
+                compute_keys_mode_eth_sa << < activeThreadCount / nbThreadPerGroup, nbThreadPerGroup, 0, stream_ >> >
                         (inputHashORxpoint, inputKey, maxFound, outputBuffer);
         }
 
@@ -693,11 +726,19 @@ bool GPUEngine::callKernelSEARCH_MODE_SX()
                 return false;
         }
 
+        if (activeThreadCount <= 0) {
+                return false;
+        }
+
+        if (nbThreadPerGroup <= 0) {
+                return false;
+        }
+
         CUDA_CHECK(cudaMemsetAsync(outputBuffer, 0, sizeof(uint32_t), stream_));
 
         // Call the kernel (Perform STEP_SIZE keys per thread)
         if (compMode == SEARCH_COMPRESSED) {
-                compute_keys_comp_mode_sx << < nbThread / nbThreadPerGroup, nbThreadPerGroup, 0, stream_ >> >
+                compute_keys_comp_mode_sx << < activeThreadCount / nbThreadPerGroup, nbThreadPerGroup, 0, stream_ >> >
                         (compMode, inputHashORxpoint, inputKey, maxFound, outputBuffer);
         }
         else {
@@ -737,7 +778,7 @@ void GPUEngine::waitForStream(bool spinWait)
 
 // ----------------------------------------------------------------------------
 
-bool GPUEngine::SetKeys(Point* p)
+bool GPUEngine::SetKeys(Point* p, int activeThreadCountOverride)
 {
         // Sets the starting keys for each thread
         // p must contains nbThread public keys
@@ -745,24 +786,39 @@ bool GPUEngine::SetKeys(Point* p)
                 return false;
         }
 
-        for (int i = 0; i < nbThread; i += nbThreadPerGroup) {
-                for (int j = 0; j < nbThreadPerGroup; j++) {
+        if (activeThreadCountOverride <= 0 || activeThreadCountOverride > nbThread) {
+                activeThreadCount = nbThread;
+        }
+        else {
+                activeThreadCount = activeThreadCountOverride;
+        }
+
+        if (nbThreadPerGroup > 0 && (activeThreadCount % nbThreadPerGroup) != 0) {
+                const int groups = (activeThreadCount + nbThreadPerGroup - 1) / nbThreadPerGroup;
+                activeThreadCount = groups * nbThreadPerGroup;
+                if (activeThreadCount > nbThread) {
+                        activeThreadCount = nbThread;
+                }
+        }
+
+        for (int i = 0; i < activeThreadCount; i += nbThreadPerGroup) {
+                for (int j = 0; j < nbThreadPerGroup && (i + j) < activeThreadCount; j++) {
 
                         inputKeyPinned[8 * i + j + 0 * nbThreadPerGroup] = p[i + j].x.bits64[0];
-			inputKeyPinned[8 * i + j + 1 * nbThreadPerGroup] = p[i + j].x.bits64[1];
-			inputKeyPinned[8 * i + j + 2 * nbThreadPerGroup] = p[i + j].x.bits64[2];
-			inputKeyPinned[8 * i + j + 3 * nbThreadPerGroup] = p[i + j].x.bits64[3];
+                        inputKeyPinned[8 * i + j + 1 * nbThreadPerGroup] = p[i + j].x.bits64[1];
+                        inputKeyPinned[8 * i + j + 2 * nbThreadPerGroup] = p[i + j].x.bits64[2];
+                        inputKeyPinned[8 * i + j + 3 * nbThreadPerGroup] = p[i + j].x.bits64[3];
 
-			inputKeyPinned[8 * i + j + 4 * nbThreadPerGroup] = p[i + j].y.bits64[0];
-			inputKeyPinned[8 * i + j + 5 * nbThreadPerGroup] = p[i + j].y.bits64[1];
-			inputKeyPinned[8 * i + j + 6 * nbThreadPerGroup] = p[i + j].y.bits64[2];
-			inputKeyPinned[8 * i + j + 7 * nbThreadPerGroup] = p[i + j].y.bits64[3];
+                        inputKeyPinned[8 * i + j + 4 * nbThreadPerGroup] = p[i + j].y.bits64[0];
+                        inputKeyPinned[8 * i + j + 5 * nbThreadPerGroup] = p[i + j].y.bits64[1];
+                        inputKeyPinned[8 * i + j + 6 * nbThreadPerGroup] = p[i + j].y.bits64[2];
+                        inputKeyPinned[8 * i + j + 7 * nbThreadPerGroup] = p[i + j].y.bits64[3];
 
                 }
         }
 
         // Fill device memory
-        const size_t keyBufferSize = static_cast<size_t>(nbThread) * 32u * 2u;
+        const size_t keyBufferSize = static_cast<size_t>(activeThreadCount) * 32u * 2u;
         CUDA_CHECK(cudaMemcpyAsync(inputKey, inputKeyPinned, keyBufferSize, cudaMemcpyHostToDevice, stream_));
         waitForStream(true);
 
@@ -793,7 +849,7 @@ bool GPUEngine::SetKeys(Point* p)
 
 // ----------------------------------------------------------------------------
 
-bool GPUEngine::LaunchSEARCH_MODE_MA(std::vector<ITEM>& dataFound, bool spinWait)
+bool GPUEngine::LaunchSEARCH_MODE_MA(std::vector<ITEM>& dataFound, bool spinWait, bool queueNextBatch)
 {
 
         if (!initialised) {
@@ -837,12 +893,15 @@ bool GPUEngine::LaunchSEARCH_MODE_MA(std::vector<ITEM>& dataFound, bool spinWait
 			dataFound.push_back(it);
 		}
 	}
-	return callKernelSEARCH_MODE_MA();
+        if (!queueNextBatch) {
+                return true;
+        }
+        return callKernelSEARCH_MODE_MA();
 }
 
 // ----------------------------------------------------------------------------
 
-bool GPUEngine::LaunchSEARCH_MODE_SA(std::vector<ITEM>& dataFound, bool spinWait)
+bool GPUEngine::LaunchSEARCH_MODE_SA(std::vector<ITEM>& dataFound, bool spinWait, bool queueNextBatch)
 {
 
         if (!initialised) {
@@ -881,12 +940,15 @@ bool GPUEngine::LaunchSEARCH_MODE_SA(std::vector<ITEM>& dataFound, bool spinWait
 		it.hash = (uint8_t*)(itemPtr + 2);
 		dataFound.push_back(it);
 	}
-	return callKernelSEARCH_MODE_SA();
+        if (!queueNextBatch) {
+                return true;
+        }
+        return callKernelSEARCH_MODE_SA();
 }
 
 // ----------------------------------------------------------------------------
 
-bool GPUEngine::LaunchSEARCH_MODE_MX(std::vector<ITEM>& dataFound, bool spinWait)
+bool GPUEngine::LaunchSEARCH_MODE_MX(std::vector<ITEM>& dataFound, bool spinWait, bool queueNextBatch)
 {
 
         if (!initialised) {
@@ -931,12 +993,15 @@ bool GPUEngine::LaunchSEARCH_MODE_MX(std::vector<ITEM>& dataFound, bool spinWait
 			dataFound.push_back(it);
 		}
 	}
-	return callKernelSEARCH_MODE_MX();
+        if (!queueNextBatch) {
+                return true;
+        }
+        return callKernelSEARCH_MODE_MX();
 }
 
 // ----------------------------------------------------------------------------
 
-bool GPUEngine::LaunchSEARCH_MODE_SX(std::vector<ITEM>& dataFound, bool spinWait)
+bool GPUEngine::LaunchSEARCH_MODE_SX(std::vector<ITEM>& dataFound, bool spinWait, bool queueNextBatch)
 {
 
         if (!initialised) {
@@ -978,7 +1043,10 @@ bool GPUEngine::LaunchSEARCH_MODE_SX(std::vector<ITEM>& dataFound, bool spinWait
 		it.hash = (uint8_t*)(itemPtr + 2);
 		dataFound.push_back(it);
 	}
-	return callKernelSEARCH_MODE_SX();
+        if (!queueNextBatch) {
+                return true;
+        }
+        return callKernelSEARCH_MODE_SX();
 }
 
 // ----------------------------------------------------------------------------

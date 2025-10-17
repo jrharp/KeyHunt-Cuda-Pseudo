@@ -1,7 +1,11 @@
 #ifndef KEYHUNTH
 #define KEYHUNTH
 
+#include <atomic>
+#include <limits>
+#include <mutex>
 #include <string>
+#include <unordered_set>
 #include <vector>
 #include "SECP256k1.h"
 #include "Bloom.h"
@@ -51,9 +55,15 @@ public:
 
 private:
 
-	void InitGenratorTable();
+        void InitGenratorTable();
+        void initializePseudoRandomState();
+        bool acquirePseudoRandomBlock(Int& key, Point& startP, uint64_t& sequentialIndex);
+        uint64_t permuteBlockIndex(uint64_t value) const;
+        void persistPseudoRandomState(uint64_t completedCount);
+        bool loadPseudoRandomState(uint64_t& resumeIndex) const;
+        void notifyPseudoRandomBlockComplete(uint64_t sequentialIndex);
 
-	std::string GetHex(std::vector<unsigned char>& buffer);
+        std::string GetHex(std::vector<unsigned char>& buffer);
 	bool checkPrivKey(std::string addr, Int& key, int32_t incr, bool mode);
 	bool checkPrivKeyETH(std::string addr, Int& key, int32_t incr);
 	bool checkPrivKeyX(Int& key, int32_t incr, bool mode);
@@ -120,10 +130,29 @@ private:
 
 	uint8_t* DATA;
 	uint64_t TOTAL_COUNT;
-	uint64_t BLOOM_N;
+        uint64_t BLOOM_N;
+
+        struct PseudoRandomState {
+                uint64_t totalKeys = 0;
+                uint64_t totalBlocks = 0;
+                uint64_t blockMask = 0;
+                unsigned int blockBits = 0;
+                std::atomic<uint64_t> nextCounter{ 0 };
+                std::string stateFile;
+                mutable std::mutex fileMutex;
+                mutable std::mutex progressMutex;
+                std::unordered_set<uint64_t> completedBlocks;
+                uint64_t lowestUnpersisted = 0;
+                uint64_t lastPersisted = std::numeric_limits<uint64_t>::max();
+                bool persistWarningShown = false;
+        };
+
+        bool pseudoRandomEnabled = false;
+        PseudoRandomState pseudoState;
+        Int initialRangeStart;
 
 #ifdef WIN64
-	HANDLE ghMutex;
+        HANDLE ghMutex;
 #else
 	pthread_mutex_t  ghMutex;
 #endif
