@@ -292,7 +292,7 @@ uint64_t KeyHunt::permuteBlockIndex(uint64_t value) const
 
 // ----------------------------------------------------------------------------
 
-bool KeyHunt::acquirePseudoRandomBlock(Int& key, Point& startP, uint64_t& sequentialIndex)
+bool KeyHunt::acquirePseudoRandomBlock(Int& key, Point& startP, uint64_t& sequentialIndex, bool forGpu)
 {
         if (!pseudoRandomEnabled)
                 return false;
@@ -315,8 +315,14 @@ bool KeyHunt::acquirePseudoRandomBlock(Int& key, Point& startP, uint64_t& sequen
                 key = initialRangeStart;
                 key.Add(&offset);
 
+                uint64_t midpoint = blockSize / 2;
+                if (forGpu) {
+                        const uint64_t compiledMidpoint = static_cast<uint64_t>(GPUEngine::GetCompiledGroupSize()) / 2ULL;
+                        midpoint = std::min(midpoint, compiledMidpoint);
+                }
+
                 Int km(&key);
-                km.Add(blockSize / 2);
+                km.Add(midpoint);
                 startP = secp->ComputePublicKey(&km);
                 return true;
         }
@@ -429,7 +435,7 @@ void KeyHunt::pseudoRandomGpuWorker()
                 Int key;
                 Point start;
                 uint64_t sequential = 0;
-                if (!acquirePseudoRandomBlock(key, start, sequential)) {
+                if (!acquirePseudoRandomBlock(key, start, sequential, true)) {
                         break;
                 }
 
@@ -1310,9 +1316,9 @@ void KeyHunt::FindKeyCPU(TH_PARAM * ph)
 void KeyHunt::getGPUStartingKeys(Int & tRangeStart, Int & tRangeEnd, int compiledGroupSize, int nbThread, Int * keys, Point * p)
 {
 
-	Int tRangeDiff(tRangeEnd);
-	Int tRangeStart2(tRangeStart);
-	Int tRangeEnd2(tRangeStart);
+        Int tRangeDiff(tRangeEnd);
+        Int tRangeStart2(tRangeStart);
+        Int tRangeEnd2(tRangeStart);
 
 	Int tThreads;
 	tThreads.SetInt32(nbThread);
@@ -1327,8 +1333,8 @@ void KeyHunt::getGPUStartingKeys(Int & tRangeStart, Int & tRangeEnd, int compile
 
 	for (int i = 0; i < nbThread; i++) {
 
-		tRangeEnd2.Set(&tRangeStart2);
-		tRangeEnd2.Add(&tRangeDiff);
+                tRangeEnd2.Set(&tRangeStart2);
+                tRangeEnd2.Add(&tRangeDiff);
 
 		if (rKey <= 0)
 			keys[i].Set(&tRangeStart2);

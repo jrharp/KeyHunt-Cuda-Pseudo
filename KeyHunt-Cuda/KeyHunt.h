@@ -62,7 +62,7 @@ private:
 
         void InitGenratorTable();
         void initializePseudoRandomState();
-        bool acquirePseudoRandomBlock(Int& key, Point& startP, uint64_t& sequentialIndex);
+        bool acquirePseudoRandomBlock(Int& key, Point& startP, uint64_t& sequentialIndex, bool forGpu = false);
         uint64_t permuteBlockIndex(uint64_t value) const;
         void persistPseudoRandomState(uint64_t completedCount);
         bool loadPseudoRandomState(uint64_t& resumeIndex) const;
