@@ -30,21 +30,6 @@ __device__ uint64_t* _2Gny = nullptr;
 __device__ uint64_t* Gx = nullptr;
 __device__ uint64_t* Gy = nullptr;
 
-struct GroupTableView {
-        const uint64_t* __restrict__ gx;
-        const uint64_t* __restrict__ gy;
-        const uint64_t* __restrict__ g2x;
-        const uint64_t* __restrict__ g2y;
-
-        __device__ GroupTableView(const uint64_t* __restrict__ inGx,
-                const uint64_t* __restrict__ inGy,
-                const uint64_t* __restrict__ inG2x,
-                const uint64_t* __restrict__ inG2y)
-                : gx(inGx), gy(inGy), g2x(inG2x), g2y(inG2y)
-        {
-        }
-};
-
 // ---------------------------------------------------------------------------------------
 
 __device__ __forceinline__ int Test_Bit_Set_Bit(const uint8_t* __restrict__ buf, uint32_t bit)
@@ -365,7 +350,7 @@ __device__ __noinline__ void CheckPubSEARCH_MODE_SX(uint32_t mode, uint64_t* px,
 
 #define CHECK_HASH_SEARCH_MODE_MA(offset) CheckHashSEARCH_MODE_MA(mode, px, py, offset, bloomLookUp, BLOOM_BITS, BLOOM_HASHES, maxFound, out)
 
-__device__ void ComputeKeysSEARCH_MODE_MA(uint32_t mode, const GroupTableView& tables, uint64_t* startx, uint64_t* starty,
+__device__ void ComputeKeysSEARCH_MODE_MA(uint32_t mode, uint64_t* startx, uint64_t* starty,
         uint8_t* bloomLookUp, int BLOOM_BITS, uint8_t BLOOM_HASHES, uint32_t maxFound, uint32_t* out, uint32_t baseOffset)
 {
 
@@ -389,9 +374,9 @@ __device__ void ComputeKeysSEARCH_MODE_MA(uint32_t mode, const GroupTableView& t
 	// Fill group with delta x
 	uint32_t i;
 	for (i = 0; i < HSIZE; i++)
-		ModSub256(dx[i], tables.gx + 4 * i, sx);
-	ModSub256(dx[i], tables.gx + 4 * i, sx);   // For the first point
-	ModSub256(dx[i + 1], tables.g2x, sx); // For the next center point
+		ModSub256(dx[i], Gx + 4 * i, sx);
+	ModSub256(dx[i], Gx + 4 * i, sx);   // For the first point
+	ModSub256(dx[i + 1], _2Gnx, sx); // For the next center point
 
 	// Compute modular inverse
 	_ModInvGrouped(dx);
@@ -409,33 +394,33 @@ __device__ void ComputeKeysSEARCH_MODE_MA(uint32_t mode, const GroupTableView& t
 		// P = StartPoint + i*G
 		Load256(px, sx);
 		Load256(py, sy);
-		ModSub256(dy, tables.gy + 4 * i, py);
+		ModSub256(dy, Gy + 4 * i, py);
 
 		_ModMult(_s, dy, dx[i]);                 //  s = (p2.y-p1.y)*inverse(p2.x-p1.x)
 		_ModSqr(_p2, _s);                        // _p2 = pow2(s)
 
 		ModSub256(px, _p2, px);
-		ModSub256(px, tables.gx + 4 * i);               // px = pow2(s) - p1.x - p2.x;
+		ModSub256(px, Gx + 4 * i);               // px = pow2(s) - p1.x - p2.x;
 
-		ModSub256(py, tables.gx + 4 * i, px);
+		ModSub256(py, Gx + 4 * i, px);
 		_ModMult(py, _s);                        // py = - s*(ret.x-p2.x)
-		ModSub256(py, tables.gy + 4 * i);               // py = - p2.y - s*(ret.x-p2.x);
+		ModSub256(py, Gy + 4 * i);               // py = - p2.y - s*(ret.x-p2.x);
 
                 CHECK_HASH_SEARCH_MODE_MA(baseOffset + static_cast<uint32_t>(GRP_SIZE / 2) + (i + 1u));
 
 		// P = StartPoint - i*G, if (x,y) = i*G then (x,-y) = -i*G
 		Load256(px, sx);
-		ModSub256(dy, pyn, tables.gy + 4 * i);
+		ModSub256(dy, pyn, Gy + 4 * i);
 
 		_ModMult(_s, dy, dx[i]);                //  s = (p2.y-p1.y)*inverse(p2.x-p1.x)
 		_ModSqr(_p2, _s);                       // _p = pow2(s)
 
 		ModSub256(px, _p2, px);
-		ModSub256(px, tables.gx + 4 * i);              // px = pow2(s) - p1.x - p2.x;
+		ModSub256(px, Gx + 4 * i);              // px = pow2(s) - p1.x - p2.x;
 
-		ModSub256(py, px, tables.gx + 4 * i);
+		ModSub256(py, px, Gx + 4 * i);
 		_ModMult(py, _s);                       // py = s*(ret.x-p2.x)
-		ModSub256(py, tables.gy + 4 * i, py);          // py = - p2.y - s*(ret.x-p2.x);
+		ModSub256(py, Gy + 4 * i, py);          // py = - p2.y - s*(ret.x-p2.x);
 
                 CHECK_HASH_SEARCH_MODE_MA(baseOffset + (static_cast<uint32_t>(GRP_SIZE / 2) - (i + 1u)));
 
@@ -444,18 +429,18 @@ __device__ void ComputeKeysSEARCH_MODE_MA(uint32_t mode, const GroupTableView& t
 	// First point (startP - (GRP_SZIE/2)*G)
 	Load256(px, sx);
 	Load256(py, sy);
-	ModNeg256(dy, tables.gy + 4 * i);
+	ModNeg256(dy, Gy + 4 * i);
 	ModSub256(dy, py);
 
 	_ModMult(_s, dy, dx[i]);                  //  s = (p2.y-p1.y)*inverse(p2.x-p1.x)
 	_ModSqr(_p2, _s);                         // _p = pow2(s)
 
 	ModSub256(px, _p2, px);
-	ModSub256(px, tables.gx + 4 * i);                // px = pow2(s) - p1.x - p2.x;
+	ModSub256(px, Gx + 4 * i);                // px = pow2(s) - p1.x - p2.x;
 
-	ModSub256(py, px, tables.gx + 4 * i);
+	ModSub256(py, px, Gx + 4 * i);
 	_ModMult(py, _s);                         // py = s*(ret.x-p2.x)
-	ModSub256(py, tables.gy + 4 * i, py);            // py = - p2.y - s*(ret.x-p2.x);
+	ModSub256(py, Gy + 4 * i, py);            // py = - p2.y - s*(ret.x-p2.x);
 
         CHECK_HASH_SEARCH_MODE_MA(baseOffset);
 
@@ -464,17 +449,17 @@ __device__ void ComputeKeysSEARCH_MODE_MA(uint32_t mode, const GroupTableView& t
 	// Next start point (startP + GRP_SIZE*G)
 	Load256(px, sx);
 	Load256(py, sy);
-	ModSub256(dy, tables.g2y, py);
+	ModSub256(dy, _2Gny, py);
 
 	_ModMult(_s, dy, dx[i]);              //  s = (p2.y-p1.y)*inverse(p2.x-p1.x)
 	_ModSqr(_p2, _s);                     // _p2 = pow2(s)
 
 	ModSub256(px, _p2, px);
-	ModSub256(px, tables.g2x);                 // px = pow2(s) - p1.x - p2.x;
+	ModSub256(px, _2Gnx);                 // px = pow2(s) - p1.x - p2.x;
 
-	ModSub256(py, tables.g2x, px);
+	ModSub256(py, _2Gnx, px);
 	_ModMult(py, _s);                     // py = - s*(ret.x-p2.x)
-	ModSub256(py, tables.g2y);                 // py = - p2.y - s*(ret.x-p2.x);
+	ModSub256(py, _2Gny);                 // py = - p2.y - s*(ret.x-p2.x);
 
 
 	// Update starting point
@@ -507,7 +492,7 @@ __device__ __noinline__ void CheckHashSEARCH_MODE_SA(uint32_t mode, uint64_t* px
 
 #define CHECK_HASH_SEARCH_MODE_SA(offset) CheckHashSEARCH_MODE_SA(mode, px, py, offset, hash160, maxFound, out)
 
-__device__ void ComputeKeysSEARCH_MODE_SA(uint32_t mode, const GroupTableView& tables, uint64_t* startx, uint64_t* starty,
+__device__ void ComputeKeysSEARCH_MODE_SA(uint32_t mode, uint64_t* startx, uint64_t* starty,
         uint32_t* hash160, uint32_t maxFound, uint32_t* out, uint32_t baseOffset)
 {
 
@@ -531,9 +516,9 @@ __device__ void ComputeKeysSEARCH_MODE_SA(uint32_t mode, const GroupTableView& t
 	// Fill group with delta x
 	uint32_t i;
 	for (i = 0; i < HSIZE; i++)
-		ModSub256(dx[i], tables.gx + 4 * i, sx);
-	ModSub256(dx[i], tables.gx + 4 * i, sx);   // For the first point
-	ModSub256(dx[i + 1], tables.g2x, sx); // For the next center point
+		ModSub256(dx[i], Gx + 4 * i, sx);
+	ModSub256(dx[i], Gx + 4 * i, sx);   // For the first point
+	ModSub256(dx[i + 1], _2Gnx, sx); // For the next center point
 
 	// Compute modular inverse
 	_ModInvGrouped(dx);
@@ -551,33 +536,33 @@ __device__ void ComputeKeysSEARCH_MODE_SA(uint32_t mode, const GroupTableView& t
 		// P = StartPoint + i*G
 		Load256(px, sx);
 		Load256(py, sy);
-		ModSub256(dy, tables.gy + 4 * i, py);
+		ModSub256(dy, Gy + 4 * i, py);
 
 		_ModMult(_s, dy, dx[i]);             //  s = (p2.y-p1.y)*inverse(p2.x-p1.x)
 		_ModSqr(_p2, _s);                    // _p2 = pow2(s)
 
 		ModSub256(px, _p2, px);
-		ModSub256(px, tables.gx + 4 * i);           // px = pow2(s) - p1.x - p2.x;
+		ModSub256(px, Gx + 4 * i);           // px = pow2(s) - p1.x - p2.x;
 
-		ModSub256(py, tables.gx + 4 * i, px);
+		ModSub256(py, Gx + 4 * i, px);
 		_ModMult(py, _s);                    // py = - s*(ret.x-p2.x)
-		ModSub256(py, tables.gy + 4 * i);           // py = - p2.y - s*(ret.x-p2.x);
+		ModSub256(py, Gy + 4 * i);           // py = - p2.y - s*(ret.x-p2.x);
 
                 CHECK_HASH_SEARCH_MODE_SA(baseOffset + static_cast<uint32_t>(GRP_SIZE / 2) + (i + 1u));
 
 		// P = StartPoint - i*G, if (x,y) = i*G then (x,-y) = -i*G
 		Load256(px, sx);
-		ModSub256(dy, pyn, tables.gy + 4 * i);
+		ModSub256(dy, pyn, Gy + 4 * i);
 
 		_ModMult(_s, dy, dx[i]);            //  s = (p2.y-p1.y)*inverse(p2.x-p1.x)
 		_ModSqr(_p2, _s);                   // _p = pow2(s)
 
 		ModSub256(px, _p2, px);
-		ModSub256(px, tables.gx + 4 * i);          // px = pow2(s) - p1.x - p2.x;
+		ModSub256(px, Gx + 4 * i);          // px = pow2(s) - p1.x - p2.x;
 
-		ModSub256(py, px, tables.gx + 4 * i);
+		ModSub256(py, px, Gx + 4 * i);
 		_ModMult(py, _s);                   // py = s*(ret.x-p2.x)
-		ModSub256(py, tables.gy + 4 * i, py);      // py = - p2.y - s*(ret.x-p2.x);
+		ModSub256(py, Gy + 4 * i, py);      // py = - p2.y - s*(ret.x-p2.x);
 
                 CHECK_HASH_SEARCH_MODE_SA(baseOffset + (static_cast<uint32_t>(GRP_SIZE / 2) - (i + 1u)));
 
@@ -586,18 +571,18 @@ __device__ void ComputeKeysSEARCH_MODE_SA(uint32_t mode, const GroupTableView& t
 	// First point (startP - (GRP_SZIE/2)*G)
 	Load256(px, sx);
 	Load256(py, sy);
-	ModNeg256(dy, tables.gy + 4 * i);
+	ModNeg256(dy, Gy + 4 * i);
 	ModSub256(dy, py);
 
 	_ModMult(_s, dy, dx[i]);              //  s = (p2.y-p1.y)*inverse(p2.x-p1.x)
 	_ModSqr(_p2, _s);                     // _p = pow2(s)
 
 	ModSub256(px, _p2, px);
-	ModSub256(px, tables.gx + 4 * i);            // px = pow2(s) - p1.x - p2.x;
+	ModSub256(px, Gx + 4 * i);            // px = pow2(s) - p1.x - p2.x;
 
-	ModSub256(py, px, tables.gx + 4 * i);
+	ModSub256(py, px, Gx + 4 * i);
 	_ModMult(py, _s);                     // py = s*(ret.x-p2.x)
-	ModSub256(py, tables.gy + 4 * i, py);        // py = - p2.y - s*(ret.x-p2.x);
+	ModSub256(py, Gy + 4 * i, py);        // py = - p2.y - s*(ret.x-p2.x);
 
         CHECK_HASH_SEARCH_MODE_SA(baseOffset);
 
@@ -606,17 +591,17 @@ __device__ void ComputeKeysSEARCH_MODE_SA(uint32_t mode, const GroupTableView& t
 	// Next start point (startP + GRP_SIZE*G)
 	Load256(px, sx);
 	Load256(py, sy);
-	ModSub256(dy, tables.g2y, py);
+	ModSub256(dy, _2Gny, py);
 
 	_ModMult(_s, dy, dx[i]);             //  s = (p2.y-p1.y)*inverse(p2.x-p1.x)
 	_ModSqr(_p2, _s);                    // _p2 = pow2(s)
 
 	ModSub256(px, _p2, px);
-	ModSub256(px, tables.g2x);                // px = pow2(s) - p1.x - p2.x;
+	ModSub256(px, _2Gnx);                // px = pow2(s) - p1.x - p2.x;
 
-	ModSub256(py, tables.g2x, px);
+	ModSub256(py, _2Gnx, px);
 	_ModMult(py, _s);                    // py = - s*(ret.x-p2.x)
-	ModSub256(py, tables.g2y);                // py = - p2.y - s*(ret.x-p2.x);
+	ModSub256(py, _2Gny);                // py = - p2.y - s*(ret.x-p2.x);
 
 	// Update starting point
 	__syncthreads();
@@ -631,7 +616,7 @@ __device__ void ComputeKeysSEARCH_MODE_SA(uint32_t mode, const GroupTableView& t
 
 #define CHECK_PUB_SEARCH_MODE_MX(offset) CheckPubSEARCH_MODE_MX(mode, px, py, offset, bloomLookUp, BLOOM_BITS, BLOOM_HASHES, maxFound, out)
 
-__device__ void ComputeKeysSEARCH_MODE_MX(uint32_t mode, const GroupTableView& tables, uint64_t* startx, uint64_t* starty,
+__device__ void ComputeKeysSEARCH_MODE_MX(uint32_t mode, uint64_t* startx, uint64_t* starty,
         uint8_t* bloomLookUp, int BLOOM_BITS, uint8_t BLOOM_HASHES, uint32_t maxFound, uint32_t* out, uint32_t baseOffset)
 {
 
@@ -655,9 +640,9 @@ __device__ void ComputeKeysSEARCH_MODE_MX(uint32_t mode, const GroupTableView& t
 	// Fill group with delta x
 	uint32_t i;
 	for (i = 0; i < HSIZE; i++)
-		ModSub256(dx[i], tables.gx + 4 * i, sx);
-	ModSub256(dx[i], tables.gx + 4 * i, sx);   // For the first point
-	ModSub256(dx[i + 1], tables.g2x, sx); // For the next center point
+		ModSub256(dx[i], Gx + 4 * i, sx);
+	ModSub256(dx[i], Gx + 4 * i, sx);   // For the first point
+	ModSub256(dx[i + 1], _2Gnx, sx); // For the next center point
 
 	// Compute modular inverse
 	_ModInvGrouped(dx);
@@ -675,33 +660,33 @@ __device__ void ComputeKeysSEARCH_MODE_MX(uint32_t mode, const GroupTableView& t
 		// P = StartPoint + i*G
 		Load256(px, sx);
 		Load256(py, sy);
-		ModSub256(dy, tables.gy + 4 * i, py);
+		ModSub256(dy, Gy + 4 * i, py);
 
 		_ModMult(_s, dy, dx[i]);                 //  s = (p2.y-p1.y)*inverse(p2.x-p1.x)
 		_ModSqr(_p2, _s);                        // _p2 = pow2(s)
 
 		ModSub256(px, _p2, px);
-		ModSub256(px, tables.gx + 4 * i);               // px = pow2(s) - p1.x - p2.x;
+		ModSub256(px, Gx + 4 * i);               // px = pow2(s) - p1.x - p2.x;
 
-		ModSub256(py, tables.gx + 4 * i, px);
+		ModSub256(py, Gx + 4 * i, px);
 		_ModMult(py, _s);                        // py = - s*(ret.x-p2.x)
-		ModSub256(py, tables.gy + 4 * i);               // py = - p2.y - s*(ret.x-p2.x);
+		ModSub256(py, Gy + 4 * i);               // py = - p2.y - s*(ret.x-p2.x);
 
                 CHECK_PUB_SEARCH_MODE_MX(baseOffset + static_cast<uint32_t>(GRP_SIZE / 2) + (i + 1u));
 
 		// P = StartPoint - i*G, if (x,y) = i*G then (x,-y) = -i*G
 		Load256(px, sx);
-		ModSub256(dy, pyn, tables.gy + 4 * i);
+		ModSub256(dy, pyn, Gy + 4 * i);
 
 		_ModMult(_s, dy, dx[i]);                //  s = (p2.y-p1.y)*inverse(p2.x-p1.x)
 		_ModSqr(_p2, _s);                       // _p = pow2(s)
 
 		ModSub256(px, _p2, px);
-		ModSub256(px, tables.gx + 4 * i);              // px = pow2(s) - p1.x - p2.x;
+		ModSub256(px, Gx + 4 * i);              // px = pow2(s) - p1.x - p2.x;
 
-		ModSub256(py, px, tables.gx + 4 * i);
+		ModSub256(py, px, Gx + 4 * i);
 		_ModMult(py, _s);                       // py = s*(ret.x-p2.x)
-		ModSub256(py, tables.gy + 4 * i, py);          // py = - p2.y - s*(ret.x-p2.x);
+		ModSub256(py, Gy + 4 * i, py);          // py = - p2.y - s*(ret.x-p2.x);
 
                 CHECK_PUB_SEARCH_MODE_MX(baseOffset + (static_cast<uint32_t>(GRP_SIZE / 2) - (i + 1u)));
 
@@ -710,18 +695,18 @@ __device__ void ComputeKeysSEARCH_MODE_MX(uint32_t mode, const GroupTableView& t
 	// First point (startP - (GRP_SZIE/2)*G)
 	Load256(px, sx);
 	Load256(py, sy);
-	ModNeg256(dy, tables.gy + 4 * i);
+	ModNeg256(dy, Gy + 4 * i);
 	ModSub256(dy, py);
 
 	_ModMult(_s, dy, dx[i]);            //  s = (p2.y-p1.y)*inverse(p2.x-p1.x)
 	_ModSqr(_p2, _s);                   // _p = pow2(s)
 
 	ModSub256(px, _p2, px);
-	ModSub256(px, tables.gx + 4 * i);         // px = pow2(s) - p1.x - p2.x;
+	ModSub256(px, Gx + 4 * i);         // px = pow2(s) - p1.x - p2.x;
 
-	ModSub256(py, px, tables.gx + 4 * i);
+	ModSub256(py, px, Gx + 4 * i);
 	_ModMult(py, _s);                  // py = s*(ret.x-p2.x)
-	ModSub256(py, tables.gy + 4 * i, py);     // py = - p2.y - s*(ret.x-p2.x);
+	ModSub256(py, Gy + 4 * i, py);     // py = - p2.y - s*(ret.x-p2.x);
 
         CHECK_PUB_SEARCH_MODE_MX(baseOffset);
 
@@ -730,17 +715,17 @@ __device__ void ComputeKeysSEARCH_MODE_MX(uint32_t mode, const GroupTableView& t
 	// Next start point (startP + GRP_SIZE*G)
 	Load256(px, sx);
 	Load256(py, sy);
-	ModSub256(dy, tables.g2y, py);
+	ModSub256(dy, _2Gny, py);
 
 	_ModMult(_s, dy, dx[i]);          //  s = (p2.y-p1.y)*inverse(p2.x-p1.x)
 	_ModSqr(_p2, _s);                 // _p2 = pow2(s)
 
 	ModSub256(px, _p2, px);
-	ModSub256(px, tables.g2x);             // px = pow2(s) - p1.x - p2.x;
+	ModSub256(px, _2Gnx);             // px = pow2(s) - p1.x - p2.x;
 
-	ModSub256(py, tables.g2x, px);
+	ModSub256(py, _2Gnx, px);
 	_ModMult(py, _s);                 // py = - s*(ret.x-p2.x)
-	ModSub256(py, tables.g2y);             // py = - p2.y - s*(ret.x-p2.x);
+	ModSub256(py, _2Gny);             // py = - p2.y - s*(ret.x-p2.x);
 
 	// Update starting point
 	__syncthreads();
@@ -753,7 +738,7 @@ __device__ void ComputeKeysSEARCH_MODE_MX(uint32_t mode, const GroupTableView& t
 
 #define CHECK_PUB_SEARCH_MODE_SX(offset) CheckPubSEARCH_MODE_SX(mode, px, py, offset, xpoint, maxFound, out)
 
-__device__ void ComputeKeysSEARCH_MODE_SX(uint32_t mode, const GroupTableView& tables, uint64_t* startx, uint64_t* starty,
+__device__ void ComputeKeysSEARCH_MODE_SX(uint32_t mode, uint64_t* startx, uint64_t* starty,
         uint32_t* xpoint, uint32_t maxFound, uint32_t* out, uint32_t baseOffset)
 {
 
@@ -777,9 +762,9 @@ __device__ void ComputeKeysSEARCH_MODE_SX(uint32_t mode, const GroupTableView& t
 	// Fill group with delta x
 	uint32_t i;
 	for (i = 0; i < HSIZE; i++)
-		ModSub256(dx[i], tables.gx + 4 * i, sx);
-	ModSub256(dx[i], tables.gx + 4 * i, sx);      // For the first point
-	ModSub256(dx[i + 1], tables.g2x, sx);       // For the next center point
+		ModSub256(dx[i], Gx + 4 * i, sx);
+	ModSub256(dx[i], Gx + 4 * i, sx);      // For the first point
+	ModSub256(dx[i + 1], _2Gnx, sx);       // For the next center point
 
 	// Compute modular inverse
 	_ModInvGrouped(dx);
@@ -797,33 +782,33 @@ __device__ void ComputeKeysSEARCH_MODE_SX(uint32_t mode, const GroupTableView& t
 		// P = StartPoint + i*G
 		Load256(px, sx);
 		Load256(py, sy);
-		ModSub256(dy, tables.gy + 4 * i, py);
+		ModSub256(dy, Gy + 4 * i, py);
 
 		_ModMult(_s, dy, dx[i]);           //  s = (p2.y-p1.y)*inverse(p2.x-p1.x)
 		_ModSqr(_p2, _s);                  // _p2 = pow2(s)
 
 		ModSub256(px, _p2, px);
-		ModSub256(px, tables.gx + 4 * i);         // px = pow2(s) - p1.x - p2.x;
+		ModSub256(px, Gx + 4 * i);         // px = pow2(s) - p1.x - p2.x;
 
-		ModSub256(py, tables.gx + 4 * i, px);
+		ModSub256(py, Gx + 4 * i, px);
 		_ModMult(py, _s);                  // py = - s*(ret.x-p2.x)
-		ModSub256(py, tables.gy + 4 * i);         // py = - p2.y - s*(ret.x-p2.x);
+		ModSub256(py, Gy + 4 * i);         // py = - p2.y - s*(ret.x-p2.x);
 
                 CHECK_PUB_SEARCH_MODE_SX(baseOffset + static_cast<uint32_t>(GRP_SIZE / 2) + (i + 1u));
 
 		// P = StartPoint - i*G, if (x,y) = i*G then (x,-y) = -i*G
 		Load256(px, sx);
-		ModSub256(dy, pyn, tables.gy + 4 * i);
+		ModSub256(dy, pyn, Gy + 4 * i);
 
 		_ModMult(_s, dy, dx[i]);            //  s = (p2.y-p1.y)*inverse(p2.x-p1.x)
 		_ModSqr(_p2, _s);                   // _p = pow2(s)
 
 		ModSub256(px, _p2, px);
-		ModSub256(px, tables.gx + 4 * i);         // px = pow2(s) - p1.x - p2.x;
+		ModSub256(px, Gx + 4 * i);         // px = pow2(s) - p1.x - p2.x;
 
-		ModSub256(py, px, tables.gx + 4 * i);
+		ModSub256(py, px, Gx + 4 * i);
 		_ModMult(py, _s);                  // py = s*(ret.x-p2.x)
-		ModSub256(py, tables.gy + 4 * i, py);     // py = - p2.y - s*(ret.x-p2.x);
+		ModSub256(py, Gy + 4 * i, py);     // py = - p2.y - s*(ret.x-p2.x);
 
                 CHECK_PUB_SEARCH_MODE_SX(baseOffset + (static_cast<uint32_t>(GRP_SIZE / 2) - (i + 1u)));
 
@@ -832,18 +817,18 @@ __device__ void ComputeKeysSEARCH_MODE_SX(uint32_t mode, const GroupTableView& t
 	// First point (startP - (GRP_SZIE/2)*G)
 	Load256(px, sx);
 	Load256(py, sy);
-	ModNeg256(dy, tables.gy + 4 * i);
+	ModNeg256(dy, Gy + 4 * i);
 	ModSub256(dy, py);
 
 	_ModMult(_s, dy, dx[i]);           //  s = (p2.y-p1.y)*inverse(p2.x-p1.x)
 	_ModSqr(_p2, _s);                  // _p = pow2(s)
 
 	ModSub256(px, _p2, px);
-	ModSub256(px, tables.gx + 4 * i);         // px = pow2(s) - p1.x - p2.x;
+	ModSub256(px, Gx + 4 * i);         // px = pow2(s) - p1.x - p2.x;
 
-	ModSub256(py, px, tables.gx + 4 * i);
+	ModSub256(py, px, Gx + 4 * i);
 	_ModMult(py, _s);                  // py = s*(ret.x-p2.x)
-	ModSub256(py, tables.gy + 4 * i, py);     // py = - p2.y - s*(ret.x-p2.x);
+	ModSub256(py, Gy + 4 * i, py);     // py = - p2.y - s*(ret.x-p2.x);
 
         CHECK_PUB_SEARCH_MODE_SX(baseOffset);
 
@@ -852,17 +837,17 @@ __device__ void ComputeKeysSEARCH_MODE_SX(uint32_t mode, const GroupTableView& t
 	// Next start point (startP + GRP_SIZE*G)
 	Load256(px, sx);
 	Load256(py, sy);
-	ModSub256(dy, tables.g2y, py);
+	ModSub256(dy, _2Gny, py);
 
 	_ModMult(_s, dy, dx[i]);           //  s = (p2.y-p1.y)*inverse(p2.x-p1.x)
 	_ModSqr(_p2, _s);                  // _p2 = pow2(s)
 
 	ModSub256(px, _p2, px);
-	ModSub256(px, tables.g2x);              // px = pow2(s) - p1.x - p2.x;
+	ModSub256(px, _2Gnx);              // px = pow2(s) - p1.x - p2.x;
 
-	ModSub256(py, tables.g2x, px);
+	ModSub256(py, _2Gnx, px);
 	_ModMult(py, _s);                  // py = - s*(ret.x-p2.x)
-	ModSub256(py, tables.g2y);              // py = - p2.y - s*(ret.x-p2.x);
+	ModSub256(py, _2Gny);              // py = - p2.y - s*(ret.x-p2.x);
 
 	// Update starting point
 	__syncthreads();
@@ -917,7 +902,7 @@ __device__ __noinline__ void CheckHashSEARCH_ETH_MODE_MA(uint64_t* px, uint64_t*
 
 #define CHECK_HASH_SEARCH_ETH_MODE_MA(offset) CheckHashSEARCH_ETH_MODE_MA(px, py, offset, bloomLookUp, BLOOM_BITS, BLOOM_HASHES, maxFound, out)
 
-__device__ void ComputeKeysSEARCH_ETH_MODE_MA(const GroupTableView& tables, uint64_t* startx, uint64_t* starty,
+__device__ void ComputeKeysSEARCH_ETH_MODE_MA(uint64_t* startx, uint64_t* starty,
         uint8_t* bloomLookUp, int BLOOM_BITS, uint8_t BLOOM_HASHES, uint32_t maxFound, uint32_t* out, uint32_t baseOffset)
 {
 
@@ -941,9 +926,9 @@ __device__ void ComputeKeysSEARCH_ETH_MODE_MA(const GroupTableView& tables, uint
 	// Fill group with delta x
 	uint32_t i;
 	for (i = 0; i < HSIZE; i++)
-		ModSub256(dx[i], tables.gx + 4 * i, sx);
-	ModSub256(dx[i], tables.gx + 4 * i, sx);   // For the first point
-	ModSub256(dx[i + 1], tables.g2x, sx); // For the next center point
+		ModSub256(dx[i], Gx + 4 * i, sx);
+	ModSub256(dx[i], Gx + 4 * i, sx);   // For the first point
+	ModSub256(dx[i + 1], _2Gnx, sx); // For the next center point
 
 	// Compute modular inverse
 	_ModInvGrouped(dx);
@@ -961,33 +946,33 @@ __device__ void ComputeKeysSEARCH_ETH_MODE_MA(const GroupTableView& tables, uint
 		// P = StartPoint + i*G
 		Load256(px, sx);
 		Load256(py, sy);
-		ModSub256(dy, tables.gy + 4 * i, py);
+		ModSub256(dy, Gy + 4 * i, py);
 
 		_ModMult(_s, dy, dx[i]);                 //  s = (p2.y-p1.y)*inverse(p2.x-p1.x)
 		_ModSqr(_p2, _s);                        // _p2 = pow2(s)
 
 		ModSub256(px, _p2, px);
-		ModSub256(px, tables.gx + 4 * i);               // px = pow2(s) - p1.x - p2.x;
+		ModSub256(px, Gx + 4 * i);               // px = pow2(s) - p1.x - p2.x;
 
-		ModSub256(py, tables.gx + 4 * i, px);
+		ModSub256(py, Gx + 4 * i, px);
 		_ModMult(py, _s);                        // py = - s*(ret.x-p2.x)
-		ModSub256(py, tables.gy + 4 * i);               // py = - p2.y - s*(ret.x-p2.x);
+		ModSub256(py, Gy + 4 * i);               // py = - p2.y - s*(ret.x-p2.x);
 
                 CHECK_HASH_SEARCH_ETH_MODE_MA(baseOffset + static_cast<uint32_t>(GRP_SIZE / 2) + (i + 1u));
 
 		// P = StartPoint - i*G, if (x,y) = i*G then (x,-y) = -i*G
 		Load256(px, sx);
-		ModSub256(dy, pyn, tables.gy + 4 * i);
+		ModSub256(dy, pyn, Gy + 4 * i);
 
 		_ModMult(_s, dy, dx[i]);                //  s = (p2.y-p1.y)*inverse(p2.x-p1.x)
 		_ModSqr(_p2, _s);                       // _p = pow2(s)
 
 		ModSub256(px, _p2, px);
-		ModSub256(px, tables.gx + 4 * i);              // px = pow2(s) - p1.x - p2.x;
+		ModSub256(px, Gx + 4 * i);              // px = pow2(s) - p1.x - p2.x;
 
-		ModSub256(py, px, tables.gx + 4 * i);
+		ModSub256(py, px, Gx + 4 * i);
 		_ModMult(py, _s);                       // py = s*(ret.x-p2.x)
-		ModSub256(py, tables.gy + 4 * i, py);          // py = - p2.y - s*(ret.x-p2.x);
+		ModSub256(py, Gy + 4 * i, py);          // py = - p2.y - s*(ret.x-p2.x);
 
                 CHECK_HASH_SEARCH_ETH_MODE_MA(baseOffset + (static_cast<uint32_t>(GRP_SIZE / 2) - (i + 1u)));
 
@@ -996,18 +981,18 @@ __device__ void ComputeKeysSEARCH_ETH_MODE_MA(const GroupTableView& tables, uint
 	// First point (startP - (GRP_SZIE/2)*G)
 	Load256(px, sx);
 	Load256(py, sy);
-	ModNeg256(dy, tables.gy + 4 * i);
+	ModNeg256(dy, Gy + 4 * i);
 	ModSub256(dy, py);
 
 	_ModMult(_s, dy, dx[i]);                  //  s = (p2.y-p1.y)*inverse(p2.x-p1.x)
 	_ModSqr(_p2, _s);                         // _p = pow2(s)
 
 	ModSub256(px, _p2, px);
-	ModSub256(px, tables.gx + 4 * i);                // px = pow2(s) - p1.x - p2.x;
+	ModSub256(px, Gx + 4 * i);                // px = pow2(s) - p1.x - p2.x;
 
-	ModSub256(py, px, tables.gx + 4 * i);
+	ModSub256(py, px, Gx + 4 * i);
 	_ModMult(py, _s);                         // py = s*(ret.x-p2.x)
-	ModSub256(py, tables.gy + 4 * i, py);            // py = - p2.y - s*(ret.x-p2.x);
+	ModSub256(py, Gy + 4 * i, py);            // py = - p2.y - s*(ret.x-p2.x);
 
         CHECK_HASH_SEARCH_ETH_MODE_MA(baseOffset);
 
@@ -1016,17 +1001,17 @@ __device__ void ComputeKeysSEARCH_ETH_MODE_MA(const GroupTableView& tables, uint
 	// Next start point (startP + GRP_SIZE*G)
 	Load256(px, sx);
 	Load256(py, sy);
-	ModSub256(dy, tables.g2y, py);
+	ModSub256(dy, _2Gny, py);
 
 	_ModMult(_s, dy, dx[i]);              //  s = (p2.y-p1.y)*inverse(p2.x-p1.x)
 	_ModSqr(_p2, _s);                     // _p2 = pow2(s)
 
 	ModSub256(px, _p2, px);
-	ModSub256(px, tables.g2x);                 // px = pow2(s) - p1.x - p2.x;
+	ModSub256(px, _2Gnx);                 // px = pow2(s) - p1.x - p2.x;
 
-	ModSub256(py, tables.g2x, px);
+	ModSub256(py, _2Gnx, px);
 	_ModMult(py, _s);                     // py = - s*(ret.x-p2.x)
-	ModSub256(py, tables.g2y);                 // py = - p2.y - s*(ret.x-p2.x);
+	ModSub256(py, _2Gny);                 // py = - p2.y - s*(ret.x-p2.x);
 
 
 	// Update starting point
@@ -1075,7 +1060,7 @@ __device__ __noinline__ void CheckHashSEARCH_ETH_MODE_SA(uint64_t* px, uint64_t*
 }
 #define CHECK_HASH_SEARCH_ETH_MODE_SA(offset) CheckHashSEARCH_ETH_MODE_SA(px, py, offset, hash, maxFound, out)
 
-__device__ void ComputeKeysSEARCH_ETH_MODE_SA(const GroupTableView& tables, uint64_t* startx, uint64_t* starty,
+__device__ void ComputeKeysSEARCH_ETH_MODE_SA(uint64_t* startx, uint64_t* starty,
         uint32_t* hash, uint32_t maxFound, uint32_t* out, uint32_t baseOffset)
 {
 
@@ -1099,9 +1084,9 @@ __device__ void ComputeKeysSEARCH_ETH_MODE_SA(const GroupTableView& tables, uint
 	// Fill group with delta x
 	uint32_t i;
 	for (i = 0; i < HSIZE; i++)
-		ModSub256(dx[i], tables.gx + 4 * i, sx);
-	ModSub256(dx[i], tables.gx + 4 * i, sx);   // For the first point
-	ModSub256(dx[i + 1], tables.g2x, sx); // For the next center point
+		ModSub256(dx[i], Gx + 4 * i, sx);
+	ModSub256(dx[i], Gx + 4 * i, sx);   // For the first point
+	ModSub256(dx[i + 1], _2Gnx, sx); // For the next center point
 
 	// Compute modular inverse
 	_ModInvGrouped(dx);
@@ -1119,33 +1104,33 @@ __device__ void ComputeKeysSEARCH_ETH_MODE_SA(const GroupTableView& tables, uint
 		// P = StartPoint + i*G
 		Load256(px, sx);
 		Load256(py, sy);
-		ModSub256(dy, tables.gy + 4 * i, py);
+		ModSub256(dy, Gy + 4 * i, py);
 
 		_ModMult(_s, dy, dx[i]);             //  s = (p2.y-p1.y)*inverse(p2.x-p1.x)
 		_ModSqr(_p2, _s);                    // _p2 = pow2(s)
 
 		ModSub256(px, _p2, px);
-		ModSub256(px, tables.gx + 4 * i);           // px = pow2(s) - p1.x - p2.x;
+		ModSub256(px, Gx + 4 * i);           // px = pow2(s) - p1.x - p2.x;
 
-		ModSub256(py, tables.gx + 4 * i, px);
+		ModSub256(py, Gx + 4 * i, px);
 		_ModMult(py, _s);                    // py = - s*(ret.x-p2.x)
-		ModSub256(py, tables.gy + 4 * i);           // py = - p2.y - s*(ret.x-p2.x);
+		ModSub256(py, Gy + 4 * i);           // py = - p2.y - s*(ret.x-p2.x);
 
                 CHECK_HASH_SEARCH_ETH_MODE_SA(baseOffset + static_cast<uint32_t>(GRP_SIZE / 2) + (i + 1u));
 
 		// P = StartPoint - i*G, if (x,y) = i*G then (x,-y) = -i*G
 		Load256(px, sx);
-		ModSub256(dy, pyn, tables.gy + 4 * i);
+		ModSub256(dy, pyn, Gy + 4 * i);
 
 		_ModMult(_s, dy, dx[i]);            //  s = (p2.y-p1.y)*inverse(p2.x-p1.x)
 		_ModSqr(_p2, _s);                   // _p = pow2(s)
 
 		ModSub256(px, _p2, px);
-		ModSub256(px, tables.gx + 4 * i);          // px = pow2(s) - p1.x - p2.x;
+		ModSub256(px, Gx + 4 * i);          // px = pow2(s) - p1.x - p2.x;
 
-		ModSub256(py, px, tables.gx + 4 * i);
+		ModSub256(py, px, Gx + 4 * i);
 		_ModMult(py, _s);                   // py = s*(ret.x-p2.x)
-		ModSub256(py, tables.gy + 4 * i, py);      // py = - p2.y - s*(ret.x-p2.x);
+		ModSub256(py, Gy + 4 * i, py);      // py = - p2.y - s*(ret.x-p2.x);
 
                 CHECK_HASH_SEARCH_ETH_MODE_SA(baseOffset + (static_cast<uint32_t>(GRP_SIZE / 2) - (i + 1u)));
 
@@ -1154,18 +1139,18 @@ __device__ void ComputeKeysSEARCH_ETH_MODE_SA(const GroupTableView& tables, uint
 	// First point (startP - (GRP_SZIE/2)*G)
 	Load256(px, sx);
 	Load256(py, sy);
-	ModNeg256(dy, tables.gy + 4 * i);
+	ModNeg256(dy, Gy + 4 * i);
 	ModSub256(dy, py);
 
 	_ModMult(_s, dy, dx[i]);              //  s = (p2.y-p1.y)*inverse(p2.x-p1.x)
 	_ModSqr(_p2, _s);                     // _p = pow2(s)
 
 	ModSub256(px, _p2, px);
-	ModSub256(px, tables.gx + 4 * i);            // px = pow2(s) - p1.x - p2.x;
+	ModSub256(px, Gx + 4 * i);            // px = pow2(s) - p1.x - p2.x;
 
-	ModSub256(py, px, tables.gx + 4 * i);
+	ModSub256(py, px, Gx + 4 * i);
 	_ModMult(py, _s);                     // py = s*(ret.x-p2.x)
-	ModSub256(py, tables.gy + 4 * i, py);        // py = - p2.y - s*(ret.x-p2.x);
+	ModSub256(py, Gy + 4 * i, py);        // py = - p2.y - s*(ret.x-p2.x);
 
         CHECK_HASH_SEARCH_ETH_MODE_SA(baseOffset);
 
@@ -1174,17 +1159,17 @@ __device__ void ComputeKeysSEARCH_ETH_MODE_SA(const GroupTableView& tables, uint
 	// Next start point (startP + GRP_SIZE*G)
 	Load256(px, sx);
 	Load256(py, sy);
-	ModSub256(dy, tables.g2y, py);
+	ModSub256(dy, _2Gny, py);
 
 	_ModMult(_s, dy, dx[i]);             //  s = (p2.y-p1.y)*inverse(p2.x-p1.x)
 	_ModSqr(_p2, _s);                    // _p2 = pow2(s)
 
 	ModSub256(px, _p2, px);
-	ModSub256(px, tables.g2x);                // px = pow2(s) - p1.x - p2.x;
+	ModSub256(px, _2Gnx);                // px = pow2(s) - p1.x - p2.x;
 
-	ModSub256(py, tables.g2x, px);
+	ModSub256(py, _2Gnx, px);
 	_ModMult(py, _s);                    // py = - s*(ret.x-p2.x)
-	ModSub256(py, tables.g2y);                // py = - p2.y - s*(ret.x-p2.x);
+	ModSub256(py, _2Gny);                // py = - p2.y - s*(ret.x-p2.x);
 
 	// Update starting point
 	__syncthreads();

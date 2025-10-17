@@ -22,12 +22,10 @@
 
 #include <algorithm>
 #include <array>
-#include <cstddef>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <stdint.h>
-#include <vector>
 
 #include "../hash/ripemd160.h"
 #include "../hash/sha256.h"
@@ -39,53 +37,6 @@
 #include "GPUBase58.h"
 
 namespace {
-
-__device__ inline void StageTable(const uint64_t* __restrict__ src,
-        uint64_t* __restrict__ dst, size_t count)
-{
-        if (dst == nullptr) {
-                return;
-        }
-#if __CUDA_ARCH__ >= 800
-        const size_t pairCount = count / 2;
-        for (size_t pair = threadIdx.x; pair < pairCount; pair += blockDim.x) {
-                char* sharedPtr = reinterpret_cast<char*>(dst) + pair * 16;
-                const char* globalPtr = reinterpret_cast<const char*>(src) + pair * 16;
-                asm volatile("cp.async.ca.shared.global [%0], [%1], 16;" :: "r"(sharedPtr), "l"(globalPtr));
-        }
-        if ((count & 1u) != 0u && threadIdx.x == 0) {
-                dst[count - 1] = src[count - 1];
-        }
-        asm volatile("cp.async.commit_group;" ::);
-        asm volatile("cp.async.wait_group 0;" ::);
-#else
-        for (size_t idx = threadIdx.x; idx < count; idx += blockDim.x) {
-                dst[idx] = GPU_LDG(src + idx);
-        }
-#endif
-        __syncthreads();
-}
-
-__device__ inline GroupTableView PrepareGroupTables(uint64_t* sharedTables)
-{
-        if (sharedTables == nullptr) {
-                return GroupTableView(Gx, Gy, _2Gnx, _2Gny);
-        }
-
-        uint64_t* gxShared = sharedTables;
-        uint64_t* gyShared = gxShared + GRP_SIZE * 4;
-        uint64_t* g2xShared = gyShared + GRP_SIZE * 4;
-        uint64_t* g2yShared = g2xShared + 4;
-
-        StageTable(Gx, gxShared, GRP_SIZE * 4);
-        StageTable(Gy, gyShared, GRP_SIZE * 4);
-        StageTable(_2Gnx, g2xShared, 4);
-        StageTable(_2Gny, g2yShared, 4);
-
-        return GroupTableView(gxShared, gyShared, g2xShared, g2yShared);
-}
-
-constexpr size_t kSharedTableBytes = (static_cast<size_t>(GRP_SIZE) * 8u + 8u) * sizeof(uint64_t);
 
 inline void CheckCuda(cudaError_t result, const char* expr, const char* file, int line)
 {
@@ -99,113 +50,6 @@ inline void CheckCuda(cudaError_t result, const char* expr, const char* file, in
 } // namespace
 
 #define CUDA_CHECK(call) ::CheckCuda((call), #call, __FILE__, __LINE__)
-
-int DetermineOptimalBlockSize()
-{
-        int minGridSize = 0;
-        int blockSize = 0;
-        CUDA_CHECK(cudaOccupancyMaxPotentialBlockSize(&minGridSize, &blockSize,
-                compute_keys_mode_ma, kSharedTableBytes, 0));
-        return blockSize;
-}
-
-void GPUEngine::destroyGraph()
-{
-        if (launchGraphExec_ != nullptr) {
-                CUDA_CHECK(cudaGraphExecDestroy(launchGraphExec_));
-                launchGraphExec_ = nullptr;
-        }
-        if (launchGraph_ != nullptr) {
-                CUDA_CHECK(cudaGraphDestroy(launchGraph_));
-                launchGraph_ = nullptr;
-        }
-        launchMemsetNode_ = nullptr;
-        launchKernelNode_ = nullptr;
-        graphInitialized_ = false;
-        lastKernelPtr_ = nullptr;
-        graphSharedMem_ = 0;
-        graphGridDim_ = dim3{};
-        graphBlockDim_ = dim3{};
-}
-
-template <typename KernelFunc, typename... Args>
-bool GPUEngine::launchWithGraph(KernelFunc kernel, dim3 gridDim, dim3 blockDim, size_t sharedMemBytes, Args&... args)
-{
-        const void* kernelPtr = reinterpret_cast<const void*>(kernel);
-        std::array<void*, sizeof...(Args)> argPointers = { { reinterpret_cast<void*>(&args)... } };
-
-        cudaKernelNodeParams params{};
-        params.func = kernelPtr;
-        params.gridDim = gridDim;
-        params.blockDim = blockDim;
-        params.sharedMemBytes = sharedMemBytes;
-        params.kernelParams = argPointers.data();
-
-        cudaMemsetParams memsetParams{};
-        memsetParams.dst = outputBuffer;
-        memsetParams.elementSize = sizeof(uint32_t);
-        memsetParams.width = sizeof(uint32_t);
-        memsetParams.height = 1;
-
-        if (!useCudaGraphs_) {
-                CUDA_CHECK(cudaMemsetAsync(outputBuffer, 0, sizeof(uint32_t), stream_));
-                kernel<<<gridDim, blockDim, sharedMemBytes, stream_>>>(args...);
-                return true;
-        }
-
-        const bool requiresRebuild = (!graphInitialized_) || kernelPtr != lastKernelPtr_ ||
-                gridDim.x != graphGridDim_.x || gridDim.y != graphGridDim_.y || gridDim.z != graphGridDim_.z ||
-                blockDim.x != graphBlockDim_.x || blockDim.y != graphBlockDim_.y || blockDim.z != graphBlockDim_.z ||
-                sharedMemBytes != graphSharedMem_;
-
-        if (requiresRebuild) {
-                destroyGraph();
-                CUDA_CHECK(cudaStreamBeginCapture(stream_, cudaStreamCaptureModeThreadLocal));
-                CUDA_CHECK(cudaMemsetAsync(outputBuffer, 0, sizeof(uint32_t), stream_));
-                kernel<<<gridDim, blockDim, sharedMemBytes, stream_>>>(args...);
-                CUDA_CHECK(cudaStreamEndCapture(stream_, &launchGraph_));
-
-                size_t nodeCount = 0;
-                CUDA_CHECK(cudaGraphGetNodes(launchGraph_, nullptr, &nodeCount));
-                std::vector<cudaGraphNode_t> nodes(nodeCount);
-                CUDA_CHECK(cudaGraphGetNodes(launchGraph_, nodes.data(), &nodeCount));
-                for (cudaGraphNode_t node : nodes) {
-                        cudaGraphNodeType type;
-                        CUDA_CHECK(cudaGraphNodeGetType(node, &type));
-                        if (type == cudaGraphNodeTypeKernel) {
-                                launchKernelNode_ = reinterpret_cast<cudaKernelNode_t>(node);
-                        }
-                        else if (type == cudaGraphNodeTypeMemset) {
-                                launchMemsetNode_ = node;
-                        }
-                }
-
-                CUDA_CHECK(cudaGraphInstantiate(&launchGraphExec_, launchGraph_, nullptr, nullptr, 0));
-                graphInitialized_ = true;
-                lastKernelPtr_ = kernelPtr;
-                graphGridDim_ = gridDim;
-                graphBlockDim_ = blockDim;
-                graphSharedMem_ = sharedMemBytes;
-                if (launchKernelNode_ != nullptr) {
-                        CUDA_CHECK(cudaGraphExecKernelNodeSetParams(launchGraphExec_, launchKernelNode_, &params));
-                }
-                if (launchMemsetNode_ != nullptr) {
-                        CUDA_CHECK(cudaGraphExecMemsetNodeSetParams(launchGraphExec_, launchMemsetNode_, &memsetParams));
-                }
-        }
-        else {
-                if (launchKernelNode_ != nullptr) {
-                        CUDA_CHECK(cudaGraphExecKernelNodeSetParams(launchGraphExec_, launchKernelNode_, &params));
-                }
-                if (launchMemsetNode_ != nullptr) {
-                        CUDA_CHECK(cudaGraphExecMemsetNodeSetParams(launchGraphExec_, launchMemsetNode_, &memsetParams));
-                }
-        }
-
-        CUDA_CHECK(cudaGraphLaunch(launchGraphExec_, stream_));
-
-        return true;
-}
 
 namespace {
 
@@ -246,14 +90,11 @@ __global__ void compute_keys_mode_ma(uint32_t mode, uint8_t* bloomLookUp, int BL
         uint64_t* keys, uint32_t maxFound, uint32_t* found, int stepMultiplier)
 {
 
-        extern __shared__ uint64_t sharedTables[];
-        const GroupTableView tables = PrepareGroupTables(sharedTables);
-
         int xPtr = (blockIdx.x * blockDim.x) * 8;
         int yPtr = xPtr + 4 * blockDim.x;
         for (int iteration = 0; iteration < stepMultiplier; ++iteration) {
                 const uint32_t baseOffset = static_cast<uint32_t>(iteration) * static_cast<uint32_t>(GRP_SIZE);
-                ComputeKeysSEARCH_MODE_MA(mode, tables, keys + xPtr, keys + yPtr, bloomLookUp, BLOOM_BITS, BLOOM_HASHES, maxFound, found, baseOffset);
+                ComputeKeysSEARCH_MODE_MA(mode, keys + xPtr, keys + yPtr, bloomLookUp, BLOOM_BITS, BLOOM_HASHES, maxFound, found, baseOffset);
         }
 
 }
@@ -262,14 +103,11 @@ __global__ void compute_keys_comp_mode_ma(uint32_t mode, uint8_t* bloomLookUp, i
         uint32_t maxFound, uint32_t* found, int stepMultiplier)
 {
 
-        extern __shared__ uint64_t sharedTables[];
-        const GroupTableView tables = PrepareGroupTables(sharedTables);
-
         int xPtr = (blockIdx.x * blockDim.x) * 8;
         int yPtr = xPtr + 4 * blockDim.x;
         for (int iteration = 0; iteration < stepMultiplier; ++iteration) {
                 const uint32_t baseOffset = static_cast<uint32_t>(iteration) * static_cast<uint32_t>(GRP_SIZE);
-                ComputeKeysSEARCH_MODE_MA(mode, tables, keys + xPtr, keys + yPtr, bloomLookUp, BLOOM_BITS, BLOOM_HASHES, maxFound, found, baseOffset);
+                ComputeKeysSEARCH_MODE_MA(mode, keys + xPtr, keys + yPtr, bloomLookUp, BLOOM_BITS, BLOOM_HASHES, maxFound, found, baseOffset);
         }
 
 }
@@ -279,14 +117,11 @@ __global__ void compute_keys_mode_sa(uint32_t mode, uint32_t* hash160, uint64_t*
         int stepMultiplier)
 {
 
-        extern __shared__ uint64_t sharedTables[];
-        const GroupTableView tables = PrepareGroupTables(sharedTables);
-
         int xPtr = (blockIdx.x * blockDim.x) * 8;
         int yPtr = xPtr + 4 * blockDim.x;
         for (int iteration = 0; iteration < stepMultiplier; ++iteration) {
                 const uint32_t baseOffset = static_cast<uint32_t>(iteration) * static_cast<uint32_t>(GRP_SIZE);
-                ComputeKeysSEARCH_MODE_SA(mode, tables, keys + xPtr, keys + yPtr, hash160, maxFound, found, baseOffset);
+                ComputeKeysSEARCH_MODE_SA(mode, keys + xPtr, keys + yPtr, hash160, maxFound, found, baseOffset);
         }
 
 }
@@ -295,14 +130,11 @@ __global__ void compute_keys_comp_mode_sa(uint32_t mode, uint32_t* hash160, uint
         int stepMultiplier)
 {
 
-        extern __shared__ uint64_t sharedTables[];
-        const GroupTableView tables = PrepareGroupTables(sharedTables);
-
         int xPtr = (blockIdx.x * blockDim.x) * 8;
         int yPtr = xPtr + 4 * blockDim.x;
         for (int iteration = 0; iteration < stepMultiplier; ++iteration) {
                 const uint32_t baseOffset = static_cast<uint32_t>(iteration) * static_cast<uint32_t>(GRP_SIZE);
-                ComputeKeysSEARCH_MODE_SA(mode, tables, keys + xPtr, keys + yPtr, hash160, maxFound, found, baseOffset);
+                ComputeKeysSEARCH_MODE_SA(mode, keys + xPtr, keys + yPtr, hash160, maxFound, found, baseOffset);
         }
 
 }
@@ -312,14 +144,11 @@ __global__ void compute_keys_comp_mode_mx(uint32_t mode, uint8_t* bloomLookUp, i
         uint32_t maxFound, uint32_t* found, int stepMultiplier)
 {
 
-        extern __shared__ uint64_t sharedTables[];
-        const GroupTableView tables = PrepareGroupTables(sharedTables);
-
         int xPtr = (blockIdx.x * blockDim.x) * 8;
         int yPtr = xPtr + 4 * blockDim.x;
         for (int iteration = 0; iteration < stepMultiplier; ++iteration) {
                 const uint32_t baseOffset = static_cast<uint32_t>(iteration) * static_cast<uint32_t>(GRP_SIZE);
-                ComputeKeysSEARCH_MODE_MX(mode, tables, keys + xPtr, keys + yPtr, bloomLookUp, BLOOM_BITS, BLOOM_HASHES, maxFound, found, baseOffset);
+                ComputeKeysSEARCH_MODE_MX(mode, keys + xPtr, keys + yPtr, bloomLookUp, BLOOM_BITS, BLOOM_HASHES, maxFound, found, baseOffset);
         }
 
 }
@@ -329,14 +158,11 @@ __global__ void compute_keys_comp_mode_sx(uint32_t mode, uint32_t* xpoint, uint6
         int stepMultiplier)
 {
 
-        extern __shared__ uint64_t sharedTables[];
-        const GroupTableView tables = PrepareGroupTables(sharedTables);
-
         int xPtr = (blockIdx.x * blockDim.x) * 8;
         int yPtr = xPtr + 4 * blockDim.x;
         for (int iteration = 0; iteration < stepMultiplier; ++iteration) {
                 const uint32_t baseOffset = static_cast<uint32_t>(iteration) * static_cast<uint32_t>(GRP_SIZE);
-                ComputeKeysSEARCH_MODE_SX(mode, tables, keys + xPtr, keys + yPtr, xpoint, maxFound, found, baseOffset);
+                ComputeKeysSEARCH_MODE_SX(mode, keys + xPtr, keys + yPtr, xpoint, maxFound, found, baseOffset);
         }
 
 }
@@ -348,14 +174,11 @@ __global__ void compute_keys_mode_eth_ma(uint8_t* bloomLookUp, int BLOOM_BITS, u
         uint32_t maxFound, uint32_t* found, int stepMultiplier)
 {
 
-        extern __shared__ uint64_t sharedTables[];
-        const GroupTableView tables = PrepareGroupTables(sharedTables);
-
         int xPtr = (blockIdx.x * blockDim.x) * 8;
         int yPtr = xPtr + 4 * blockDim.x;
         for (int iteration = 0; iteration < stepMultiplier; ++iteration) {
                 const uint32_t baseOffset = static_cast<uint32_t>(iteration) * static_cast<uint32_t>(GRP_SIZE);
-                ComputeKeysSEARCH_ETH_MODE_MA(tables, keys + xPtr, keys + yPtr, bloomLookUp, BLOOM_BITS, BLOOM_HASHES, maxFound, found, baseOffset);
+                ComputeKeysSEARCH_ETH_MODE_MA(keys + xPtr, keys + yPtr, bloomLookUp, BLOOM_BITS, BLOOM_HASHES, maxFound, found, baseOffset);
         }
 
 }
@@ -364,14 +187,11 @@ __global__ void compute_keys_mode_eth_sa(uint32_t* hash, uint64_t* keys, uint32_
         int stepMultiplier)
 {
 
-        extern __shared__ uint64_t sharedTables[];
-        const GroupTableView tables = PrepareGroupTables(sharedTables);
-
         int xPtr = (blockIdx.x * blockDim.x) * 8;
         int yPtr = xPtr + 4 * blockDim.x;
         for (int iteration = 0; iteration < stepMultiplier; ++iteration) {
                 const uint32_t baseOffset = static_cast<uint32_t>(iteration) * static_cast<uint32_t>(GRP_SIZE);
-                ComputeKeysSEARCH_ETH_MODE_SA(tables, keys + xPtr, keys + yPtr, hash, maxFound, found, baseOffset);
+                ComputeKeysSEARCH_ETH_MODE_SA(keys + xPtr, keys + yPtr, hash, maxFound, found, baseOffset);
         }
 
 }
@@ -434,23 +254,12 @@ GPUEngine::GPUEngine(Secp256K1* secp, int nbThreadGroup, int nbThreadPerGroup, i
 
         cudaDeviceProp deviceProp{};
         CUDA_CHECK(cudaGetDeviceProperties(&deviceProp, gpuId));
-        useCudaGraphs_ = deviceProp.major >= 7;
-
-        if (this->nbThreadPerGroup <= 0) {
-                const int recommended = DetermineOptimalBlockSize();
-                if (recommended > 0) {
-                        this->nbThreadPerGroup = recommended;
-                }
-        }
-        if (this->nbThreadPerGroup <= 0) {
-                this->nbThreadPerGroup = 256;
-        }
 
         if (nbThreadGroup == -1) {
                 nbThreadGroup = deviceProp.multiProcessorCount * 8;
         }
 
-        this->nbThread = nbThreadGroup * this->nbThreadPerGroup;
+        this->nbThread = nbThreadGroup * nbThreadPerGroup;
         this->activeThreadCount = this->nbThread;
         this->maxFound = maxFound;
         this->outputSize = (maxFound * ITEM_SIZE_A + 4);
@@ -462,11 +271,12 @@ GPUEngine::GPUEngine(Secp256K1* secp, int nbThreadGroup, int nbThreadPerGroup, i
         std::snprintf(tmp, sizeof(tmp), "GPU #%d %s (%dx%d cores) Grid(%dx%d)",
                 gpuId, deviceProp.name, deviceProp.multiProcessorCount,
                 _ConvertSMVer2Cores(deviceProp.major, deviceProp.minor),
-                nbThread / this->nbThreadPerGroup,
-                this->nbThreadPerGroup);
+                nbThread / nbThreadPerGroup,
+                nbThreadPerGroup);
         deviceName = std::string(tmp);
 
-        CUDA_CHECK(cudaDeviceSetCacheConfig(cudaFuncCachePreferShared));
+        // Prefer L1 (We do not use __shared__ at all)
+        CUDA_CHECK(cudaDeviceSetCacheConfig(cudaFuncCachePreferL1));
 
         const size_t stackSize = 49152;
         CUDA_CHECK(cudaDeviceSetLimit(cudaLimitStackSize, stackSize));
@@ -538,23 +348,12 @@ GPUEngine::GPUEngine(Secp256K1* secp, int nbThreadGroup, int nbThreadPerGroup, i
 
         cudaDeviceProp deviceProp{};
         CUDA_CHECK(cudaGetDeviceProperties(&deviceProp, gpuId));
-        useCudaGraphs_ = deviceProp.major >= 7;
-
-        if (this->nbThreadPerGroup <= 0) {
-                const int recommended = DetermineOptimalBlockSize();
-                if (recommended > 0) {
-                        this->nbThreadPerGroup = recommended;
-                }
-        }
-        if (this->nbThreadPerGroup <= 0) {
-                this->nbThreadPerGroup = 256;
-        }
 
         if (nbThreadGroup == -1) {
                 nbThreadGroup = deviceProp.multiProcessorCount * 8;
         }
 
-        this->nbThread = nbThreadGroup * this->nbThreadPerGroup;
+        this->nbThread = nbThreadGroup * nbThreadPerGroup;
         this->activeThreadCount = this->nbThread;
         this->maxFound = maxFound;
         this->outputSize = (maxFound * ITEM_SIZE_A + 4);
@@ -566,11 +365,12 @@ GPUEngine::GPUEngine(Secp256K1* secp, int nbThreadGroup, int nbThreadPerGroup, i
         std::snprintf(tmp, sizeof(tmp), "GPU #%d %s (%dx%d cores) Grid(%dx%d)",
                 gpuId, deviceProp.name, deviceProp.multiProcessorCount,
                 _ConvertSMVer2Cores(deviceProp.major, deviceProp.minor),
-                nbThread / this->nbThreadPerGroup,
-                this->nbThreadPerGroup);
+                nbThread / nbThreadPerGroup,
+                nbThreadPerGroup);
         deviceName = std::string(tmp);
 
-        CUDA_CHECK(cudaDeviceSetCacheConfig(cudaFuncCachePreferShared));
+        // Prefer L1 (We do not use __shared__ at all)
+        CUDA_CHECK(cudaDeviceSetCacheConfig(cudaFuncCachePreferL1));
 
         const size_t stackSize = 49152;
         CUDA_CHECK(cudaDeviceSetLimit(cudaLimitStackSize, stackSize));
@@ -774,8 +574,6 @@ void GPUEngine::PrintCudaInfo()
 
 GPUEngine::~GPUEngine()
 {
-        destroyGraph();
-
         if (streamCreated_) {
                 CUDA_CHECK(cudaStreamDestroy(stream_));
                 stream_ = nullptr;
@@ -873,26 +671,23 @@ bool GPUEngine::callKernelSEARCH_MODE_MA()
                 return false;
         }
 
-        dim3 gridDim(activeThreadCount / nbThreadPerGroup);
-        dim3 blockDim(nbThreadPerGroup);
-        int bloomBitsInt = static_cast<int>(BLOOM_BITS);
-        uint8_t bloomHashes = BLOOM_HASHES;
-        int localStepMultiplier = stepMultiplier;
+        // Reset nbFound
+        CUDA_CHECK(cudaMemsetAsync(outputBuffer, 0, sizeof(uint32_t), stream_));
 
         // Call the kernel (Perform STEP_SIZE keys per thread)
         if (coinType == COIN_BTC) {
                 if (compMode == SEARCH_COMPRESSED) {
-                        launchWithGraph(compute_keys_comp_mode_ma, gridDim, blockDim, kSharedTableBytes,
-                                compMode, inputBloomLookUp, bloomBitsInt, bloomHashes, inputKey, maxFound, outputBuffer, localStepMultiplier);
+                        compute_keys_comp_mode_ma << < activeThreadCount / nbThreadPerGroup, nbThreadPerGroup, 0, stream_ >> >
+                                (compMode, inputBloomLookUp, BLOOM_BITS, BLOOM_HASHES, inputKey, maxFound, outputBuffer, stepMultiplier);
                 }
                 else {
-                        launchWithGraph(compute_keys_mode_ma, gridDim, blockDim, kSharedTableBytes,
-                                compMode, inputBloomLookUp, bloomBitsInt, bloomHashes, inputKey, maxFound, outputBuffer, localStepMultiplier);
+                        compute_keys_mode_ma << < activeThreadCount / nbThreadPerGroup, nbThreadPerGroup, 0, stream_ >> >
+                                (compMode, inputBloomLookUp, BLOOM_BITS, BLOOM_HASHES, inputKey, maxFound, outputBuffer, stepMultiplier);
                 }
         }
         else {
-                launchWithGraph(compute_keys_mode_eth_ma, gridDim, blockDim, kSharedTableBytes,
-                        inputBloomLookUp, bloomBitsInt, bloomHashes, inputKey, maxFound, outputBuffer, localStepMultiplier);
+                compute_keys_mode_eth_ma << < activeThreadCount / nbThreadPerGroup, nbThreadPerGroup, 0, stream_ >> >
+                        (inputBloomLookUp, BLOOM_BITS, BLOOM_HASHES, inputKey, maxFound, outputBuffer, stepMultiplier);
         }
 
         CUDA_CHECK(cudaPeekAtLastError());
@@ -917,16 +712,13 @@ bool GPUEngine::callKernelSEARCH_MODE_MX()
                 return false;
         }
 
-        dim3 gridDim(activeThreadCount / nbThreadPerGroup);
-        dim3 blockDim(nbThreadPerGroup);
-        int bloomBitsInt = static_cast<int>(BLOOM_BITS);
-        uint8_t bloomHashes = BLOOM_HASHES;
-        int localStepMultiplier = stepMultiplier;
+        // Reset nbFound
+        CUDA_CHECK(cudaMemsetAsync(outputBuffer, 0, sizeof(uint32_t), stream_));
 
         // Call the kernel (Perform STEP_SIZE keys per thread)
         if (compMode == SEARCH_COMPRESSED) {
-                launchWithGraph(compute_keys_comp_mode_mx, gridDim, blockDim, kSharedTableBytes,
-                        compMode, inputBloomLookUp, bloomBitsInt, bloomHashes, inputKey, maxFound, outputBuffer, localStepMultiplier);
+                compute_keys_comp_mode_mx << < activeThreadCount / nbThreadPerGroup, nbThreadPerGroup, 0, stream_ >> >
+                        (compMode, inputBloomLookUp, BLOOM_BITS, BLOOM_HASHES, inputKey, maxFound, outputBuffer, stepMultiplier);
         }
         else {
                 printf("GPUEngine: PubKeys search doesn't support uncompressed\n");
@@ -954,24 +746,23 @@ bool GPUEngine::callKernelSEARCH_MODE_SA()
                 return false;
         }
 
-        dim3 gridDim(activeThreadCount / nbThreadPerGroup);
-        dim3 blockDim(nbThreadPerGroup);
-        int localStepMultiplier = stepMultiplier;
+        // Reset nbFound
+        CUDA_CHECK(cudaMemsetAsync(outputBuffer, 0, sizeof(uint32_t), stream_));
 
         // Call the kernel (Perform STEP_SIZE keys per thread)
         if (coinType == COIN_BTC) {
                 if (compMode == SEARCH_COMPRESSED) {
-                        launchWithGraph(compute_keys_comp_mode_sa, gridDim, blockDim, kSharedTableBytes,
-                                compMode, inputHashORxpoint, inputKey, maxFound, outputBuffer, localStepMultiplier);
+                        compute_keys_comp_mode_sa << < activeThreadCount / nbThreadPerGroup, nbThreadPerGroup, 0, stream_ >> >
+                                (compMode, inputHashORxpoint, inputKey, maxFound, outputBuffer, stepMultiplier);
                 }
                 else {
-                        launchWithGraph(compute_keys_mode_sa, gridDim, blockDim, kSharedTableBytes,
-                                compMode, inputHashORxpoint, inputKey, maxFound, outputBuffer, localStepMultiplier);
+                        compute_keys_mode_sa << < activeThreadCount / nbThreadPerGroup, nbThreadPerGroup, 0, stream_ >> >
+                                (compMode, inputHashORxpoint, inputKey, maxFound, outputBuffer, stepMultiplier);
                 }
         }
         else {
-                launchWithGraph(compute_keys_mode_eth_sa, gridDim, blockDim, kSharedTableBytes,
-                        inputHashORxpoint, inputKey, maxFound, outputBuffer, localStepMultiplier);
+                compute_keys_mode_eth_sa << < activeThreadCount / nbThreadPerGroup, nbThreadPerGroup, 0, stream_ >> >
+                        (inputHashORxpoint, inputKey, maxFound, outputBuffer, stepMultiplier);
         }
 
         CUDA_CHECK(cudaPeekAtLastError());
@@ -997,14 +788,12 @@ bool GPUEngine::callKernelSEARCH_MODE_SX()
                 return false;
         }
 
-        dim3 gridDim(activeThreadCount / nbThreadPerGroup);
-        dim3 blockDim(nbThreadPerGroup);
-        int localStepMultiplier = stepMultiplier;
+        CUDA_CHECK(cudaMemsetAsync(outputBuffer, 0, sizeof(uint32_t), stream_));
 
         // Call the kernel (Perform STEP_SIZE keys per thread)
         if (compMode == SEARCH_COMPRESSED) {
-                launchWithGraph(compute_keys_comp_mode_sx, gridDim, blockDim, kSharedTableBytes,
-                        compMode, inputHashORxpoint, inputKey, maxFound, outputBuffer, localStepMultiplier);
+                compute_keys_comp_mode_sx << < activeThreadCount / nbThreadPerGroup, nbThreadPerGroup, 0, stream_ >> >
+                        (compMode, inputHashORxpoint, inputKey, maxFound, outputBuffer, stepMultiplier);
         }
         else {
                 printf("GPUEngine: PubKeys search doesn't support uncompressed\n");
