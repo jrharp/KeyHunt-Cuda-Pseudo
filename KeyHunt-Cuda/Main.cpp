@@ -477,12 +477,12 @@ int main(int argc, char** argv)
 		}
 	}
 
-	if (gridSize.size() == 0) {
-		for (int i = 0; i < gpuId.size(); i++) {
-			gridSize.push_back(-1);
-			gridSize.push_back(128);
-		}
-	}
+        if (gridSize.size() == 0) {
+                for (int i = 0; i < gpuId.size(); i++) {
+                        gridSize.push_back(-1);
+                        gridSize.push_back(128);
+                }
+        }
 	if (gridSize.size() != gpuId.size() * 2) {
 		printf("Error: %s\n", "Invalid gridSize or gpuId argument, must have coherent size\n");
 		usage();
@@ -595,55 +595,79 @@ int main(int argc, char** argv)
 	printf("OUTPUT FILE  : %s\n", outputFile.c_str());
 
 
+        auto computeGpuStepMultiplier = [](const std::vector<int>& gridSizeValues) {
+                int multiplier = 1;
+                for (size_t idx = 0; idx + 1 < gridSizeValues.size(); idx += 2) {
+                        const int threadsPerGroup = gridSizeValues[idx + 1];
+                        if (threadsPerGroup <= 0) {
+                                continue;
+                        }
+                        int power = 1;
+                        while (power < threadsPerGroup) {
+                                const int next = power << 1;
+                                if (next > threadsPerGroup) {
+                                        break;
+                                }
+                                power = next;
+                        }
+                        if (power > multiplier) {
+                                multiplier = power;
+                        }
+                }
+                return multiplier;
+        };
+
+        const int gpuStepMultiplier = (gpuEnable && !gridSize.empty()) ? computeGpuStepMultiplier(gridSize) : 1;
+
 #ifdef WIN64
-	if (SetConsoleCtrlHandler(CtrlHandler, TRUE)) {
-		KeyHunt* v;
-		switch (searchMode) {
-		case (int)SEARCH_MODE_MA:
-		case (int)SEARCH_MODE_MX:
-			v = new KeyHunt(inputFile, compMode, searchMode, coinType, gpuEnable, outputFile, useSSE,
-				maxFound, rKey, rangeStart.GetBase16(), rangeEnd.GetBase16(), should_exit);
-			break;
-		case (int)SEARCH_MODE_SA:
-		case (int)SEARCH_MODE_SX:
-			v = new KeyHunt(hashORxpoint, compMode, searchMode, coinType, gpuEnable, outputFile, useSSE,
-				maxFound, rKey, rangeStart.GetBase16(), rangeEnd.GetBase16(), should_exit);
-			break;
-		default:
-			printf("\n\nNothing to do, exiting\n");
-			return 0;
-			break;
-		}
-		v->Search(nbCPUThread, gpuId, gridSize, should_exit);
-		delete v;
-		printf("\n\nBYE\n");
-		return 0;
-	}
-	else {
-		printf("Error: could not set control-c handler\n");
-		return -1;
-	}
+        if (SetConsoleCtrlHandler(CtrlHandler, TRUE)) {
+                KeyHunt* v;
+                switch (searchMode) {
+                case (int)SEARCH_MODE_MA:
+                case (int)SEARCH_MODE_MX:
+                        v = new KeyHunt(inputFile, compMode, searchMode, coinType, gpuEnable, outputFile, useSSE,
+                                maxFound, rKey, rangeStart.GetBase16(), rangeEnd.GetBase16(), should_exit, gpuStepMultiplier);
+                        break;
+                case (int)SEARCH_MODE_SA:
+                case (int)SEARCH_MODE_SX:
+                        v = new KeyHunt(hashORxpoint, compMode, searchMode, coinType, gpuEnable, outputFile, useSSE,
+                                maxFound, rKey, rangeStart.GetBase16(), rangeEnd.GetBase16(), should_exit, gpuStepMultiplier);
+                        break;
+                default:
+                        printf("\n\nNothing to do, exiting\n");
+                        return 0;
+                        break;
+                }
+                v->Search(nbCPUThread, gpuId, gridSize, should_exit);
+                delete v;
+                printf("\n\nBYE\n");
+                return 0;
+        }
+        else {
+                printf("Error: could not set control-c handler\n");
+                return -1;
+        }
 #else
-	signal(SIGINT, CtrlHandler);
-	KeyHunt* v;
-	switch (searchMode) {
-	case (int)SEARCH_MODE_MA:
-	case (int)SEARCH_MODE_MX:
-		v = new KeyHunt(inputFile, compMode, searchMode, coinType, gpuEnable, outputFile, useSSE,
-			maxFound, rKey, rangeStart.GetBase16(), rangeEnd.GetBase16(), should_exit);
-		break;
-	case (int)SEARCH_MODE_SA:
-	case (int)SEARCH_MODE_SX:
-		v = new KeyHunt(hashORxpoint, compMode, searchMode, coinType, gpuEnable, outputFile, useSSE,
-			maxFound, rKey, rangeStart.GetBase16(), rangeEnd.GetBase16(), should_exit);
-		break;
-	default:
-		printf("\n\nNothing to do, exiting\n");
-		return 0;
-		break;
-	}
-	v->Search(nbCPUThread, gpuId, gridSize, should_exit);
-	delete v;
-	return 0;
+        signal(SIGINT, CtrlHandler);
+        KeyHunt* v;
+        switch (searchMode) {
+        case (int)SEARCH_MODE_MA:
+        case (int)SEARCH_MODE_MX:
+                v = new KeyHunt(inputFile, compMode, searchMode, coinType, gpuEnable, outputFile, useSSE,
+                        maxFound, rKey, rangeStart.GetBase16(), rangeEnd.GetBase16(), should_exit, gpuStepMultiplier);
+                break;
+        case (int)SEARCH_MODE_SA:
+        case (int)SEARCH_MODE_SX:
+                v = new KeyHunt(hashORxpoint, compMode, searchMode, coinType, gpuEnable, outputFile, useSSE,
+                        maxFound, rKey, rangeStart.GetBase16(), rangeEnd.GetBase16(), should_exit, gpuStepMultiplier);
+                break;
+        default:
+                printf("\n\nNothing to do, exiting\n");
+                return 0;
+                break;
+        }
+        v->Search(nbCPUThread, gpuId, gridSize, should_exit);
+        delete v;
+        return 0;
 #endif
 }
