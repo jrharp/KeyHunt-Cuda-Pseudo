@@ -485,6 +485,45 @@ void sha256_65(unsigned char *input, unsigned char *digest)
 
 }
 
+void sha256_compress_block(const unsigned char *block, unsigned char *digest)
+{
+
+    uint32_t s[8];
+
+    _sha256::Initialize(s);
+    _sha256::Transform(s, block);
+
+    WRITEBE32(digest, s[0]);
+    WRITEBE32(digest + 4, s[1]);
+    WRITEBE32(digest + 8, s[2]);
+    WRITEBE32(digest + 12, s[3]);
+    WRITEBE32(digest + 16, s[4]);
+    WRITEBE32(digest + 20, s[5]);
+    WRITEBE32(digest + 24, s[6]);
+    WRITEBE32(digest + 28, s[7]);
+
+}
+
+void sha256_compress_two_blocks(const unsigned char *blocks, unsigned char *digest)
+{
+
+    uint32_t s[8];
+
+    _sha256::Initialize(s);
+    _sha256::Transform(s, blocks);
+    _sha256::Transform(s, blocks + 64);
+
+    WRITEBE32(digest, s[0]);
+    WRITEBE32(digest + 4, s[1]);
+    WRITEBE32(digest + 8, s[2]);
+    WRITEBE32(digest + 12, s[3]);
+    WRITEBE32(digest + 16, s[4]);
+    WRITEBE32(digest + 20, s[5]);
+    WRITEBE32(digest + 24, s[6]);
+    WRITEBE32(digest + 28, s[7]);
+
+}
+
 void sha256_checksum(uint8_t *input, int length, uint8_t *checksum)
 {
 

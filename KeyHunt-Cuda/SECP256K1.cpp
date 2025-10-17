@@ -805,29 +805,35 @@ void Secp256K1::GetXBytes(bool compressed, Point& pubKey, unsigned char* publicK
 void Secp256K1::GetHash160(bool compressed, Point& pubKey, unsigned char* hash)
 {
 
-	unsigned char shapk[64];
+        alignas(32) std::array<uint8_t, 32> shaDigest{};
 
-	unsigned char publicKeyBytes[128];
+        if (!compressed) {
 
-	if (!compressed) {
+                // Full public key
+                alignas(64) std::array<uint8_t, 128> blocks{};
+                blocks[0] = 0x4;
+                pubKey.x.Get32Bytes(blocks.data() + 1);
+                pubKey.y.Get32Bytes(blocks.data() + 33);
+                blocks[65] = 0x80;
+                blocks[126] = 0x02;
+                blocks[127] = 0x08;
+                sha256_compress_two_blocks(blocks.data(), shaDigest.data());
 
-		// Full public key
-		publicKeyBytes[0] = 0x4;
-		pubKey.x.Get32Bytes(publicKeyBytes + 1);
-		pubKey.y.Get32Bytes(publicKeyBytes + 33);
-		sha256_65(publicKeyBytes, shapk);
+        }
+        else {
 
-	}
-	else {
+                // Compressed public key
+                alignas(64) std::array<uint8_t, 64> block{};
+                block[0] = pubKey.y.IsEven() ? 0x2 : 0x3;
+                pubKey.x.Get32Bytes(block.data() + 1);
+                block[33] = 0x80;
+                block[62] = 0x01;
+                block[63] = 0x08;
+                sha256_compress_block(block.data(), shaDigest.data());
 
-		// Compressed public key
-		publicKeyBytes[0] = pubKey.y.IsEven() ? 0x2 : 0x3;
-		pubKey.x.Get32Bytes(publicKeyBytes + 1);
-		sha256_33(publicKeyBytes, shapk);
+        }
 
-	}
-
-	ripemd160_32(shapk, hash);
+        ripemd160_32(shaDigest.data(), hash);
 
 }
 
