@@ -27,6 +27,10 @@
 #include <cstring>
 #include <stdint.h>
 
+#if defined(_MSC_VER)
+#include <intrin.h>
+#endif
+
 #include "../hash/ripemd160.h"
 #include "../hash/sha256.h"
 #include "../Timer.h"
@@ -45,6 +49,20 @@ inline void CheckCuda(cudaError_t result, const char* expr, const char* file, in
                         expr, file, line, cudaGetErrorName(result), cudaGetErrorString(result));
                 std::abort();
         }
+}
+
+inline uint64_t ComputeFastModReciprocal(uint64_t modulus)
+{
+        if (modulus <= 1) {
+                return 0;
+        }
+#if defined(_MSC_VER)
+        unsigned __int64 remainder = 0;
+        return _udiv128(1ULL, 0ULL, static_cast<unsigned __int64>(modulus), &remainder);
+#else
+        const unsigned __int128 numerator = static_cast<unsigned __int128>(1) << 64;
+        return static_cast<uint64_t>(numerator / modulus);
+#endif
 }
 
 } // namespace
@@ -86,7 +104,8 @@ constexpr std::array<SmToCores, 20> kSmToCores = { {
 // ---------------------------------------------------------------------------------------
 
 // mode multiple addresses
-__global__ void compute_keys_mode_ma(uint32_t mode, uint8_t* bloomLookUp, int BLOOM_BITS, uint8_t BLOOM_HASHES,
+__global__ void compute_keys_mode_ma(uint32_t mode, uint8_t* bloomLookUp, uint64_t BLOOM_BITS, uint8_t BLOOM_HASHES,
+        uint64_t bloomReciprocal, uint32_t bloomMask, uint32_t bloomIsPowerOfTwo,
         uint64_t* keys, uint32_t maxFound, uint32_t* found, int stepMultiplier)
 {
 
@@ -94,20 +113,23 @@ __global__ void compute_keys_mode_ma(uint32_t mode, uint8_t* bloomLookUp, int BL
         int yPtr = xPtr + 4 * blockDim.x;
         for (int iteration = 0; iteration < stepMultiplier; ++iteration) {
                 const uint32_t baseOffset = static_cast<uint32_t>(iteration) * static_cast<uint32_t>(GRP_SIZE);
-                ComputeKeysSEARCH_MODE_MA(mode, keys + xPtr, keys + yPtr, bloomLookUp, BLOOM_BITS, BLOOM_HASHES, maxFound, found, baseOffset);
+                ComputeKeysSEARCH_MODE_MA(mode, keys + xPtr, keys + yPtr, bloomLookUp, BLOOM_BITS, BLOOM_HASHES,
+                        bloomReciprocal, bloomMask, bloomIsPowerOfTwo, maxFound, found, baseOffset);
         }
 
 }
 
-__global__ void compute_keys_comp_mode_ma(uint32_t mode, uint8_t* bloomLookUp, int BLOOM_BITS, uint8_t BLOOM_HASHES, uint64_t* keys,
-        uint32_t maxFound, uint32_t* found, int stepMultiplier)
+__global__ void compute_keys_comp_mode_ma(uint32_t mode, uint8_t* bloomLookUp, uint64_t BLOOM_BITS, uint8_t BLOOM_HASHES,
+        uint64_t bloomReciprocal, uint32_t bloomMask, uint32_t bloomIsPowerOfTwo,
+        uint64_t* keys, uint32_t maxFound, uint32_t* found, int stepMultiplier)
 {
 
         int xPtr = (blockIdx.x * blockDim.x) * 8;
         int yPtr = xPtr + 4 * blockDim.x;
         for (int iteration = 0; iteration < stepMultiplier; ++iteration) {
                 const uint32_t baseOffset = static_cast<uint32_t>(iteration) * static_cast<uint32_t>(GRP_SIZE);
-                ComputeKeysSEARCH_MODE_MA(mode, keys + xPtr, keys + yPtr, bloomLookUp, BLOOM_BITS, BLOOM_HASHES, maxFound, found, baseOffset);
+                ComputeKeysSEARCH_MODE_MA(mode, keys + xPtr, keys + yPtr, bloomLookUp, BLOOM_BITS, BLOOM_HASHES,
+                        bloomReciprocal, bloomMask, bloomIsPowerOfTwo, maxFound, found, baseOffset);
         }
 
 }
@@ -140,7 +162,8 @@ __global__ void compute_keys_comp_mode_sa(uint32_t mode, uint32_t* hash160, uint
 }
 
 // mode multiple x points
-__global__ void compute_keys_comp_mode_mx(uint32_t mode, uint8_t* bloomLookUp, int BLOOM_BITS, uint8_t BLOOM_HASHES, uint64_t* keys,
+__global__ void compute_keys_comp_mode_mx(uint32_t mode, uint8_t* bloomLookUp, uint64_t BLOOM_BITS, uint8_t BLOOM_HASHES,
+        uint64_t bloomReciprocal, uint32_t bloomMask, uint32_t bloomIsPowerOfTwo, uint64_t* keys,
         uint32_t maxFound, uint32_t* found, int stepMultiplier)
 {
 
@@ -148,7 +171,8 @@ __global__ void compute_keys_comp_mode_mx(uint32_t mode, uint8_t* bloomLookUp, i
         int yPtr = xPtr + 4 * blockDim.x;
         for (int iteration = 0; iteration < stepMultiplier; ++iteration) {
                 const uint32_t baseOffset = static_cast<uint32_t>(iteration) * static_cast<uint32_t>(GRP_SIZE);
-                ComputeKeysSEARCH_MODE_MX(mode, keys + xPtr, keys + yPtr, bloomLookUp, BLOOM_BITS, BLOOM_HASHES, maxFound, found, baseOffset);
+                ComputeKeysSEARCH_MODE_MX(mode, keys + xPtr, keys + yPtr, bloomLookUp, BLOOM_BITS, BLOOM_HASHES,
+                        bloomReciprocal, bloomMask, bloomIsPowerOfTwo, maxFound, found, baseOffset);
         }
 
 }
@@ -170,7 +194,8 @@ __global__ void compute_keys_comp_mode_sx(uint32_t mode, uint32_t* xpoint, uint6
 // ---------------------------------------------------------------------------------------
 // ethereum
 
-__global__ void compute_keys_mode_eth_ma(uint8_t* bloomLookUp, int BLOOM_BITS, uint8_t BLOOM_HASHES, uint64_t* keys,
+__global__ void compute_keys_mode_eth_ma(uint8_t* bloomLookUp, uint64_t BLOOM_BITS, uint8_t BLOOM_HASHES,
+        uint64_t bloomReciprocal, uint32_t bloomMask, uint32_t bloomIsPowerOfTwo, uint64_t* keys,
         uint32_t maxFound, uint32_t* found, int stepMultiplier)
 {
 
@@ -178,7 +203,8 @@ __global__ void compute_keys_mode_eth_ma(uint8_t* bloomLookUp, int BLOOM_BITS, u
         int yPtr = xPtr + 4 * blockDim.x;
         for (int iteration = 0; iteration < stepMultiplier; ++iteration) {
                 const uint32_t baseOffset = static_cast<uint32_t>(iteration) * static_cast<uint32_t>(GRP_SIZE);
-                ComputeKeysSEARCH_ETH_MODE_MA(keys + xPtr, keys + yPtr, bloomLookUp, BLOOM_BITS, BLOOM_HASHES, maxFound, found, baseOffset);
+                ComputeKeysSEARCH_ETH_MODE_MA(keys + xPtr, keys + yPtr, bloomLookUp, BLOOM_BITS, BLOOM_HASHES,
+                        bloomReciprocal, bloomMask, bloomIsPowerOfTwo, maxFound, found, baseOffset);
         }
 
 }
@@ -238,6 +264,19 @@ GPUEngine::GPUEngine(Secp256K1* secp, int nbThreadGroup, int nbThreadPerGroup, i
         this->BLOOM_HASHES = BLOOM_HASHES;
         this->DATA = DATA;
         this->TOTAL_COUNT = TOTAL_COUNT;
+
+        bloomFastModReciprocal_ = 0;
+        bloomMask_ = 0;
+        bloomIsPowerOfTwo_ = 0;
+        if (BLOOM_BITS > 0) {
+                if ((BLOOM_BITS & (BLOOM_BITS - 1)) == 0) {
+                        bloomIsPowerOfTwo_ = 1;
+                        bloomMask_ = static_cast<uint32_t>(BLOOM_BITS - 1);
+                }
+                else {
+                        bloomFastModReciprocal_ = ComputeFastModReciprocal(BLOOM_BITS);
+                }
+        }
 
         initialised = false;
 
@@ -332,6 +371,10 @@ GPUEngine::GPUEngine(Secp256K1* secp, int nbThreadGroup, int nbThreadPerGroup, i
         this->coinType = coinType;
         this->rKey = rKey;
         this->stepMultiplier = std::max(1, stepMultiplier);
+
+        bloomFastModReciprocal_ = 0;
+        bloomMask_ = 0;
+        bloomIsPowerOfTwo_ = 0;
 
         initialised = false;
 
@@ -678,16 +721,16 @@ bool GPUEngine::callKernelSEARCH_MODE_MA()
         if (coinType == COIN_BTC) {
                 if (compMode == SEARCH_COMPRESSED) {
                         compute_keys_comp_mode_ma << < activeThreadCount / nbThreadPerGroup, nbThreadPerGroup, 0, stream_ >> >
-                                (compMode, inputBloomLookUp, BLOOM_BITS, BLOOM_HASHES, inputKey, maxFound, outputBuffer, stepMultiplier);
+                                (compMode, inputBloomLookUp, BLOOM_BITS, BLOOM_HASHES, bloomFastModReciprocal_, bloomMask_, bloomIsPowerOfTwo_, inputKey, maxFound, outputBuffer, stepMultiplier);
                 }
                 else {
                         compute_keys_mode_ma << < activeThreadCount / nbThreadPerGroup, nbThreadPerGroup, 0, stream_ >> >
-                                (compMode, inputBloomLookUp, BLOOM_BITS, BLOOM_HASHES, inputKey, maxFound, outputBuffer, stepMultiplier);
+                                (compMode, inputBloomLookUp, BLOOM_BITS, BLOOM_HASHES, bloomFastModReciprocal_, bloomMask_, bloomIsPowerOfTwo_, inputKey, maxFound, outputBuffer, stepMultiplier);
                 }
         }
         else {
                 compute_keys_mode_eth_ma << < activeThreadCount / nbThreadPerGroup, nbThreadPerGroup, 0, stream_ >> >
-                        (inputBloomLookUp, BLOOM_BITS, BLOOM_HASHES, inputKey, maxFound, outputBuffer, stepMultiplier);
+                        (inputBloomLookUp, BLOOM_BITS, BLOOM_HASHES, bloomFastModReciprocal_, bloomMask_, bloomIsPowerOfTwo_, inputKey, maxFound, outputBuffer, stepMultiplier);
         }
 
         CUDA_CHECK(cudaPeekAtLastError());
@@ -718,7 +761,7 @@ bool GPUEngine::callKernelSEARCH_MODE_MX()
         // Call the kernel (Perform STEP_SIZE keys per thread)
         if (compMode == SEARCH_COMPRESSED) {
                 compute_keys_comp_mode_mx << < activeThreadCount / nbThreadPerGroup, nbThreadPerGroup, 0, stream_ >> >
-                        (compMode, inputBloomLookUp, BLOOM_BITS, BLOOM_HASHES, inputKey, maxFound, outputBuffer, stepMultiplier);
+                        (compMode, inputBloomLookUp, BLOOM_BITS, BLOOM_HASHES, bloomFastModReciprocal_, bloomMask_, bloomIsPowerOfTwo_, inputKey, maxFound, outputBuffer, stepMultiplier);
         }
         else {
                 printf("GPUEngine: PubKeys search doesn't support uncompressed\n");
