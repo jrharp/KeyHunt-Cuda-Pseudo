@@ -74,9 +74,9 @@ private:
         void pseudoRandomGpuWorker();
 
         std::string GetHex(std::vector<unsigned char>& buffer);
-        bool checkPrivKey(std::string addr, Int& key, int32_t incr, bool mode);
-        bool checkPrivKeyETH(std::string addr, Int& key, int32_t incr);
-        bool checkPrivKeyX(Int& key, int32_t incr, bool mode);
+        bool checkPrivKey(std::string addr, Int& key, uint32_t incr, bool mode);
+        bool checkPrivKeyETH(std::string addr, Int& key, uint32_t incr);
+        bool checkPrivKeyX(Int& key, uint32_t incr, bool mode);
 
 	void checkMultiAddresses(bool compressed, Int key, int i, Point p1);
 	void checkMultiAddressesETH(Int key, int i, Point p1);
@@ -98,7 +98,7 @@ private:
 	void SetupRanges(uint32_t totalThreads);
 
 	void getCPUStartingKey(Int& tRangeStart, Int& tRangeEnd, Int& key, Point& startP);
-	void getGPUStartingKeys(Int& tRangeStart, Int& tRangeEnd, int groupSize, int nbThread, Int* keys, Point* p);
+	void getGPUStartingKeys(Int& tRangeStart, Int& tRangeEnd, int compiledGroupSize, int nbThread, Int* keys, Point* p);
 
 	int CheckBloomBinary(const uint8_t* _xx, uint32_t K_LENGTH);
 	bool MatchHash(uint32_t* _h);
