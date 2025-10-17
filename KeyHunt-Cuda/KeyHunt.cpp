@@ -1323,7 +1323,7 @@ void KeyHunt::getGPUStartingKeys(Int & tRangeStart, Int & tRangeEnd, int compile
 	int rangeShowThreasold = 3;
 	int rangeShowCounter = 0;
 
-	const uint64_t midpoint = static_cast<uint64_t>(compiledGroupSize) / 2ULL;
+        const uint64_t midpoint = static_cast<uint64_t>(groupSize) / 2ULL;
 
 	for (int i = 0; i < nbThread; i++) {
 
@@ -1338,7 +1338,7 @@ void KeyHunt::getGPUStartingKeys(Int & tRangeStart, Int & tRangeEnd, int compile
 		tRangeStart2.Add(&tRangeDiff);
 
 		Int k(keys + i);
-		k.Add(midpoint);	// Starting key is at the middle of the compiled GPU group
+		k.Add(midpoint);	// Starting key is at the middle of the GPU group
 		p[i] = secp->ComputePublicKey(&k);
 	}
 
@@ -1387,8 +1387,7 @@ void KeyHunt::FindKeyGPU(TH_PARAM * ph)
         std::vector<uint64_t> pseudoSequential(nbThread, std::numeric_limits<uint64_t>::max());
         std::vector<ITEM> found;
 
-        const int compiledGroupSize = g->GetCompiledGroupSize();
-        const uint64_t compiledGroupMidpoint = static_cast<uint64_t>(compiledGroupSize) / 2ULL;
+        const int groupSize = g->GetGroupSize();
         printf("GPU          : %s\n\n", g->deviceName.c_str());
 
         counters[thId] = 0;
@@ -1398,7 +1397,7 @@ void KeyHunt::FindKeyGPU(TH_PARAM * ph)
                 startPseudoRandomGpuPrefetch(nbThread);
         }
         if (!usePseudoRandomGpu) {
-                getGPUStartingKeys(tRangeStart, tRangeEnd, compiledGroupSize, nbThread, keys, p);
+                getGPUStartingKeys(tRangeStart, tRangeEnd, groupSize, nbThread, keys, p);
                 ok = g->SetKeys(p);
         }
 
@@ -1461,7 +1460,7 @@ void KeyHunt::FindKeyGPU(TH_PARAM * ph)
                 }
                 else {
                         if (ph->rKeyRequest) {
-                                getGPUStartingKeys(tRangeStart, tRangeEnd, compiledGroupSize, nbThread, keys, p);
+                                getGPUStartingKeys(tRangeStart, tRangeEnd, groupSize, nbThread, keys, p);
                                 ok = g->SetKeys(p);
                                 ph->rKeyRequest = false;
                         }
