@@ -338,6 +338,45 @@ __device__ void ModSub256(uint64_t *r, uint64_t *a, uint64_t *b)
 
 // ---------------------------------------------------------------------------------------
 
+__device__ void ModSub256Triple(uint64_t* r, const uint64_t* a, const uint64_t* b, const uint64_t* c)
+{
+
+    uint64_t tmp0;
+    uint64_t tmp1;
+    uint64_t tmp2;
+    uint64_t tmp3;
+    uint64_t borrowMask;
+    uint64_t add0;
+    uint64_t add1;
+    uint64_t add2;
+    uint64_t add3;
+
+    USUBO(tmp0, a[0], b[0]);
+    USUBC(tmp1, a[1], b[1]);
+    USUBC(tmp2, a[2], b[2]);
+    USUBC(tmp3, a[3], b[3]);
+
+    USUBO(tmp0, tmp0, c[0]);
+    USUBC(tmp1, tmp1, c[1]);
+    USUBC(tmp2, tmp2, c[2]);
+    USUBC(tmp3, tmp3, c[3]);
+
+    USUB(borrowMask, 0ULL, 0ULL);
+
+    add0 = 0xFFFFFFFEFFFFFC2FULL & borrowMask;
+    add1 = 0xFFFFFFFFFFFFFFFFULL & borrowMask;
+    add2 = 0xFFFFFFFFFFFFFFFFULL & borrowMask;
+    add3 = 0xFFFFFFFFFFFFFFFFULL & borrowMask;
+
+    UADDO(r[0], tmp0, add0);
+    UADDC(r[1], tmp1, add1);
+    UADDC(r[2], tmp2, add2);
+    UADD(r[3], tmp3, add3);
+
+}
+
+// ---------------------------------------------------------------------------------------
+
 __device__ void ModSub256(uint64_t *r, uint64_t *b)
 {
 
