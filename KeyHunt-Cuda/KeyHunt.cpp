@@ -387,7 +387,6 @@ void KeyHunt::initializePseudoRandomState()
         uint64_t targetGroupSize = static_cast<uint64_t>(CPU_GRP_SIZE);
 #ifdef WITHGPU
         if (useGpu) {
-                targetGroupSize = std::max<uint64_t>(targetGroupSize, static_cast<uint64_t>(GRP_SIZE));
                 targetGroupSize = std::max<uint64_t>(targetGroupSize, static_cast<uint64_t>(STEP_SIZE));
         }
 #endif
