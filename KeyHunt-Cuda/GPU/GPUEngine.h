@@ -47,10 +47,10 @@
 #define ITEM_SIZE_X32 (ITEM_SIZE_X/4)
 
 typedef struct {
-	uint32_t thId;
-	int16_t  incr;
-	uint8_t* hash;
-	bool mode;
+        uint32_t thId;
+        uint32_t incr;
+        uint8_t* hash;
+        bool mode;
 } ITEM;
 
 class GPUEngine

@@ -292,7 +292,7 @@ uint64_t KeyHunt::permuteBlockIndex(uint64_t value) const
 
 // ----------------------------------------------------------------------------
 
-bool KeyHunt::acquirePseudoRandomBlock(Int& key, Point& startP, uint64_t& sequentialIndex)
+bool KeyHunt::acquirePseudoRandomBlock(Int& key, Point& startP, uint64_t& sequentialIndex, bool forGpu)
 {
         if (!pseudoRandomEnabled)
                 return false;
@@ -315,8 +315,14 @@ bool KeyHunt::acquirePseudoRandomBlock(Int& key, Point& startP, uint64_t& sequen
                 key = initialRangeStart;
                 key.Add(&offset);
 
+                uint64_t midpoint = blockSize / 2;
+                if (forGpu) {
+                        const uint64_t compiledMidpoint = static_cast<uint64_t>(GPUEngine::GetCompiledGroupSize()) / 2ULL;
+                        midpoint = std::min(midpoint, compiledMidpoint);
+                }
+
                 Int km(&key);
-                km.Add(blockSize / 2);
+                km.Add(midpoint);
                 startP = secp->ComputePublicKey(&km);
                 return true;
         }
@@ -429,7 +435,7 @@ void KeyHunt::pseudoRandomGpuWorker()
                 Int key;
                 Point start;
                 uint64_t sequential = 0;
-                if (!acquirePseudoRandomBlock(key, start, sequential)) {
+                if (!acquirePseudoRandomBlock(key, start, sequential, true)) {
                         break;
                 }
 
@@ -738,7 +744,7 @@ void KeyHunt::output(std::string addr, std::string pAddr, std::string pAddrHex, 
 
 // ----------------------------------------------------------------------------
 
-bool KeyHunt::checkPrivKey(std::string addr, Int& key, int32_t incr, bool mode)
+bool KeyHunt::checkPrivKey(std::string addr, Int& key, uint32_t incr, bool mode)
 {
 	Int k(&key), k2(&key);
 	k.Add((uint64_t)incr);
@@ -770,7 +776,7 @@ bool KeyHunt::checkPrivKey(std::string addr, Int& key, int32_t incr, bool mode)
 	return true;
 }
 
-bool KeyHunt::checkPrivKeyETH(std::string addr, Int& key, int32_t incr)
+bool KeyHunt::checkPrivKeyETH(std::string addr, Int& key, uint32_t incr)
 {
 	Int k(&key), k2(&key);
 	k.Add((uint64_t)incr);
@@ -802,7 +808,7 @@ bool KeyHunt::checkPrivKeyETH(std::string addr, Int& key, int32_t incr)
 	return true;
 }
 
-bool KeyHunt::checkPrivKeyX(Int& key, int32_t incr, bool mode)
+bool KeyHunt::checkPrivKeyX(Int& key, uint32_t incr, bool mode)
 {
 	Int k(&key);
 	k.Add((uint64_t)incr);
@@ -1307,12 +1313,12 @@ void KeyHunt::FindKeyCPU(TH_PARAM * ph)
 
 // ----------------------------------------------------------------------------
 
-void KeyHunt::getGPUStartingKeys(Int & tRangeStart, Int & tRangeEnd, int groupSize, int nbThread, Int * keys, Point * p)
+void KeyHunt::getGPUStartingKeys(Int & tRangeStart, Int & tRangeEnd, int nbThread, Int * keys, Point * p)
 {
 
-	Int tRangeDiff(tRangeEnd);
-	Int tRangeStart2(tRangeStart);
-	Int tRangeEnd2(tRangeStart);
+        Int tRangeDiff(tRangeEnd);
+        Int tRangeStart2(tRangeStart);
+        Int tRangeEnd2(tRangeStart);
 
 	Int tThreads;
 	tThreads.SetInt32(nbThread);
@@ -1323,10 +1329,13 @@ void KeyHunt::getGPUStartingKeys(Int & tRangeStart, Int & tRangeEnd, int groupSi
 	int rangeShowThreasold = 3;
 	int rangeShowCounter = 0;
 
-	for (int i = 0; i < nbThread; i++) {
+        const uint64_t compiledGroupSize = static_cast<uint64_t>(GPUEngine::GetCompiledGroupSize());
+        const uint64_t midpoint = compiledGroupSize / 2ULL;
 
-		tRangeEnd2.Set(&tRangeStart2);
-		tRangeEnd2.Add(&tRangeDiff);
+        for (int i = 0; i < nbThread; i++) {
+
+                tRangeEnd2.Set(&tRangeStart2);
+                tRangeEnd2.Add(&tRangeDiff);
 
 		if (rKey <= 0)
 			keys[i].Set(&tRangeStart2);
@@ -1336,7 +1345,7 @@ void KeyHunt::getGPUStartingKeys(Int & tRangeStart, Int & tRangeEnd, int groupSi
 		tRangeStart2.Add(&tRangeDiff);
 
 		Int k(keys + i);
-		k.Add((uint64_t)(groupSize / 2));	// Starting key is at the middle of the group
+		k.Add(midpoint);	// Starting key is at the middle of the GPU group
 		p[i] = secp->ComputePublicKey(&k);
 	}
 
@@ -1394,7 +1403,7 @@ void KeyHunt::FindKeyGPU(TH_PARAM * ph)
                 startPseudoRandomGpuPrefetch(nbThread);
         }
         if (!usePseudoRandomGpu) {
-                getGPUStartingKeys(tRangeStart, tRangeEnd, g->GetGroupSize(), nbThread, keys, p);
+                getGPUStartingKeys(tRangeStart, tRangeEnd, nbThread, keys, p);
                 ok = g->SetKeys(p);
         }
 
@@ -1455,7 +1464,7 @@ void KeyHunt::FindKeyGPU(TH_PARAM * ph)
                 }
                 else {
                         if (ph->rKeyRequest) {
-                                getGPUStartingKeys(tRangeStart, tRangeEnd, g->GetGroupSize(), nbThread, keys, p);
+                                getGPUStartingKeys(tRangeStart, tRangeEnd, nbThread, keys, p);
                                 ok = g->SetKeys(p);
                                 ph->rKeyRequest = false;
                         }
