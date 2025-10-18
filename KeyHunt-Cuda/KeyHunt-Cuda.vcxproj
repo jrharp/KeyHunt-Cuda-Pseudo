@@ -14,6 +14,7 @@
     <ClCompile Include="Base58.cpp" />
     <ClCompile Include="Bloom.cpp" />
     <ClCompile Include="CmdParse.cpp" />
+    <ClCompile Include="CubeRootSolver.cpp" />
     <ClCompile Include="GmpUtil.cpp" />
     <ClCompile Include="GPU\GPUGenerate.cpp" />
     <ClCompile Include="hash\keccak160.cpp" />
@@ -36,6 +37,7 @@
     <ClInclude Include="Base58.h" />
     <ClInclude Include="Bloom.h" />
     <ClInclude Include="CmdParse.h" />
+    <ClInclude Include="CubeRootSolver.h" />
     <ClInclude Include="GmpUtil.h" />
     <ClInclude Include="GPU\GPUBase58.h" />
     <ClInclude Include="GPU\GPUCompute.h" />
