@@ -29,6 +29,7 @@
 #include <limits>
 #include <stdint.h>
 #include <string>
+#include <utility>
 
 #if defined(_MSC_VER)
 #include <intrin.h>
@@ -68,6 +69,38 @@ inline uint64_t ComputeFastModReciprocal(uint64_t modulus)
         return static_cast<uint64_t>(numerator / modulus);
 #endif
 }
+
+#if defined(CUDART_VERSION) && (CUDART_VERSION >= 11020)
+int RecommendOccupancyBlockSize()
+{
+        static int cachedBlockSize = -1;
+        if (cachedBlockSize != -1) {
+                return cachedBlockSize;
+        }
+
+        int minGridSize = 0;
+        int blockSize = 0;
+        const cudaError_t status = cudaOccupancyMaxPotentialBlockSize(&minGridSize, &blockSize,
+                reinterpret_cast<const void*>(&compute_keys_comp_mode_ma), 0, 0);
+        if (status == cudaSuccess) {
+                cachedBlockSize = blockSize;
+                return cachedBlockSize;
+        }
+        if (status == cudaErrorNotSupported || status == cudaErrorInvalidValue) {
+                cudaGetLastError();
+                cachedBlockSize = 0;
+                return cachedBlockSize;
+        }
+        CheckCuda(status, "cudaOccupancyMaxPotentialBlockSize", __FILE__, __LINE__);
+        cachedBlockSize = 0;
+        return cachedBlockSize;
+}
+#else
+int RecommendOccupancyBlockSize()
+{
+        return 0;
+}
+#endif
 
 } // namespace
 
@@ -111,6 +144,7 @@ struct DeviceCapabilityInfo
         int memoryPoolsSupported = 0;
         int cooperativeMultiDeviceLaunch = 0;
         int clusterLaunch = 0;
+        int memSyncDomainCount = 1;
 };
 
 int GetAttributeOrDefault(cudaDeviceAttr attr, int deviceId, int defaultValue = 0)
@@ -145,6 +179,9 @@ DeviceCapabilityInfo QueryDeviceCapabilityInfo(int deviceId)
 #endif
 #ifdef cudaDevAttrClusterLaunch
         info.clusterLaunch = GetAttributeOrDefault(cudaDevAttrClusterLaunch, deviceId);
+#endif
+#ifdef cudaDevAttrMemSyncDomainCount
+        info.memSyncDomainCount = GetAttributeOrDefault(cudaDevAttrMemSyncDomainCount, deviceId, 1);
 #endif
         return info;
 }
@@ -327,6 +364,109 @@ __global__ void compute_keys_mode_eth_sa(const uint32_t* __restrict__ hash, uint
 
 // ---------------------------------------------------------------------------------------
 
+template <typename KernelFunc, typename... Args>
+bool GPUEngine::LaunchKeyKernel(KernelFunc kernel, dim3 gridDim, dim3 blockDim, Args&&... args)
+{
+#if defined(CUDART_VERSION) && (CUDART_VERSION >= 12000)
+        if (clusterLaunchActive_) {
+                const dim3 clusterDim = QueryClusterDimension(kernel, gridDim, blockDim);
+                if (clusterDim.x > 0U) {
+                        cudaLaunchConfig_t config{};
+                        config.gridDim = gridDim;
+                        config.blockDim = blockDim;
+                        config.dynamicSmemBytes = 0;
+                        config.stream = stream_;
+
+                        cudaLaunchAttribute attribute{};
+                        attribute.id = cudaLaunchAttributeClusterDimension;
+                        attribute.val.clusterDim.x = clusterDim.x;
+                        attribute.val.clusterDim.y = clusterDim.y;
+                        attribute.val.clusterDim.z = clusterDim.z;
+                        config.attrs = &attribute;
+                        config.numAttrs = 1;
+
+                        std::array<void*, sizeof...(Args)> parameters{ { static_cast<void*>(&args)... } };
+                        const cudaError_t status = cudaLaunchKernelEx(&config, kernel, parameters.data());
+                        if (status == cudaSuccess) {
+                                return true;
+                        }
+                        if (status == cudaErrorNotSupported || status == cudaErrorInvalidValue) {
+                                cudaGetLastError();
+                                clusterLaunchActive_ = false;
+                        }
+                        else {
+                                CheckCuda(status, "cudaLaunchKernelEx", __FILE__, __LINE__);
+                                return true;
+                        }
+                }
+        }
+#endif
+        kernel<<<gridDim, blockDim, 0, stream_>>>(std::forward<Args>(args)...);
+        return true;
+}
+
+#if defined(CUDART_VERSION) && (CUDART_VERSION >= 12000)
+template <typename KernelFunc>
+dim3 GPUEngine::QueryClusterDimension(KernelFunc kernel, dim3 gridDim, dim3 blockDim)
+{
+        if (!clusterLaunchActive_) {
+                return dim3(0U, 0U, 0U);
+        }
+
+        struct ClusterCache {
+                bool computed = false;
+                dim3 value{0U, 0U, 0U};
+        };
+
+        static ClusterCache cache;
+        if (cache.computed) {
+                if (cache.value.x > 0U && (gridDim.x % cache.value.x) != 0U) {
+                        return dim3(0U, 0U, 0U);
+                }
+                return cache.value;
+        }
+
+        cudaLaunchConfig_t config{};
+        config.gridDim = gridDim;
+        config.blockDim = blockDim;
+        config.dynamicSmemBytes = 0;
+
+        int clusterSize = 0;
+        const cudaError_t status = cudaOccupancyMaxPotentialClusterSize(&clusterSize,
+                reinterpret_cast<const void*>(kernel), &config);
+        if (status == cudaErrorNotSupported || status == cudaErrorInvalidValue) {
+                cudaGetLastError();
+                clusterLaunchActive_ = false;
+                cache.computed = true;
+                cache.value = dim3(0U, 0U, 0U);
+                return cache.value;
+        }
+        CheckCuda(status, "cudaOccupancyMaxPotentialClusterSize", __FILE__, __LINE__);
+
+        unsigned int recommended = static_cast<unsigned int>(clusterSize);
+        if (recommended > 8U) {
+                recommended = 8U;
+        }
+        if (recommended > gridDim.x) {
+                recommended = gridDim.x;
+        }
+        while (recommended > 1U && (gridDim.x % recommended) != 0U) {
+                --recommended;
+        }
+
+        if (recommended > 1U) {
+                cache.value = dim3(recommended, 1U, 1U);
+        }
+        else {
+                cache.value = dim3(0U, 0U, 0U);
+        }
+        cache.computed = true;
+        return cache.value;
+}
+#endif
+
+// ---------------------------------------------------------------------------------------
+
 using namespace std;
 
 int _ConvertSMVer2Cores(int major, int minor)
@@ -409,6 +549,35 @@ GPUEngine::GPUEngine(Secp256K1* secp, int nbThreadGroup, int nbThreadPerGroup, i
         const DeviceCapabilityInfo capability = QueryDeviceCapabilityInfo(gpuId);
         const int warpSize = capability.warpSize > 0 ? capability.warpSize : deviceProp.warpSize;
         warpSize_ = warpSize;
+
+#if defined(CUDART_VERSION) && (CUDART_VERSION >= 12000)
+        clusterLaunchSupported_ = capability.clusterLaunch != 0;
+        clusterLaunchActive_ = clusterLaunchSupported_;
+        if (clusterLaunchSupported_) {
+                std::fprintf(stderr,
+                        "GPUEngine: thread block clusters supported, attempting cudaLaunchKernelEx launches.\n");
+        }
+#else
+        clusterLaunchSupported_ = false;
+        clusterLaunchActive_ = false;
+#endif
+
+        if (nbThreadPerGroup <= 0) {
+                const int recommendedBlockSize = RecommendOccupancyBlockSize();
+                if (recommendedBlockSize > 0) {
+                        nbThreadPerGroup = recommendedBlockSize;
+                        std::fprintf(stderr,
+                                "GPUEngine: auto-selecting %d threads per group based on CUDA 13 occupancy guidance.\n",
+                                nbThreadPerGroup);
+                }
+        }
+
+        if (nbThreadPerGroup <= 0) {
+                nbThreadPerGroup = (warpSize > 0) ? warpSize : deviceProp.maxThreadsPerBlock;
+                std::fprintf(stderr,
+                        "GPUEngine: defaulting to %d threads per group due to invalid configuration.\n",
+                        nbThreadPerGroup);
+        }
 
         if (nbThreadPerGroup > deviceProp.maxThreadsPerBlock) {
                 std::fprintf(stderr,
@@ -544,6 +713,35 @@ GPUEngine::GPUEngine(Secp256K1* secp, int nbThreadGroup, int nbThreadPerGroup, i
         const DeviceCapabilityInfo capability = QueryDeviceCapabilityInfo(gpuId);
         const int warpSize = capability.warpSize > 0 ? capability.warpSize : deviceProp.warpSize;
         warpSize_ = warpSize;
+
+#if defined(CUDART_VERSION) && (CUDART_VERSION >= 12000)
+        clusterLaunchSupported_ = capability.clusterLaunch != 0;
+        clusterLaunchActive_ = clusterLaunchSupported_;
+        if (clusterLaunchSupported_) {
+                std::fprintf(stderr,
+                        "GPUEngine: thread block clusters supported, attempting cudaLaunchKernelEx launches.\n");
+        }
+#else
+        clusterLaunchSupported_ = false;
+        clusterLaunchActive_ = false;
+#endif
+
+        if (nbThreadPerGroup <= 0) {
+                const int recommendedBlockSize = RecommendOccupancyBlockSize();
+                if (recommendedBlockSize > 0) {
+                        nbThreadPerGroup = recommendedBlockSize;
+                        std::fprintf(stderr,
+                                "GPUEngine: auto-selecting %d threads per group based on CUDA 13 occupancy guidance.\n",
+                                nbThreadPerGroup);
+                }
+        }
+
+        if (nbThreadPerGroup <= 0) {
+                nbThreadPerGroup = (warpSize > 0) ? warpSize : deviceProp.maxThreadsPerBlock;
+                std::fprintf(stderr,
+                        "GPUEngine: defaulting to %d threads per group due to invalid configuration.\n",
+                        nbThreadPerGroup);
+        }
 
         if (nbThreadPerGroup > deviceProp.maxThreadsPerBlock) {
                 std::fprintf(stderr,
@@ -904,10 +1102,11 @@ void GPUEngine::PrintCudaInfo()
                         capability.warpSize,
                         capability.maxThreadsPerMultiprocessor,
                         capability.maxBlocksPerMultiprocessor);
-                printf("    Memory pools: %s, Coop multi-device: %s, Cluster launch: %s\n",
+                printf("    Memory pools: %s, Coop multi-device: %s, Cluster launch: %s, Mem sync domains: %d\n",
                         capability.memoryPoolsSupported ? "yes" : "no",
                         capability.cooperativeMultiDeviceLaunch ? "yes" : "no",
-                        capability.clusterLaunch ? "yes" : "no");
+                        capability.clusterLaunch ? "yes" : "no",
+                        capability.memSyncDomainCount);
         }
 }
 
@@ -1021,20 +1220,26 @@ bool GPUEngine::callKernelSEARCH_MODE_MA()
         // Reset nbFound
         CUDA_CHECK(cudaMemsetAsync(outputBuffer, 0, sizeof(uint32_t), stream_));
 
+        const dim3 gridDim(static_cast<unsigned>(activeThreadCount / nbThreadPerGroup));
+        const dim3 blockDim(static_cast<unsigned>(nbThreadPerGroup));
+
         // Call the kernel (Perform STEP_SIZE keys per thread)
         if (coinType == COIN_BTC) {
                 if (compMode == SEARCH_COMPRESSED) {
-                        compute_keys_comp_mode_ma << < activeThreadCount / nbThreadPerGroup, nbThreadPerGroup, 0, stream_ >> >
-                                (compMode, inputBloomLookUp, BLOOM_BITS, BLOOM_HASHES, bloomFastModReciprocal_, bloomMask_, bloomIsPowerOfTwo_, inputKey, maxFound, outputBuffer, stepMultiplier);
+                        LaunchKeyKernel(compute_keys_comp_mode_ma, gridDim, blockDim,
+                                compMode, inputBloomLookUp, BLOOM_BITS, BLOOM_HASHES, bloomFastModReciprocal_,
+                                bloomMask_, bloomIsPowerOfTwo_, inputKey, maxFound, outputBuffer, stepMultiplier);
                 }
                 else {
-                        compute_keys_mode_ma << < activeThreadCount / nbThreadPerGroup, nbThreadPerGroup, 0, stream_ >> >
-                                (compMode, inputBloomLookUp, BLOOM_BITS, BLOOM_HASHES, bloomFastModReciprocal_, bloomMask_, bloomIsPowerOfTwo_, inputKey, maxFound, outputBuffer, stepMultiplier);
+                        LaunchKeyKernel(compute_keys_mode_ma, gridDim, blockDim,
+                                compMode, inputBloomLookUp, BLOOM_BITS, BLOOM_HASHES, bloomFastModReciprocal_,
+                                bloomMask_, bloomIsPowerOfTwo_, inputKey, maxFound, outputBuffer, stepMultiplier);
                 }
         }
         else {
-                compute_keys_mode_eth_ma << < activeThreadCount / nbThreadPerGroup, nbThreadPerGroup, 0, stream_ >> >
-                        (inputBloomLookUp, BLOOM_BITS, BLOOM_HASHES, bloomFastModReciprocal_, bloomMask_, bloomIsPowerOfTwo_, inputKey, maxFound, outputBuffer, stepMultiplier);
+                LaunchKeyKernel(compute_keys_mode_eth_ma, gridDim, blockDim,
+                        inputBloomLookUp, BLOOM_BITS, BLOOM_HASHES, bloomFastModReciprocal_,
+                        bloomMask_, bloomIsPowerOfTwo_, inputKey, maxFound, outputBuffer, stepMultiplier);
         }
 
         CUDA_CHECK(cudaPeekAtLastError());
@@ -1062,10 +1267,14 @@ bool GPUEngine::callKernelSEARCH_MODE_MX()
         // Reset nbFound
         CUDA_CHECK(cudaMemsetAsync(outputBuffer, 0, sizeof(uint32_t), stream_));
 
+        const dim3 gridDim(static_cast<unsigned>(activeThreadCount / nbThreadPerGroup));
+        const dim3 blockDim(static_cast<unsigned>(nbThreadPerGroup));
+
         // Call the kernel (Perform STEP_SIZE keys per thread)
         if (compMode == SEARCH_COMPRESSED) {
-                compute_keys_comp_mode_mx << < activeThreadCount / nbThreadPerGroup, nbThreadPerGroup, 0, stream_ >> >
-                        (compMode, inputBloomLookUp, BLOOM_BITS, BLOOM_HASHES, bloomFastModReciprocal_, bloomMask_, bloomIsPowerOfTwo_, inputKey, maxFound, outputBuffer, stepMultiplier);
+                LaunchKeyKernel(compute_keys_comp_mode_mx, gridDim, blockDim,
+                        compMode, inputBloomLookUp, BLOOM_BITS, BLOOM_HASHES, bloomFastModReciprocal_,
+                        bloomMask_, bloomIsPowerOfTwo_, inputKey, maxFound, outputBuffer, stepMultiplier);
         }
         else {
                 printf("GPUEngine: PubKeys search doesn't support uncompressed\n");
@@ -1096,20 +1305,23 @@ bool GPUEngine::callKernelSEARCH_MODE_SA()
         // Reset nbFound
         CUDA_CHECK(cudaMemsetAsync(outputBuffer, 0, sizeof(uint32_t), stream_));
 
+        const dim3 gridDim(static_cast<unsigned>(activeThreadCount / nbThreadPerGroup));
+        const dim3 blockDim(static_cast<unsigned>(nbThreadPerGroup));
+
         // Call the kernel (Perform STEP_SIZE keys per thread)
         if (coinType == COIN_BTC) {
                 if (compMode == SEARCH_COMPRESSED) {
-                        compute_keys_comp_mode_sa << < activeThreadCount / nbThreadPerGroup, nbThreadPerGroup, 0, stream_ >> >
-                                (compMode, inputHashORxpoint, inputKey, maxFound, outputBuffer, stepMultiplier);
+                        LaunchKeyKernel(compute_keys_comp_mode_sa, gridDim, blockDim,
+                                compMode, inputHashORxpoint, inputKey, maxFound, outputBuffer, stepMultiplier);
                 }
                 else {
-                        compute_keys_mode_sa << < activeThreadCount / nbThreadPerGroup, nbThreadPerGroup, 0, stream_ >> >
-                                (compMode, inputHashORxpoint, inputKey, maxFound, outputBuffer, stepMultiplier);
+                        LaunchKeyKernel(compute_keys_mode_sa, gridDim, blockDim,
+                                compMode, inputHashORxpoint, inputKey, maxFound, outputBuffer, stepMultiplier);
                 }
         }
         else {
-                compute_keys_mode_eth_sa << < activeThreadCount / nbThreadPerGroup, nbThreadPerGroup, 0, stream_ >> >
-                        (inputHashORxpoint, inputKey, maxFound, outputBuffer, stepMultiplier);
+                LaunchKeyKernel(compute_keys_mode_eth_sa, gridDim, blockDim,
+                        inputHashORxpoint, inputKey, maxFound, outputBuffer, stepMultiplier);
         }
 
         CUDA_CHECK(cudaPeekAtLastError());
@@ -1137,10 +1349,13 @@ bool GPUEngine::callKernelSEARCH_MODE_SX()
 
         CUDA_CHECK(cudaMemsetAsync(outputBuffer, 0, sizeof(uint32_t), stream_));
 
+        const dim3 gridDim(static_cast<unsigned>(activeThreadCount / nbThreadPerGroup));
+        const dim3 blockDim(static_cast<unsigned>(nbThreadPerGroup));
+
         // Call the kernel (Perform STEP_SIZE keys per thread)
         if (compMode == SEARCH_COMPRESSED) {
-                compute_keys_comp_mode_sx << < activeThreadCount / nbThreadPerGroup, nbThreadPerGroup, 0, stream_ >> >
-                        (compMode, inputHashORxpoint, inputKey, maxFound, outputBuffer, stepMultiplier);
+                LaunchKeyKernel(compute_keys_comp_mode_sx, gridDim, blockDim,
+                        compMode, inputHashORxpoint, inputKey, maxFound, outputBuffer, stepMultiplier);
         }
         else {
                 printf("GPUEngine: PubKeys search doesn't support uncompressed\n");
