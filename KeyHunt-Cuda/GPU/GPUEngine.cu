@@ -48,21 +48,6 @@
 
 namespace {
 
-inline void CheckCuda(cudaError_t result, const char* expr, const char* file, int line)
-{
-        if (result != cudaSuccess) {
-                std::fprintf(stderr, "CUDA failure %s at %s:%d: %s (%s)\n",
-                        expr, file, line, cudaGetErrorName(result), cudaGetErrorString(result));
-                std::abort();
-        }
-}
-
-} // namespace
-
-#define CUDA_CHECK(call) ::CheckCuda((call), #call, __FILE__, __LINE__)
-
-namespace {
-
 // Configure persisting L2 cache for generator tables (Gx/Gy) when present
 void ConfigurePersistingL2(cudaStream_t stream, const void* base_ptr, size_t size_bytes) {
         if (!base_ptr || size_bytes == 0) {
