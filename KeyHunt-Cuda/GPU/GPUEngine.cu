@@ -46,8 +46,88 @@
 #include "GPUBase58.h"
 #include "CudaCompat.h"
 
-void KH_InitCudaOptimizations(cudaStream_t stream, size_t table_words);
-void KH_LaunchWithDomain(const void* kernel, dim3 grid, dim3 block, void** args, size_t shm, cudaStream_t stream);
+namespace {
+
+inline void CheckCuda(cudaError_t result, const char* expr, const char* file, int line)
+{
+        if (result != cudaSuccess) {
+                std::fprintf(stderr, "CUDA failure %s at %s:%d: %s (%s)\n",
+                        expr, file, line, cudaGetErrorName(result), cudaGetErrorString(result));
+                std::abort();
+        }
+}
+
+} // namespace
+
+#define CUDA_CHECK(call) ::CheckCuda((call), #call, __FILE__, __LINE__)
+
+namespace {
+
+// Configure persisting L2 cache for generator tables (Gx/Gy) when present
+void ConfigurePersistingL2(cudaStream_t stream, const void* base_ptr, size_t size_bytes) {
+        if (!base_ptr || size_bytes == 0) {
+                return;
+        }
+
+        cudaAccessPolicyWindow window{};
+        window.base_ptr = const_cast<void*>(base_ptr);
+        window.num_bytes = size_bytes;
+        window.hitRatio = 1.0;
+        window.hitProp = cudaAccessPropertyPersisting;
+        window.missProp = cudaAccessPropertyStreaming;
+
+        cudaStreamAttrValue attr{};
+        attr.accessPolicyWindow = window;
+        (void)cudaStreamSetAttribute(stream, cudaStreamAttributeAccessPolicyWindow, &attr);
+}
+
+// Preload kernels to avoid lazy-loading skew during first launches
+void WarmupKernelLoad(const void* func) {
+        if (!func) {
+                return;
+        }
+
+        cudaFuncAttributes attr{};
+        cudaFuncGetAttributes(&attr, func);
+}
+
+} // namespace
+
+void KH_InitCudaOptimizations(cudaStream_t stream, size_t table_words)
+{
+        uint64_t* h_Gx = nullptr;
+        CUDA_CHECK(cudaMemcpyFromSymbol(&h_Gx, Gx, sizeof(h_Gx)));
+
+        uint64_t* h_Gy = nullptr;
+        CUDA_CHECK(cudaMemcpyFromSymbol(&h_Gy, Gy, sizeof(h_Gy)));
+
+        const size_t bytes = table_words * sizeof(uint64_t);
+        ConfigurePersistingL2(stream, h_Gx, bytes);
+        ConfigurePersistingL2(stream, h_Gy, bytes);
+
+        WarmupKernelLoad(nullptr);
+}
+
+void KH_LaunchWithDomain(const void* kernel, dim3 grid, dim3 block, void** args, size_t shm, cudaStream_t stream)
+{
+#if CUDART_VERSION >= 12000
+        cudaLaunchAttribute attr{};
+        attr.id = cudaLaunchAttributeMemSyncDomain;
+        attr.val.memSyncDomain = cudaLaunchMemSyncDomainDefault;
+
+        cudaLaunchConfig_t cfg{};
+        cfg.gridDim = grid;
+        cfg.blockDim = block;
+        cfg.dynamicSmemBytes = shm;
+        cfg.stream = stream;
+        cfg.attrs = &attr;
+        cfg.numAttrs = 1;
+
+        CUDA_CHECK(cudaLaunchKernelEx(&cfg, reinterpret_cast<cudaKernel_t>(const_cast<void*>(kernel)), args));
+#else
+        CUDA_CHECK(cudaLaunchKernel(kernel, grid, block, args, shm, stream));
+#endif
+}
 
 __global__ void compute_keys_comp_mode_ma(uint32_t mode, uint8_t* bloomLookUp, uint64_t BLOOM_BITS,
         uint8_t BLOOM_HASHES, uint64_t bloomReciprocal, uint32_t bloomMask, uint32_t bloomIsPowerOfTwo,
@@ -64,15 +144,6 @@ __global__ void compute_keys_comp_mode_sx(uint32_t mode, uint32_t* xpoint, uint6
         uint32_t* found, int stepMultiplier);
 
 namespace {
-
-inline void CheckCuda(cudaError_t result, const char* expr, const char* file, int line)
-{
-        if (result != cudaSuccess) {
-                std::fprintf(stderr, "CUDA failure %s at %s:%d: %s (%s)\n",
-                        expr, file, line, cudaGetErrorName(result), cudaGetErrorString(result));
-                std::abort();
-        }
-}
 
 inline uint64_t ComputeFastModReciprocal(uint64_t modulus)
 {
@@ -122,8 +193,6 @@ int RecommendOccupancyBlockSize()
 
 } // namespace
 
-#define CUDA_CHECK(call) ::CheckCuda((call), #call, __FILE__, __LINE__)
-
 namespace {
 
 struct SmToCores {
@@ -153,6 +222,8 @@ constexpr std::array<SmToCores, 20> kSmToCores = { {
         {0x89, 128}, // Ada Generation   (SM 8.9)
         {0x90, 128}, // Hopper Generation (SM 9.0)
 } };
+
+} // namespace
 
 struct DeviceCapabilityInfo
 {
