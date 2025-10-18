@@ -139,7 +139,9 @@ DeviceCapabilityInfo QueryDeviceCapabilityInfo(int deviceId)
         CUDA_CHECK(cudaDeviceGetAttribute(&info.maxThreadsPerMultiprocessor, cudaDevAttrMaxThreadsPerMultiProcessor, deviceId));
         info.maxBlocksPerMultiprocessor = GetAttributeOrDefault(cudaDevAttrMaxBlocksPerMultiprocessor, deviceId);
         info.memoryPoolsSupported = GetAttributeOrDefault(cudaDevAttrMemoryPoolsSupported, deviceId);
+#ifdef cudaDevAttrCooperativeMultiDeviceLaunch
         info.cooperativeMultiDeviceLaunch = GetAttributeOrDefault(cudaDevAttrCooperativeMultiDeviceLaunch, deviceId);
+#endif
 #ifdef cudaDevAttrClusterLaunch
         info.clusterLaunch = GetAttributeOrDefault(cudaDevAttrClusterLaunch, deviceId);
 #endif
