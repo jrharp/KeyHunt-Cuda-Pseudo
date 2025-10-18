@@ -60,12 +60,12 @@ endif
 ifdef gpu
 $(OBJDIR)/GPU/GPUEngine.o: GPU/GPUEngine.cu | $(OBJDIR)/GPU
 ifdef debug
-	$(NVCC) -G -g -maxrregcount=0 --ptxas-options=-v --compile \
+	$(NVCC) -G -g -maxrregcount=0 --ptxas-options=-v --extended-lambda --compile \
 	--compiler-options -fPIC -ccbin $(CXXCUDA) -m64 \
 	-I$(CUDA)/include -gencode=arch=compute_$(CCAP),code=sm_$(CCAP) \
 	-o $(OBJDIR)/GPU/GPUEngine.o -c GPU/GPUEngine.cu
 else
-	$(NVCC) -maxrregcount=0 --ptxas-options=-v --compile \
+	$(NVCC) -maxrregcount=0 --ptxas-options=-v --extended-lambda --compile \
 	--compiler-options -fPIC -ccbin $(CXXCUDA) -m64 -O2 \
 	-I$(CUDA)/include -gencode=arch=compute_$(CCAP),code=sm_$(CCAP) \
 	-o $(OBJDIR)/GPU/GPUEngine.o -c GPU/GPUEngine.cu
