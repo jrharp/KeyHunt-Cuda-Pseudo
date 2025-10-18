@@ -18,7 +18,6 @@
 #include <cstdio>
 #include <filesystem>
 #include <sstream>
-#include <ctime>
 #ifndef WIN64
 #include <pthread.h>
 #endif
@@ -32,8 +31,7 @@ Point _2Gn;
 
 KeyHunt::KeyHunt(const std::string& inputFile, int compMode, int searchMode, int coinType, bool useGpu,
         const std::string& outputFile, bool useSSE, uint32_t maxFound, uint64_t rKey,
-        const std::string& rangeStart, const std::string& rangeEnd, bool& should_exit, int gpuStepMultiplier,
-        const RunWindowConfig& runWindow)
+        const std::string& rangeStart, const std::string& rangeEnd, bool& should_exit, int gpuStepMultiplier)
 {
         this->compMode = compMode;
         this->useGpu = useGpu;
@@ -52,9 +50,6 @@ KeyHunt::KeyHunt(const std::string& inputFile, int compMode, int searchMode, int
         this->rangeDiff2.Sub(&this->rangeStart);
         this->lastrKey = 0;
         this->gpuStepMultiplierRequested = std::max(1, gpuStepMultiplier);
-        this->runWindowEnabled = runWindow.enabled;
-        this->runWindowStartSeconds = runWindow.startSeconds;
-        this->runWindowEndSeconds = runWindow.endSeconds;
 
         secp = new Secp256K1();
         secp->Init();
@@ -145,8 +140,7 @@ KeyHunt::KeyHunt(const std::string& inputFile, int compMode, int searchMode, int
 
 KeyHunt::KeyHunt(const std::vector<unsigned char>& hashORxpoint, int compMode, int searchMode, int coinType,
         bool useGpu, const std::string& outputFile, bool useSSE, uint32_t maxFound, uint64_t rKey,
-        const std::string& rangeStart, const std::string& rangeEnd, bool& should_exit, int gpuStepMultiplier,
-        const RunWindowConfig& runWindow)
+        const std::string& rangeStart, const std::string& rangeEnd, bool& should_exit, int gpuStepMultiplier)
 {
         this->compMode = compMode;
         this->useGpu = useGpu;
@@ -164,9 +158,6 @@ KeyHunt::KeyHunt(const std::vector<unsigned char>& hashORxpoint, int compMode, i
         this->rangeDiff2.Sub(&this->rangeStart);
         this->targetCounter = 1;
         this->gpuStepMultiplierRequested = std::max(1, gpuStepMultiplier);
-        this->runWindowEnabled = runWindow.enabled;
-        this->runWindowStartSeconds = runWindow.startSeconds;
-        this->runWindowEndSeconds = runWindow.endSeconds;
 
         secp = new Secp256K1();
         secp->Init();
@@ -1302,10 +1293,6 @@ void KeyHunt::FindKeyCPU(TH_PARAM * ph)
 
         while (!endOfSearch) {
 
-                if (!waitForRunWindow()) {
-                        break;
-                }
-
                 if (pseudoRandomEnabled && pseudoRandomCpuEnabled) {
                         if (!acquirePseudoRandomBlock(key, startP, pseudoSequentialIndex)) {
                                 break;
@@ -1714,10 +1701,6 @@ void KeyHunt::FindKeyGPU(TH_PARAM * ph)
         // GPU Thread
         while (ok && !endOfSearch) {
 
-                if (!waitForRunWindow()) {
-                        break;
-                }
-
                 const int resultsBuffer = currentBuffer;
                 Int* resultKeys = keyBuffers[resultsBuffer];
                 auto& resultSequential = pseudoSequentialBuffers[resultsBuffer];
@@ -2019,13 +2002,12 @@ void KeyHunt::Search(int nbThread, std::vector<int> gpuId, std::vector<int> grid
 	double lastGpukeyRate[FILTER_SIZE];
 	uint32_t filterPos = 0;
 
-        double keyRate = 0.0;
-        double gpuKeyRate = 0.0;
-        char timeStr[256];
-        bool runWindowPauseAnnounced = false;
+	double keyRate = 0.0;
+	double gpuKeyRate = 0.0;
+	char timeStr[256];
 
-        memset(lastkeyRate, 0, sizeof(lastkeyRate));
-        memset(lastGpukeyRate, 0, sizeof(lastkeyRate));
+	memset(lastkeyRate, 0, sizeof(lastkeyRate));
+	memset(lastGpukeyRate, 0, sizeof(lastkeyRate));
 
 	// Wait that all threads have started
 	while (!hasStarted(params)) {
@@ -2041,51 +2023,12 @@ void KeyHunt::Search(int nbThread, std::vector<int> gpuId, std::vector<int> grid
 	p100.SetInt32(100);
 	double completedPerc = 0;
 	uint64_t rKeyCount = 0;
-        while (isAlive(params)) {
+	while (isAlive(params)) {
 
-                if (should_exit) {
-                        endOfSearch = true;
-                        break;
-                }
-
-                if (runWindowEnabled && !isWithinRunWindow()) {
-                        if (!runWindowPauseAnnounced) {
-                                std::string startStr = formatTimeOfDay(runWindowStartSeconds);
-                                std::string endStr = formatTimeOfDay(runWindowEndSeconds);
-                                printf("\nPaused outside run window (%s-%s). Next run window starts at %s.\n",
-                                        startStr.c_str(),
-                                        endStr.c_str(),
-                                        startStr.c_str());
-                                runWindowPauseAnnounced = true;
-                        }
-
-                        if (!waitForRunWindow(&should_exit)) {
-                                break;
-                        }
-
-                        if (should_exit) {
-                                endOfSearch = true;
-                                break;
-                        }
-
-                        std::string resumeStr = formatTimeOfDay(getCurrentSecondsSinceMidnight());
-                        printf("Run window resumed at %s.\n", resumeStr.c_str());
-                        runWindowPauseAnnounced = false;
-
-                        Timer::Init();
-                        t0 = Timer::get_tick();
-                        lastCount = getCPUCount() + getGPUCount();
-                        lastGPUCount = getGPUCount();
-                        filterPos = 0;
-                        memset(lastkeyRate, 0, sizeof(lastkeyRate));
-                        memset(lastGpukeyRate, 0, sizeof(lastGpukeyRate));
-                        continue;
-                }
-
-                int delay = 2000;
-                while (isAlive(params) && delay > 0) {
-                        Timer::SleepMillis(500);
-                        delay -= 500;
+		int delay = 2000;
+		while (isAlive(params) && delay > 0) {
+			Timer::SleepMillis(500);
+			delay -= 500;
 		}
 
 		gpuCount = getGPUCount();
@@ -2272,90 +2215,12 @@ std::string KeyHunt::formatThousands(uint64_t x)
 
 char* KeyHunt::toTimeStr(int sec, char* timeStr)
 {
-        int h, m, s;
-        h = (sec / 3600);
-        m = (sec - (3600 * h)) / 60;
-        s = (sec - (3600 * h) - (m * 60));
-        sprintf(timeStr, "%0*d:%0*d:%0*d", 2, h, 2, m, 2, s);
-        return (char*)timeStr;
-}
-
-// ----------------------------------------------------------------------------
-
-bool KeyHunt::waitForRunWindow(bool* externalStop)
-{
-        if (!runWindowEnabled) {
-                return true;
-        }
-
-        while (!endOfSearch) {
-                if (externalStop && *externalStop) {
-                        return false;
-                }
-
-                if (isWithinRunWindow()) {
-                        return true;
-                }
-
-                Timer::SleepMillis(1000);
-        }
-
-        return false;
-}
-
-// ----------------------------------------------------------------------------
-
-bool KeyHunt::isWithinRunWindow() const
-{
-        if (!runWindowEnabled) {
-                return true;
-        }
-
-        if (runWindowStartSeconds == runWindowEndSeconds) {
-                return true;
-        }
-
-        int current = getCurrentSecondsSinceMidnight();
-
-        if (runWindowStartSeconds < runWindowEndSeconds) {
-                return current >= runWindowStartSeconds && current < runWindowEndSeconds;
-        }
-
-        return current >= runWindowStartSeconds || current < runWindowEndSeconds;
-}
-
-// ----------------------------------------------------------------------------
-
-int KeyHunt::getCurrentSecondsSinceMidnight() const
-{
-        std::time_t now = std::time(nullptr);
-        std::tm localTime;
-#ifdef WIN64
-        localtime_s(&localTime, &now);
-#else
-        localtime_r(&now, &localTime);
-#endif
-        return localTime.tm_hour * 3600 + localTime.tm_min * 60 + localTime.tm_sec;
-}
-
-// ----------------------------------------------------------------------------
-
-std::string KeyHunt::formatTimeOfDay(int seconds) const
-{
-        const int kSecondsPerDay = 24 * 60 * 60;
-        if (seconds < 0) {
-                seconds = (seconds % kSecondsPerDay + kSecondsPerDay) % kSecondsPerDay;
-        }
-        else {
-                seconds %= kSecondsPerDay;
-        }
-
-        int hours = seconds / 3600;
-        int minutes = (seconds % 3600) / 60;
-
-        char buffer[8];
-        snprintf(buffer, sizeof(buffer), "%02d:%02d", hours, minutes);
-        return std::string(buffer);
+	int h, m, s;
+	h = (sec / 3600);
+	m = (sec - (3600 * h)) / 60;
+	s = (sec - (3600 * h) - (m * 60));
+	sprintf(timeStr, "%0*d:%0*d:%0*d", 2, h, 2, m, 2, s);
+	return (char*)timeStr;
 }
 
 // ----------------------------------------------------------------------------
