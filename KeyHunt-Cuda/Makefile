@@ -4,7 +4,7 @@
 # Author : Jean-Luc PONS
 
 SRC = Base58.cpp IntGroup.cpp Main.cpp Bloom.cpp Random.cpp \
-      Timer.cpp Int.cpp IntMod.cpp Point.cpp SECP256K1.cpp \
+      Timer.cpp Int.cpp IntMod.cpp Point.cpp SECP256K1.cpp CubeRootSolver.cpp \
       KeyHunt.cpp GPU/GPUGenerate.cpp hash/ripemd160.cpp \
       hash/sha256.cpp hash/sha512.cpp hash/ripemd160_sse.cpp \
       hash/sha256_sse.cpp hash/keccak160.cpp GmpUtil.cpp CmdParse.cpp
@@ -18,7 +18,7 @@ ifdef gpu
 
 OBJET = $(addprefix $(OBJDIR)/, \
         Base58.o IntGroup.o Main.o Bloom.o Random.o Timer.o Int.o \
-        IntMod.o Point.o SECP256K1.o KeyHunt.o GPU/GPUGenerate.o \
+        IntMod.o Point.o SECP256K1.o CubeRootSolver.o KeyHunt.o GPU/GPUGenerate.o \
         hash/ripemd160.o hash/sha256.o hash/sha512.o \
         hash/ripemd160_sse.o hash/sha256_sse.o hash/keccak160.o \
         GPU/GPUEngine.o GmpUtil.o CmdParse.o)
@@ -27,7 +27,7 @@ else
 
 OBJET = $(addprefix $(OBJDIR)/, \
         Base58.o IntGroup.o Main.o Bloom.o Random.o Timer.o Int.o \
-        IntMod.o Point.o SECP256K1.o KeyHunt.o GPU/GPUGenerate.o \
+        IntMod.o Point.o SECP256K1.o CubeRootSolver.o KeyHunt.o GPU/GPUGenerate.o \
         hash/ripemd160.o hash/sha256.o hash/sha512.o \
         hash/ripemd160_sse.o hash/sha256_sse.o hash/keccak160.o \
         GmpUtil.o CmdParse.o)

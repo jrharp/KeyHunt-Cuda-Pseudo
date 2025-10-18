@@ -397,6 +397,17 @@ void Secp256K1::ComputePublicKeys(Int* privKeys, size_t count, Point* outPoints)
         }
 }
 
+Point Secp256K1::PointFromX(const Int& x, bool even)
+{
+        Int xCopy((Int*)&x);
+        Int y = GetY(xCopy, even);
+        Point p;
+        p.x.Set(&xCopy);
+        p.y.Set(&y);
+        p.z.SetInt32(1);
+        return p;
+}
+
 Point Secp256K1::NextKey(Point& key)
 {
         // Input key must be reduced and different from G

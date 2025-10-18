@@ -35,8 +35,9 @@ public:
         void ComputePublicKeys(Int* privKeys, size_t count, Point* outPoints);
         Point NextKey(Point& key);
         void NextKeyBatch(Point* keys, size_t count);
-	void Check();
-	bool  EC(Point& p);
+        void Check();
+        bool  EC(Point& p);
+        Point PointFromX(const Int& x, bool even);
 
 	void GetHash160(bool compressed,
 		Point& k0, Point& k1, Point& k2, Point& k3,

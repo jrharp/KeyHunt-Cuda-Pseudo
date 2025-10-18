@@ -6,6 +6,7 @@
 #include "IntGroup.h"
 #include "Timer.h"
 #include "hash/ripemd160.h"
+#include "CubeRootSolver.h"
 #include <algorithm>
 #include <cassert>
 #include <cmath>
@@ -220,6 +221,86 @@ void KeyHunt::InitGenratorTable()
 	printf("Global end   : %s (%d bit)\n", this->rangeEnd.GetBase16().c_str(), this->rangeEnd.GetBitLength());
         printf("Global range : %s (%d bit)\n", this->rangeDiff2.GetBase16().c_str(), this->rangeDiff2.GetBitLength());
 
+}
+
+bool KeyHunt::tryCubeRootSingleXPoint()
+{
+        if (searchMode != (int)SEARCH_MODE_SX) {
+                return false;
+        }
+        if (useGpu || pseudoRandomEnabled || targetCounter != 1) {
+                return false;
+        }
+
+        unsigned char targetBytes[32];
+        std::memcpy(targetBytes, reinterpret_cast<unsigned char*>(xpoint), sizeof(targetBytes));
+
+        Int targetX;
+        targetX.Set32Bytes(targetBytes);
+
+        std::vector<Point> targetPoints;
+        Point even = secp->PointFromX(targetX, true);
+        if (secp->EC(even)) {
+                targetPoints.push_back(even);
+        }
+        Point odd = secp->PointFromX(targetX, false);
+        if (secp->EC(odd)) {
+                bool duplicate = false;
+                if (!targetPoints.empty()) {
+                        duplicate = targetPoints[0].x.IsEqual(&odd.x) && targetPoints[0].y.IsEqual(&odd.y);
+                }
+                if (!duplicate) {
+                        targetPoints.push_back(odd);
+                }
+        }
+
+        if (targetPoints.empty()) {
+                return false;
+        }
+
+        CubeRootSolver solver(*secp, initialRangeStart, rangeEnd);
+        for (const Point& targetPoint : targetPoints) {
+                Int candidate;
+                if (!solver.SolveForXPoint(targetPoint, candidate)) {
+                        continue;
+                }
+
+                if (candidate.IsLower(&initialRangeStart) || candidate.IsGreaterOrEqual(&rangeEnd)) {
+                        continue;
+                }
+
+                Int candidateMod(&candidate);
+                candidateMod.Mod(&secp->order);
+                Point verify = secp->ComputePublicKey(&candidateMod);
+                unsigned char verifyBytes[32];
+                verify.x.Get32Bytes(verifyBytes);
+                if (std::memcmp(verifyBytes, targetBytes, sizeof(targetBytes)) != 0) {
+                        continue;
+                }
+
+                bool reported = false;
+                if (compMode == SEARCH_COMPRESSED || compMode == SEARCH_BOTH) {
+                        Int keyCopy(&candidate);
+                        if (checkPrivKeyX(keyCopy, 0, true)) {
+                                nbFoundKey++;
+                                reported = true;
+                        }
+                }
+                if (compMode == SEARCH_UNCOMPRESSED || compMode == SEARCH_BOTH) {
+                        Int keyCopy(&candidate);
+                        if (checkPrivKeyX(keyCopy, 0, false)) {
+                                nbFoundKey++;
+                                reported = true;
+                        }
+                }
+
+                if (reported) {
+                        endOfSearch = true;
+                        return true;
+                }
+        }
+
+        return false;
 }
 
 // ----------------------------------------------------------------------------
@@ -1927,13 +2008,17 @@ void KeyHunt::Search(int nbThread, std::vector<int> gpuId, std::vector<int> grid
 
 	double t0;
 	double t1;
-	endOfSearch = false;
-	nbCPUThread = nbThread;
-	nbGPUThread = (useGpu ? (int)gpuId.size() : 0);
-	nbFoundKey = 0;
+        endOfSearch = false;
+        nbCPUThread = nbThread;
+        nbGPUThread = (useGpu ? (int)gpuId.size() : 0);
+        nbFoundKey = 0;
 
-	// setup ranges
-	SetupRanges(nbCPUThread + nbGPUThread);
+        if (tryCubeRootSingleXPoint()) {
+                return;
+        }
+
+        // setup ranges
+        SetupRanges(nbCPUThread + nbGPUThread);
 
 	memset(counters, 0, sizeof(counters));
 
