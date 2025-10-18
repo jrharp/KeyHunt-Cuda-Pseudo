@@ -19,6 +19,21 @@
 // 256(+64) bits integer CUDA libray for SECPK1
 // ---------------------------------------------------------------------------------
 
+#ifndef __CUDACC__
+#define __device__
+#define __forceinline__ inline
+#define __noinline__
+#endif
+
+#include <cstdint>
+
+#ifndef __CUDACC__
+inline uint32_t __clzll(uint64_t value)
+{
+    return value == 0 ? 64U : static_cast<uint32_t>(__builtin_clzll(value));
+}
+#endif
+
 
 #define GRP_SIZE (1024*2)
 
