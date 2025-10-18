@@ -17,6 +17,9 @@
 
 #include "GPUEngine.h"
 #include <cuda_runtime.h>
+#if defined(CUDART_VERSION) && (CUDART_VERSION >= 12000)
+#include <cuda.h>
+#endif
 #include <math.h>
 
 // Configure persisting L2 cache for generator tables (Gx/Gy) when present
@@ -57,15 +60,15 @@ void KH_LaunchWithDomain(const void* kernel, dim3 grid, dim3 block, void** args,
 #if CUDART_VERSION >= 12000
     cudaLaunchAttribute attr{};
     attr.id = cudaLaunchAttributeMemSyncDomain;
-    attr.val = cudaLaunchMemSyncDomainDefault;
+    attr.val.memSyncDomain = cudaLaunchMemSyncDomainDefault;
     cudaLaunchConfig_t cfg{};
     cfg.gridDim = grid;
     cfg.blockDim = block;
-    cfg.sharedMem = shm;
+    cfg.dynamicSmemBytes = shm;
     cfg.stream = stream;
     cfg.attrs = &attr;
     cfg.numAttrs = 1;
-    cudaLaunchKernelEx(&cfg, kernel, args);
+    cudaLaunchKernelEx(&cfg, reinterpret_cast<cudaKernel_t>(const_cast<void*>(kernel)), args);
 #else
     cudaLaunchKernel(kernel, grid, block, args, shm, stream);
 #endif
