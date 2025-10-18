@@ -31,6 +31,7 @@
 #include <string>
 #include <tuple>
 #include <utility>
+#include <sstream>
 
 #if defined(_MSC_VER)
 #include <intrin.h>
@@ -47,6 +48,26 @@
 #include "CudaCompat.h"
 
 namespace {
+
+void CheckCuda(cudaError_t status, const char* function, const char* file, int line)
+{
+        if (status == cudaSuccess) {
+                return;
+        }
+
+        std::ostringstream oss;
+        oss << "CUDA error at " << file << ':' << line << " in " << function << " ("
+            << cudaGetErrorName(status) << "): " << cudaGetErrorString(status);
+        throw std::runtime_error(oss.str());
+}
+
+#define CUDA_CHECK(call)                                                                                               \
+        do {                                                                                                           \
+                const cudaError_t status_ = (call);                                                                    \
+                if (status_ != cudaSuccess) {                                                                          \
+                        CheckCuda(status_, #call, __FILE__, __LINE__);                                                 \
+                }                                                                                                      \
+        } while (false)
 
 // Configure persisting L2 cache for generator tables (Gx/Gy) when present
 void ConfigurePersistingL2(cudaStream_t stream, const void* base_ptr, size_t size_bytes) {
