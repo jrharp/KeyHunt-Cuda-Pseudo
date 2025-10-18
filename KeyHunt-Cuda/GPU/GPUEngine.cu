@@ -130,15 +130,6 @@ __global__ void compute_keys_comp_mode_sx(uint32_t mode, uint32_t* xpoint, uint6
 
 namespace {
 
-inline void CheckCuda(cudaError_t result, const char* expr, const char* file, int line)
-{
-        if (result != cudaSuccess) {
-                std::fprintf(stderr, "CUDA failure %s at %s:%d: %s (%s)\n",
-                        expr, file, line, cudaGetErrorName(result), cudaGetErrorString(result));
-                std::abort();
-        }
-}
-
 inline uint64_t ComputeFastModReciprocal(uint64_t modulus)
 {
         if (modulus <= 1) {
@@ -187,8 +178,6 @@ int RecommendOccupancyBlockSize()
 
 } // namespace
 
-#define CUDA_CHECK(call) ::CheckCuda((call), #call, __FILE__, __LINE__)
-
 namespace {
 
 struct SmToCores {
@@ -218,6 +207,8 @@ constexpr std::array<SmToCores, 20> kSmToCores = { {
         {0x89, 128}, // Ada Generation   (SM 8.9)
         {0x90, 128}, // Hopper Generation (SM 9.0)
 } };
+
+} // namespace
 
 struct DeviceCapabilityInfo
 {
