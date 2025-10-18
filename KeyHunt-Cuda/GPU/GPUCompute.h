@@ -18,6 +18,10 @@
 #include <cuda_runtime.h>
 #include <stdint.h>
 
+// CUDA 13: cooperative groups for warp collectives
+#include <cooperative_groups.h>
+namespace cg = cooperative_groups;
+
 #if __CUDA_ARCH__ >= 350
 #define GPU_LDG(ptr) __ldg(ptr)
 #else
@@ -29,6 +33,42 @@ __device__ uint64_t* _2Gny = nullptr;
 
 __device__ uint64_t* Gx = nullptr;
 __device__ uint64_t* Gy = nullptr;
+
+// ---------------------------------------------------------------------------------------
+// CUDA 13+: Warp-aggregated atomics to reduce contention on global 'out' counter.
+// One atomicAdd per warp instead of per thread.
+static __device__ __forceinline__ uint32_t warp_prefix_count(unsigned mask, unsigned lane_mask_lt) {
+        return __popc(mask & lane_mask_lt);
+}
+
+template<typename StoreFn>
+static __device__ __forceinline__ void warp_emit_matches(bool is_match, uint32_t* __restrict__ out,
+        uint32_t maxFound, StoreFn store_item) {
+        unsigned active = __activemask();
+        unsigned vote = __ballot_sync(active, is_match);
+        if (vote == 0u) {
+                return;
+        }
+
+        const unsigned lane_id = threadIdx.x & 31u;
+        const unsigned lane_mask_lt = (1u << lane_id) - 1u;
+        const uint32_t local_idx = warp_prefix_count(vote, lane_mask_lt);
+        const uint32_t warp_count = __popc(vote);
+
+        const int leader = __ffs(vote) - 1;
+        uint32_t base_idx = 0u;
+        if (lane_id == static_cast<unsigned>(leader)) {
+                base_idx = atomicAdd(out, warp_count);
+        }
+        base_idx = __shfl_sync(active, base_idx, leader);
+
+        if (is_match) {
+                const uint32_t pos = base_idx + local_idx;
+                if (pos < maxFound) {
+                        store_item(pos);
+                }
+        }
+}
 
 // ---------------------------------------------------------------------------------------
 
@@ -141,19 +181,22 @@ __device__ __forceinline__ void CheckPointSEARCH_MODE_MA(uint32_t* __restrict__ 
 {
         const uint32_t tid = (blockIdx.x * blockDim.x) + threadIdx.x;
 
-        if (BloomCheck(_h, bloomLookUp, BLOOM_BITS, BLOOM_HASHES, 20, bloomReciprocal, bloomMask, bloomIsPowerOfTwo) > 0) {
-                const uint32_t pos = atomicAdd(out, 1u);
-                if (pos < maxFound) {
-                        const uint32_t base = pos * ITEM_SIZE_A32;
-                        out[base + 1] = tid;
-                        const uint32_t packed = (mode ? 0x80000000u : 0u) | (offset & 0x7FFFFFFFu);
-                        out[base + 2] = packed;
-                        #pragma unroll
-                        for (int i = 0; i < 5; ++i) {
-                                out[base + 3 + i] = _h[i];
-                        }
+        const bool is_match = BloomCheck(_h, bloomLookUp, BLOOM_BITS, BLOOM_HASHES, 20,
+                bloomReciprocal, bloomMask, bloomIsPowerOfTwo) > 0;
+
+        uint32_t* __restrict__ out_ptr = out;
+        auto store = [=] __device__ (uint32_t pos) {
+                const uint32_t base = pos * ITEM_SIZE_A32;
+                out_ptr[base + 1] = tid;
+                const uint32_t packed = (mode ? 0x80000000u : 0u) | (offset & 0x7FFFFFFFu);
+                out_ptr[base + 2] = packed;
+#pragma unroll
+                for (int i = 0; i < 5; ++i) {
+                        out_ptr[base + 3 + i] = _h[i];
                 }
-        }
+        };
+
+        warp_emit_matches(is_match, out, maxFound, store);
 }
 
 // ---------------------------------------------------------------------------------------
@@ -164,19 +207,22 @@ __device__ __forceinline__ void CheckPointSEARCH_MODE_MX(uint32_t* __restrict__ 
 {
         const uint32_t tid = (blockIdx.x * blockDim.x) + threadIdx.x;
 
-        if (BloomCheck(_h, bloomLookUp, BLOOM_BITS, BLOOM_HASHES, 32, bloomReciprocal, bloomMask, bloomIsPowerOfTwo) > 0) {
-                const uint32_t pos = atomicAdd(out, 1u);
-                if (pos < maxFound) {
-                        const uint32_t base = pos * ITEM_SIZE_X32;
-                        out[base + 1] = tid;
-                        const uint32_t packed = (mode ? 0x80000000u : 0u) | (offset & 0x7FFFFFFFu);
-                        out[base + 2] = packed;
-                        #pragma unroll
-                        for (int i = 0; i < 8; ++i) {
-                                out[base + 3 + i] = _h[i];
-                        }
+        const bool is_match = BloomCheck(_h, bloomLookUp, BLOOM_BITS, BLOOM_HASHES, 32,
+                bloomReciprocal, bloomMask, bloomIsPowerOfTwo) > 0;
+
+        uint32_t* __restrict__ out_ptr = out;
+        auto store = [=] __device__ (uint32_t pos) {
+                const uint32_t base = pos * ITEM_SIZE_X32;
+                out_ptr[base + 1] = tid;
+                const uint32_t packed = (mode ? 0x80000000u : 0u) | (offset & 0x7FFFFFFFu);
+                out_ptr[base + 2] = packed;
+#pragma unroll
+                for (int i = 0; i < 8; ++i) {
+                        out_ptr[base + 3 + i] = _h[i];
                 }
-	}
+        };
+
+        warp_emit_matches(is_match, out, maxFound, store);
 }
 
 // ---------------------------------------------------------------------------------------
@@ -220,23 +266,21 @@ __device__ __forceinline__ void CheckPointSEARCH_MODE_SA(uint32_t* __restrict__ 
 {
         const uint32_t tid = (blockIdx.x * blockDim.x) + threadIdx.x;
 
-        if (!MatchHash(_h, hash160)) {
-                return;
-        }
+        const bool is_match = MatchHash(_h, hash160);
 
-        if (Hash160Equals(_h, hash160)) {
-                const uint32_t pos = atomicAdd(out, 1u);
-                if (pos < maxFound) {
-                        const uint32_t base = pos * ITEM_SIZE_A32;
-                        out[base + 1] = tid;
-                        const uint32_t packed = (mode ? 0x80000000u : 0u) | (offset & 0x7FFFFFFFu);
-                        out[base + 2] = packed;
-                        #pragma unroll
-                        for (int i = 0; i < 5; ++i) {
-                                out[base + 3 + i] = _h[i];
-                        }
+        uint32_t* __restrict__ out_ptr = out;
+        auto store = [=] __device__ (uint32_t pos) {
+                const uint32_t base = pos * ITEM_SIZE_A32;
+                out_ptr[base + 1] = tid;
+                const uint32_t packed = (mode ? 0x80000000u : 0u) | (offset & 0x7FFFFFFFu);
+                out_ptr[base + 2] = packed;
+#pragma unroll
+                for (int i = 0; i < 5; ++i) {
+                        out_ptr[base + 3 + i] = _h[i];
                 }
-        }
+        };
+
+        warp_emit_matches(is_match, out, maxFound, store);
 }
 
 // ---------------------------------------------------------------------------------------
@@ -246,19 +290,21 @@ __device__ __forceinline__ void CheckPointSEARCH_MODE_SX(uint32_t* __restrict__ 
 {
         const uint32_t tid = (blockIdx.x * blockDim.x) + threadIdx.x;
 
-        if (MatchXPoint(_h, xpoint)) {
-                const uint32_t pos = atomicAdd(out, 1u);
-                if (pos < maxFound) {
-                        const uint32_t base = pos * ITEM_SIZE_X32;
-                        out[base + 1] = tid;
-                        const uint32_t packed = (mode ? 0x80000000u : 0u) | (offset & 0x7FFFFFFFu);
-                        out[base + 2] = packed;
-                        #pragma unroll
-                        for (int i = 0; i < 8; ++i) {
-                                out[base + 3 + i] = _h[i];
-                        }
+        const bool is_match = MatchXPoint(_h, xpoint);
+
+        uint32_t* __restrict__ out_ptr = out;
+        auto store = [=] __device__ (uint32_t pos) {
+                const uint32_t base = pos * ITEM_SIZE_X32;
+                out_ptr[base + 1] = tid;
+                const uint32_t packed = (mode ? 0x80000000u : 0u) | (offset & 0x7FFFFFFFu);
+                out_ptr[base + 2] = packed;
+#pragma unroll
+                for (int i = 0; i < 8; ++i) {
+                        out_ptr[base + 3 + i] = _h[i];
                 }
-	}
+        };
+
+        warp_emit_matches(is_match, out, maxFound, store);
 }
 
 // -----------------------------------------------------------------------------------------
@@ -1008,18 +1054,22 @@ __device__ __noinline__ void CheckPointSEARCH_ETH_MODE_MA(uint32_t* _h, uint32_t
 {
         uint32_t tid = (blockIdx.x * blockDim.x) + threadIdx.x;
 
-        if (BloomCheck(_h, bloomLookUp, BLOOM_BITS, BLOOM_HASHES, 20, bloomReciprocal, bloomMask, bloomIsPowerOfTwo) > 0) {
-                uint32_t pos = atomicAdd(out, 1);
-                if (pos < maxFound) {
-                        out[pos * ITEM_SIZE_A32 + 1] = tid;
-                        out[pos * ITEM_SIZE_A32 + 2] = offset & 0x7FFFFFFF;
-                        out[pos * ITEM_SIZE_A32 + 3] = _h[0];
-			out[pos * ITEM_SIZE_A32 + 4] = _h[1];
-			out[pos * ITEM_SIZE_A32 + 5] = _h[2];
-			out[pos * ITEM_SIZE_A32 + 6] = _h[3];
-			out[pos * ITEM_SIZE_A32 + 7] = _h[4];
-		}
-	}
+        const bool is_match = BloomCheck(_h, bloomLookUp, BLOOM_BITS, BLOOM_HASHES, 20,
+                bloomReciprocal, bloomMask, bloomIsPowerOfTwo) > 0;
+
+        uint32_t* __restrict__ out_ptr = out;
+        auto store = [=] __device__ (uint32_t pos) {
+                const uint32_t base = pos * ITEM_SIZE_A32;
+                out_ptr[base + 1] = tid;
+                out_ptr[base + 2] = offset & 0x7FFFFFFF;
+                out_ptr[base + 3] = _h[0];
+                out_ptr[base + 4] = _h[1];
+                out_ptr[base + 5] = _h[2];
+                out_ptr[base + 6] = _h[3];
+                out_ptr[base + 7] = _h[4];
+        };
+
+        warp_emit_matches(is_match, out, maxFound, store);
 }
 
 
@@ -1195,18 +1245,21 @@ __device__ __noinline__ void CheckPointSEARCH_MODE_SA(uint32_t* _h, uint32_t off
                 return;
         }
 
-        if (Hash160Equals(_h, hash)) {
-                uint32_t pos = atomicAdd(out, 1);
-                if (pos < maxFound) {
-                        out[pos * ITEM_SIZE_A32 + 1] = tid;
-                        out[pos * ITEM_SIZE_A32 + 2] = offset & 0x7FFFFFFF;
-                        out[pos * ITEM_SIZE_A32 + 3] = _h[0];
-			out[pos * ITEM_SIZE_A32 + 4] = _h[1];
-			out[pos * ITEM_SIZE_A32 + 5] = _h[2];
-			out[pos * ITEM_SIZE_A32 + 6] = _h[3];
-			out[pos * ITEM_SIZE_A32 + 7] = _h[4];
-		}
-	}
+        const bool is_match = Hash160Equals(_h, hash);
+
+        uint32_t* __restrict__ out_ptr = out;
+        auto store = [=] __device__ (uint32_t pos) {
+                const uint32_t base = pos * ITEM_SIZE_A32;
+                out_ptr[base + 1] = tid;
+                out_ptr[base + 2] = offset & 0x7FFFFFFF;
+                out_ptr[base + 3] = _h[0];
+                out_ptr[base + 4] = _h[1];
+                out_ptr[base + 5] = _h[2];
+                out_ptr[base + 6] = _h[3];
+                out_ptr[base + 7] = _h[4];
+        };
+
+        warp_emit_matches(is_match, out, maxFound, store);
 }
 
 #define CHECK_POINT_SEARCH_ETH_MODE_SA(_h,offset)  CheckPointSEARCH_MODE_SA(_h,offset,hash,maxFound,out)
@@ -1366,8 +1419,16 @@ __device__ void ComputeKeysSEARCH_ETH_MODE_SA(uint64_t* startx, uint64_t* starty
 	// Update starting point
 	__syncthreads();
 	Store256A(startx, px);
-	Store256A(starty, py);
+        Store256A(starty, py);
 
 }
+
+#ifndef KH_THREADS_PER_BLOCK
+#define KH_THREADS_PER_BLOCK 256
+#endif
+#ifndef KH_MIN_BLOCKS_PER_SM
+#define KH_MIN_BLOCKS_PER_SM 1
+#endif
+#define KH_LAUNCH_BOUNDS __launch_bounds__(KH_THREADS_PER_BLOCK, KH_MIN_BLOCKS_PER_SM)
 
 #undef GPU_LDG

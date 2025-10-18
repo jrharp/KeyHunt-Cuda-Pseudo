@@ -6,6 +6,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <cstdio>
 
 namespace cuda_compat {
 
@@ -33,32 +34,15 @@ inline void ThrowCudaError(const char* function, cudaError_t status)
 
 inline void EnsureRuntimeSupportsCuda13()
 {
-#if CUDA_VERSION < 13000
-#error "CUDA 13.0 or newer headers are required to build this project."
-#endif
-        int runtimeVersion = 0;
-        const cudaError_t runtimeStatus = cudaRuntimeGetVersion(&runtimeVersion);
-        if (runtimeStatus != cudaSuccess) {
-                ThrowCudaError("cudaRuntimeGetVersion", runtimeStatus);
+        int rt = 0;
+        const cudaError_t status = cudaRuntimeGetVersion(&rt);
+        if (status != cudaSuccess) {
+                ThrowCudaError("cudaRuntimeGetVersion", status);
         }
-        if (runtimeVersion < 13000) {
-                std::ostringstream oss;
-                oss << "Detected CUDA runtime version " << FormatCudaVersion(runtimeVersion)
-                    << " but CUDA 13.0 or newer is required.";
-                throw std::runtime_error(oss.str());
+        if (rt < 12000) {
+                std::fprintf(stderr, "Warning: CUDA runtime version %d < 12000; some optimizations are disabled.\n", rt);
         }
-
-        int driverVersion = 0;
-        const cudaError_t driverStatus = cudaDriverGetVersion(&driverVersion);
-        if (driverStatus != cudaSuccess) {
-                ThrowCudaError("cudaDriverGetVersion", driverStatus);
-        }
-        if (driverVersion < 13000) {
-                std::ostringstream oss;
-                oss << "Detected CUDA driver version " << FormatCudaVersion(driverVersion)
-                    << " but CUDA 13.0 or newer is required.";
-                throw std::runtime_error(oss.str());
-        }
+        // You may warm up hot kernels by calling cudaFuncGetAttributes on them here.
 }
 
 } // namespace cuda_compat
