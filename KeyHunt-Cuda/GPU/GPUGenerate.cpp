@@ -16,63 +16,7 @@
 */
 
 #include "GPUEngine.h"
-#include <cuda_runtime.h>
-#if defined(CUDART_VERSION) && (CUDART_VERSION >= 12000)
-#include <cuda.h>
-#endif
 #include <math.h>
-
-// Configure persisting L2 cache for generator tables (Gx/Gy) when present
-static void ConfigurePersistingL2(cudaStream_t stream, const void* base_ptr, size_t size_bytes) {
-    if (!base_ptr || size_bytes == 0) return;
-    cudaAccessPolicyWindow window{};
-    window.base_ptr = const_cast<void*>(base_ptr);
-    window.num_bytes = size_bytes;
-    window.hitRatio = 1.0;
-    window.hitProp = cudaAccessPropertyPersisting;
-    window.missProp = cudaAccessPropertyStreaming;
-    cudaStreamAttrValue attr{};
-    attr.accessPolicyWindow = window;
-    (void)cudaStreamSetAttribute(stream, cudaStreamAttributeAccessPolicyWindow, &attr);
-}
-
-// Preload kernels to avoid lazy-loading skew during first launches
-static void WarmupKernelLoad(const void* func) {
-    if (!func) return;
-    cudaFuncAttributes attr{};
-    cudaFuncGetAttributes(&attr, func);
-}
-
-// Entry point to configure G tables persistence; call this after allocating device tables
-extern __device__ uint64_t* Gx;
-extern __device__ uint64_t* Gy;
-
-void KH_InitCudaOptimizations(cudaStream_t stream, size_t table_words) {
-    uint64_t* h_Gx = nullptr; cudaMemcpyFromSymbol(&h_Gx, Gx, sizeof(h_Gx));
-    uint64_t* h_Gy = nullptr; cudaMemcpyFromSymbol(&h_Gy, Gy, sizeof(h_Gy));
-    const size_t bytes = table_words * sizeof(uint64_t);
-    ConfigurePersistingL2(stream, h_Gx, bytes);
-    ConfigurePersistingL2(stream, h_Gy, bytes);
-    WarmupKernelLoad(nullptr);
-}
-
-void KH_LaunchWithDomain(const void* kernel, dim3 grid, dim3 block, void** args, size_t shm, cudaStream_t stream) {
-#if CUDART_VERSION >= 12000
-    cudaLaunchAttribute attr{};
-    attr.id = cudaLaunchAttributeMemSyncDomain;
-    attr.val.memSyncDomain = cudaLaunchMemSyncDomainDefault;
-    cudaLaunchConfig_t cfg{};
-    cfg.gridDim = grid;
-    cfg.blockDim = block;
-    cfg.dynamicSmemBytes = shm;
-    cfg.stream = stream;
-    cfg.attrs = &attr;
-    cfg.numAttrs = 1;
-    cudaLaunchKernelEx(&cfg, reinterpret_cast<cudaKernel_t>(const_cast<void*>(kernel)), args);
-#else
-    cudaLaunchKernel(kernel, grid, block, args, shm, stream);
-#endif
-}
 
 using namespace std;
 
