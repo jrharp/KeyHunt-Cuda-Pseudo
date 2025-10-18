@@ -90,7 +90,12 @@ public:
 	static void GenerateCode(Secp256K1* secp, int size);
 
 private:
-	void InitGenratorTable(Secp256K1* secp);
+        void InitGenratorTable(Secp256K1* secp);
+
+        void ConfigureAsyncAllocator(int deviceId);
+        bool AllocateDeviceBuffer(void** ptr, size_t size);
+        void FreeDeviceBuffer(void** ptr);
+        void SynchronizeStreamIfNeeded();
 
         bool callKernelSEARCH_MODE_MA();
         bool callKernelSEARCH_MODE_SA();
@@ -151,6 +156,10 @@ private:
         cudaEvent_t syncEvent_ = nullptr;
         bool streamCreated_ = false;
         bool eventCreated_ = false;
+
+        bool useAsyncAlloc_ = false;
+        cudaMemPool_t memPool_ = nullptr;
+        bool asyncFallbackNotified_ = false;
 
 };
 
