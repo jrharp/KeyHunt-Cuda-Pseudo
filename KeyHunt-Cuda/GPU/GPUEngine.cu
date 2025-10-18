@@ -29,6 +29,7 @@
 #include <limits>
 #include <stdint.h>
 #include <string>
+#include <tuple>
 #include <utility>
 
 #if defined(_MSC_VER)
@@ -44,6 +45,9 @@
 #include "GPUCompute.h"
 #include "GPUBase58.h"
 #include "CudaCompat.h"
+
+void KH_InitCudaOptimizations(cudaStream_t stream, size_t table_words);
+void KH_LaunchWithDomain(const void* kernel, dim3 grid, dim3 block, void** args, size_t shm, cudaStream_t stream);
 
 __global__ void compute_keys_comp_mode_ma(uint32_t mode, uint8_t* bloomLookUp, uint64_t BLOOM_BITS,
         uint8_t BLOOM_HASHES, uint64_t bloomReciprocal, uint32_t bloomMask, uint32_t bloomIsPowerOfTwo,
@@ -243,6 +247,7 @@ AsyncAllocatorConfig ConfigureAsyncAllocatorForDevice(int deviceId)
 // ---------------------------------------------------------------------------------------
 
 // mode multiple addresses
+KH_LAUNCH_BOUNDS
 __global__ void compute_keys_mode_ma(uint32_t mode, uint8_t* bloomLookUp, uint64_t BLOOM_BITS, uint8_t BLOOM_HASHES,
         uint64_t bloomReciprocal, uint32_t bloomMask, uint32_t bloomIsPowerOfTwo,
         uint64_t* keys, uint32_t maxFound, uint32_t* found, int stepMultiplier)
@@ -258,6 +263,7 @@ __global__ void compute_keys_mode_ma(uint32_t mode, uint8_t* bloomLookUp, uint64
 
 }
 
+KH_LAUNCH_BOUNDS
 __global__ void compute_keys_comp_mode_ma(uint32_t mode, uint8_t* bloomLookUp, uint64_t BLOOM_BITS, uint8_t BLOOM_HASHES,
         uint64_t bloomReciprocal, uint32_t bloomMask, uint32_t bloomIsPowerOfTwo,
         uint64_t* keys, uint32_t maxFound, uint32_t* found, int stepMultiplier)
@@ -274,6 +280,7 @@ __global__ void compute_keys_comp_mode_ma(uint32_t mode, uint8_t* bloomLookUp, u
 }
 
 // mode single address
+KH_LAUNCH_BOUNDS
 __global__ void compute_keys_mode_sa(uint32_t mode, const uint32_t* __restrict__ hash160, uint64_t* keys, uint32_t maxFound, uint32_t* found,
         int stepMultiplier)
 {
@@ -292,6 +299,7 @@ __global__ void compute_keys_mode_sa(uint32_t mode, const uint32_t* __restrict__
 
 }
 
+KH_LAUNCH_BOUNDS
 __global__ void compute_keys_comp_mode_sa(uint32_t mode, const uint32_t* __restrict__ hash160, uint64_t* keys, uint32_t maxFound, uint32_t* found,
         int stepMultiplier)
 {
@@ -311,6 +319,7 @@ __global__ void compute_keys_comp_mode_sa(uint32_t mode, const uint32_t* __restr
 }
 
 // mode multiple x points
+KH_LAUNCH_BOUNDS
 __global__ void compute_keys_comp_mode_mx(uint32_t mode, uint8_t* bloomLookUp, uint64_t BLOOM_BITS, uint8_t BLOOM_HASHES,
         uint64_t bloomReciprocal, uint32_t bloomMask, uint32_t bloomIsPowerOfTwo, uint64_t* keys,
         uint32_t maxFound, uint32_t* found, int stepMultiplier)
@@ -327,6 +336,7 @@ __global__ void compute_keys_comp_mode_mx(uint32_t mode, uint8_t* bloomLookUp, u
 }
 
 // mode single x point
+KH_LAUNCH_BOUNDS
 __global__ void compute_keys_comp_mode_sx(uint32_t mode, uint32_t* xpoint, uint64_t* keys, uint32_t maxFound, uint32_t* found,
         int stepMultiplier)
 {
@@ -343,6 +353,7 @@ __global__ void compute_keys_comp_mode_sx(uint32_t mode, uint32_t* xpoint, uint6
 // ---------------------------------------------------------------------------------------
 // ethereum
 
+KH_LAUNCH_BOUNDS
 __global__ void compute_keys_mode_eth_ma(uint8_t* bloomLookUp, uint64_t BLOOM_BITS, uint8_t BLOOM_HASHES,
         uint64_t bloomReciprocal, uint32_t bloomMask, uint32_t bloomIsPowerOfTwo, uint64_t* keys,
         uint32_t maxFound, uint32_t* found, int stepMultiplier)
@@ -358,6 +369,7 @@ __global__ void compute_keys_mode_eth_ma(uint8_t* bloomLookUp, uint64_t BLOOM_BI
 
 }
 
+KH_LAUNCH_BOUNDS
 __global__ void compute_keys_mode_eth_sa(const uint32_t* __restrict__ hash, uint64_t* keys, uint32_t maxFound, uint32_t* found,
         int stepMultiplier)
 {
@@ -381,6 +393,8 @@ __global__ void compute_keys_mode_eth_sa(const uint32_t* __restrict__ hash, uint
 template <typename KernelFunc, typename... Args>
 bool GPUEngine::LaunchKeyKernel(KernelFunc kernel, dim3 gridDim, dim3 blockDim, Args&&... args)
 {
+        auto argsTuple = std::make_tuple(std::forward<Args>(args)...);
+
 #if defined(CUDART_VERSION) && (CUDART_VERSION >= 12000)
         if (clusterLaunchActive_) {
                 const dim3 clusterDim = QueryClusterDimension(kernel, gridDim, blockDim);
@@ -399,7 +413,9 @@ bool GPUEngine::LaunchKeyKernel(KernelFunc kernel, dim3 gridDim, dim3 blockDim, 
                         config.attrs = &attribute;
                         config.numAttrs = 1;
 
-                        const cudaError_t status = cudaLaunchKernelEx(&config, kernel, std::forward<Args>(args)...);
+                        const cudaError_t status = std::apply([&](auto&... tupleArgs) {
+                                return cudaLaunchKernelEx(&config, kernel, tupleArgs...);
+                        }, argsTuple);
                         if (status == cudaSuccess) {
                                 return true;
                         }
@@ -414,7 +430,15 @@ bool GPUEngine::LaunchKeyKernel(KernelFunc kernel, dim3 gridDim, dim3 blockDim, 
                 }
         }
 #endif
-        kernel<<<gridDim, blockDim, 0, stream_>>>(std::forward<Args>(args)...);
+
+        std::array<void*, sizeof...(Args)> argPointers{};
+        std::size_t index = 0;
+        std::apply([&](auto&... tupleArgs) {
+                ((argPointers[index++] = static_cast<void*>(&tupleArgs)), ...);
+        }, argsTuple);
+
+        const void* kernelPtr = reinterpret_cast<const void*>(kernel);
+        KH_LaunchWithDomain(kernelPtr, gridDim, blockDim, argPointers.data(), 0, stream_);
         return true;
 }
 
@@ -970,6 +994,7 @@ void GPUEngine::InitGenratorTable(Secp256K1* secp)
                 cudaHostAllocWriteCombined | cudaHostAllocMapped));
 
         const size_t tableSize = static_cast<size_t>(size / 2) * limbBytes;
+        const size_t tableWords = tableSize / sizeof(uint64_t);
         AllocateDeviceBuffer(reinterpret_cast<void**>(&_Gx), tableSize);
         CUDA_CHECK(cudaHostAlloc(reinterpret_cast<void**>(&GxPinned), tableSize,
                 cudaHostAllocWriteCombined | cudaHostAllocMapped));
@@ -1011,9 +1036,11 @@ void GPUEngine::InitGenratorTable(Secp256K1* secp)
 	CUDA_CHECK(cudaMemcpyToSymbolAsync(Gx, &_Gx, sizeof(uint64_t*), 0, cudaMemcpyHostToDevice, stream_));
 	CUDA_CHECK(cudaMemcpyToSymbolAsync(Gy, &_Gy, sizeof(uint64_t*), 0, cudaMemcpyHostToDevice, stream_));
 
-	CUDA_CHECK(cudaStreamSynchronize(stream_));
+        CUDA_CHECK(cudaStreamSynchronize(stream_));
 
-	CUDA_CHECK(cudaFreeHost(_2GnxPinned));
+        KH_InitCudaOptimizations(stream_, tableWords);
+
+        CUDA_CHECK(cudaFreeHost(_2GnxPinned));
 	CUDA_CHECK(cudaFreeHost(_2GnyPinned));
 	CUDA_CHECK(cudaFreeHost(GxPinned));
 	CUDA_CHECK(cudaFreeHost(GyPinned));
