@@ -45,27 +45,6 @@
 #include "GPUBase58.h"
 #include "CudaCompat.h"
 
-__global__ void compute_keys_mode_ma(uint32_t mode, uint8_t* bloomLookUp, uint64_t BLOOM_BITS, uint8_t BLOOM_HASHES,
-        uint64_t bloomReciprocal, uint32_t bloomMask, uint32_t bloomIsPowerOfTwo,
-        uint64_t* keys, uint32_t maxFound, uint32_t* found, int stepMultiplier);
-__global__ void compute_keys_comp_mode_ma(uint32_t mode, uint8_t* bloomLookUp, uint64_t BLOOM_BITS, uint8_t BLOOM_HASHES,
-        uint64_t bloomReciprocal, uint32_t bloomMask, uint32_t bloomIsPowerOfTwo,
-        uint64_t* keys, uint32_t maxFound, uint32_t* found, int stepMultiplier);
-__global__ void compute_keys_mode_sa(uint32_t mode, const uint32_t* __restrict__ hash160, uint64_t* keys,
-        uint32_t maxFound, uint32_t* found, int stepMultiplier);
-__global__ void compute_keys_comp_mode_sa(uint32_t mode, const uint32_t* __restrict__ hash160, uint64_t* keys,
-        uint32_t maxFound, uint32_t* found, int stepMultiplier);
-__global__ void compute_keys_comp_mode_mx(uint32_t mode, uint8_t* bloomLookUp, uint64_t BLOOM_BITS, uint8_t BLOOM_HASHES,
-        uint64_t bloomReciprocal, uint32_t bloomMask, uint32_t bloomIsPowerOfTwo, uint64_t* keys,
-        uint32_t maxFound, uint32_t* found, int stepMultiplier);
-__global__ void compute_keys_comp_mode_sx(uint32_t mode, uint32_t* xpoint, uint64_t* keys, uint32_t maxFound,
-        uint32_t* found, int stepMultiplier);
-__global__ void compute_keys_mode_eth_ma(uint8_t* bloomLookUp, uint64_t BLOOM_BITS, uint8_t BLOOM_HASHES,
-        uint64_t bloomReciprocal, uint32_t bloomMask, uint32_t bloomIsPowerOfTwo, uint64_t* keys,
-        uint32_t maxFound, uint32_t* found, int stepMultiplier);
-__global__ void compute_keys_mode_eth_sa(const uint32_t* __restrict__ hash, uint64_t* keys, uint32_t maxFound,
-        uint32_t* found, int stepMultiplier);
-
 namespace {
 
 inline void CheckCuda(cudaError_t result, const char* expr, const char* file, int line)
