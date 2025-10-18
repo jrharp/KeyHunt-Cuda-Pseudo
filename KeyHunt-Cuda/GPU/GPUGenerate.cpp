@@ -17,8 +17,6 @@
 
 #include "GPUEngine.h"
 #include <cuda_runtime.h>
-#include <cuda/pipeline>
-#include <cuda/std/atomic>
 #include <math.h>
 
 // Configure persisting L2 cache for generator tables (Gx/Gy) when present
