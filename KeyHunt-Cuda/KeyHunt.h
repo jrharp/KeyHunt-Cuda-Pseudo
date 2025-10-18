@@ -21,11 +21,17 @@ static constexpr int CPU_GRP_SIZE = 1024 * 2;
 
 class KeyHunt;
 
+struct RunWindowConfig {
+        bool enabled = false;
+        int startSeconds = 0;
+        int endSeconds = 0;
+};
+
 typedef struct {
-	KeyHunt* obj;
-	int  threadId;
-	bool isRunning;
-	bool hasStarted;
+        KeyHunt* obj;
+        int  threadId;
+        bool isRunning;
+        bool hasStarted;
 
 	int  gridSizeX;
 	int  gridSizeY;
@@ -45,12 +51,12 @@ public:
         KeyHunt(const std::string& inputFile, int compMode, int searchMode, int coinType, bool useGpu,
                 const std::string& outputFile, bool useSSE, uint32_t maxFound, uint64_t rKey,
                 const std::string& rangeStart, const std::string& rangeEnd, bool& should_exit,
-                int gpuStepMultiplier = 1);
+                int gpuStepMultiplier = 1, const RunWindowConfig& runWindow = RunWindowConfig());
 
         KeyHunt(const std::vector<unsigned char>& hashORxpoint, int compMode, int searchMode, int coinType,
                 bool useGpu, const std::string& outputFile, bool useSSE, uint32_t maxFound, uint64_t rKey,
                 const std::string& rangeStart, const std::string& rangeEnd, bool& should_exit,
-                int gpuStepMultiplier = 1);
+                int gpuStepMultiplier = 1, const RunWindowConfig& runWindow = RunWindowConfig());
 
 	~KeyHunt();
 
@@ -103,11 +109,15 @@ private:
 	int CheckBloomBinary(const uint8_t* _xx, uint32_t K_LENGTH);
 	bool MatchHash(uint32_t* _h);
 	bool MatchXPoint(uint32_t* _h);
-	std::string formatThousands(uint64_t x);
-	char* toTimeStr(int sec, char* timeStr);
+        std::string formatThousands(uint64_t x);
+        char* toTimeStr(int sec, char* timeStr);
+        bool waitForRunWindow(bool* externalStop = nullptr);
+        bool isWithinRunWindow() const;
+        int getCurrentSecondsSinceMidnight() const;
+        std::string formatTimeOfDay(int seconds) const;
 
-	Secp256K1* secp;
-	Bloom* bloom;
+        Secp256K1* secp;
+        Bloom* bloom;
 
 	uint64_t counters[256];
 	double startTime;
@@ -140,11 +150,15 @@ private:
 
 	uint32_t maxFound;
 	uint64_t rKey;
-	uint64_t lastrKey;
+        uint64_t lastrKey;
 
-	uint8_t* DATA;
-	uint64_t TOTAL_COUNT;
+        uint8_t* DATA;
+        uint64_t TOTAL_COUNT;
         uint64_t BLOOM_N;
+
+        bool runWindowEnabled = false;
+        int runWindowStartSeconds = 0;
+        int runWindowEndSeconds = 0;
 
         struct PseudoRandomState {
                 uint64_t totalKeys = 0;

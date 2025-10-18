@@ -8,6 +8,7 @@
 #include <stdexcept>
 #include <cassert>
 #include <algorithm>
+#include <cctype>
 #include <inttypes.h>
 #ifndef WIN64
 #include <signal.h>
@@ -53,8 +54,9 @@ void usage()
 	printf("                                               :END\n");
 	printf("                                               :+COUNT\n");
 	printf("                                               Where START, END, COUNT are in hex format\n");
-	printf("-r, --rkey Rkey                          : Random key interval in MegaKeys, default is disabled\n");
-	printf("-v, --version                            : Show version\n");
+        printf("-r, --rkey Rkey                          : Random key interval in MegaKeys, default is disabled\n");
+        printf("--run-window HH:MM-HH:MM                  : Restrict execution to the given daily time window (local time)\n");
+        printf("-v, --version                            : Show version\n");
 }
 
 // ----------------------------------------------------------------------------
@@ -62,8 +64,8 @@ void usage()
 void getInts(string name, vector<int>& tokens, const string& text, char sep)
 {
 
-	size_t start = 0, end = 0;
-	tokens.clear();
+        size_t start = 0, end = 0;
+        tokens.clear();
 	int item;
 
 	try {
@@ -85,6 +87,89 @@ void getInts(string name, vector<int>& tokens, const string& text, char sep)
 		exit(-1);
 
 	}
+
+}
+
+// ----------------------------------------------------------------------------
+
+namespace {
+
+        std::string trim(const std::string& value)
+        {
+                size_t start = value.find_first_not_of(" \t\r\n");
+                if (start == std::string::npos) {
+                        return "";
+                }
+                size_t end = value.find_last_not_of(" \t\r\n");
+                return value.substr(start, end - start + 1);
+        }
+
+        int parseTimeOfDay(const std::string& token)
+        {
+                size_t colon = token.find(':');
+                if (colon == std::string::npos) {
+                        throw std::string("Invalid run window argument, expected HH:MM-HH:MM");
+                }
+
+                std::string hourPart = trim(token.substr(0, colon));
+                std::string minutePart = trim(token.substr(colon + 1));
+
+                if (hourPart.empty() || minutePart.empty()) {
+                        throw std::string("Invalid run window argument, expected HH:MM-HH:MM");
+                }
+
+                int hour = 0;
+                int minute = 0;
+                try {
+                        hour = std::stoi(hourPart);
+                        minute = std::stoi(minutePart);
+                }
+                catch (const std::exception&) {
+                        throw std::string("Invalid run window argument, expected HH:MM-HH:MM");
+                }
+
+                if (hour < 0 || hour > 23 || minute < 0 || minute > 59) {
+                        throw std::string("Invalid run window argument, expected HH:MM-HH:MM");
+                }
+
+                return hour * 3600 + minute * 60;
+        }
+
+        void parseRunWindowArg(const std::string& text, int& startSeconds, int& endSeconds)
+        {
+                size_t dash = text.find('-');
+                if (dash == std::string::npos) {
+                        throw std::string("Invalid run window argument, expected HH:MM-HH:MM");
+                }
+
+                std::string startText = trim(text.substr(0, dash));
+                std::string endText = trim(text.substr(dash + 1));
+
+                if (startText.empty() || endText.empty()) {
+                        throw std::string("Invalid run window argument, expected HH:MM-HH:MM");
+                }
+
+                startSeconds = parseTimeOfDay(startText);
+                endSeconds = parseTimeOfDay(endText);
+        }
+
+        std::string formatTimeOfDay(int seconds)
+        {
+                const int kSecondsPerDay = 24 * 60 * 60;
+                if (seconds < 0) {
+                        seconds = (seconds % kSecondsPerDay + kSecondsPerDay) % kSecondsPerDay;
+                }
+                else {
+                        seconds %= kSecondsPerDay;
+                }
+
+                int hours = seconds / 3600;
+                int minutes = (seconds % 3600) / 60;
+
+                char buffer[8];
+                snprintf(buffer, sizeof(buffer), "%02d:%02d", hours, minutes);
+                return std::string(buffer);
+        }
 
 }
 
@@ -225,7 +310,10 @@ int main(int argc, char** argv)
 	bool useSSE = true;
 	uint32_t maxFound = 1024 * 64;
 
-	uint64_t rKey = 0;
+        uint64_t rKey = 0;
+        bool runWindowEnabled = false;
+        int runWindowStartSeconds = 0;
+        int runWindowEndSeconds = 0;
 
 	Int rangeStart;
 	Int rangeEnd;
@@ -251,10 +339,11 @@ int main(int argc, char** argv)
 	parser.add("-i", "--in", true);
 	parser.add("-o", "--out", true);
 	parser.add("-m", "--mode", true);
-	parser.add("", "--coin", true);
-	parser.add("", "--range", true);
-	parser.add("-r", "--rkey", true);
-	parser.add("-v", "--version", false);
+        parser.add("", "--coin", true);
+        parser.add("", "--range", true);
+        parser.add("-r", "--rkey", true);
+        parser.add("", "--run-window", true);
+        parser.add("-v", "--version", false);
 
 	if (argc == 1) {
 		usage();
@@ -347,13 +436,17 @@ int main(int argc, char** argv)
 				std::string range = optArg.arg;
 				parseRange(range, rangeStart, rangeEnd);
 			}
-			else if (optArg.equals("-r", "--rkey")) {
-				rKey = std::stoull(optArg.arg);
-			}
-			else if (optArg.equals("-v", "--version")) {
-				printf("KeyHunt-Cuda v" RELEASE "\n");
-				return 0;
-			}
+                        else if (optArg.equals("-r", "--rkey")) {
+                                rKey = std::stoull(optArg.arg);
+                        }
+                        else if (optArg.equals("", "--run-window")) {
+                                parseRunWindowArg(optArg.arg, runWindowStartSeconds, runWindowEndSeconds);
+                                runWindowEnabled = true;
+                        }
+                        else if (optArg.equals("-v", "--version")) {
+                                printf("KeyHunt-Cuda v" RELEASE "\n");
+                                return 0;
+                        }
 		}
 		catch (std::string err) {
 			printf("Error: %s\n", err.c_str());
@@ -559,9 +652,14 @@ int main(int argc, char** argv)
 		else
 			printf("\n");
 	}
-	printf("SSE          : %s\n", useSSE ? "YES" : "NO");
+        printf("SSE          : %s\n", useSSE ? "YES" : "NO");
         printf("RKEY         : %" PRIu64 " Mkeys\n", rKey);
-	printf("MAX FOUND    : %d\n", maxFound);
+        if (runWindowEnabled) {
+                printf("RUN WINDOW   : %s-%s (local time)\n",
+                        formatTimeOfDay(runWindowStartSeconds).c_str(),
+                        formatTimeOfDay(runWindowEndSeconds).c_str());
+        }
+        printf("MAX FOUND    : %d\n", maxFound);
 	if (coinType == COIN_BTC) {
 		switch (searchMode) {
 		case (int)SEARCH_MODE_MA:
@@ -626,12 +724,14 @@ int main(int argc, char** argv)
                 case (int)SEARCH_MODE_MA:
                 case (int)SEARCH_MODE_MX:
                         v = new KeyHunt(inputFile, compMode, searchMode, coinType, gpuEnable, outputFile, useSSE,
-                                maxFound, rKey, rangeStart.GetBase16(), rangeEnd.GetBase16(), should_exit, gpuStepMultiplier);
+                                maxFound, rKey, rangeStart.GetBase16(), rangeEnd.GetBase16(), should_exit, gpuStepMultiplier,
+                                RunWindowConfig{ runWindowEnabled, runWindowStartSeconds, runWindowEndSeconds });
                         break;
                 case (int)SEARCH_MODE_SA:
                 case (int)SEARCH_MODE_SX:
                         v = new KeyHunt(hashORxpoint, compMode, searchMode, coinType, gpuEnable, outputFile, useSSE,
-                                maxFound, rKey, rangeStart.GetBase16(), rangeEnd.GetBase16(), should_exit, gpuStepMultiplier);
+                                maxFound, rKey, rangeStart.GetBase16(), rangeEnd.GetBase16(), should_exit, gpuStepMultiplier,
+                                RunWindowConfig{ runWindowEnabled, runWindowStartSeconds, runWindowEndSeconds });
                         break;
                 default:
                         printf("\n\nNothing to do, exiting\n");
@@ -654,12 +754,14 @@ int main(int argc, char** argv)
         case (int)SEARCH_MODE_MA:
         case (int)SEARCH_MODE_MX:
                 v = new KeyHunt(inputFile, compMode, searchMode, coinType, gpuEnable, outputFile, useSSE,
-                        maxFound, rKey, rangeStart.GetBase16(), rangeEnd.GetBase16(), should_exit, gpuStepMultiplier);
+                        maxFound, rKey, rangeStart.GetBase16(), rangeEnd.GetBase16(), should_exit, gpuStepMultiplier,
+                        RunWindowConfig{ runWindowEnabled, runWindowStartSeconds, runWindowEndSeconds });
                 break;
         case (int)SEARCH_MODE_SA:
         case (int)SEARCH_MODE_SX:
                 v = new KeyHunt(hashORxpoint, compMode, searchMode, coinType, gpuEnable, outputFile, useSSE,
-                        maxFound, rKey, rangeStart.GetBase16(), rangeEnd.GetBase16(), should_exit, gpuStepMultiplier);
+                        maxFound, rKey, rangeStart.GetBase16(), rangeEnd.GetBase16(), should_exit, gpuStepMultiplier,
+                        RunWindowConfig{ runWindowEnabled, runWindowStartSeconds, runWindowEndSeconds });
                 break;
         default:
                 printf("\n\nNothing to do, exiting\n");
