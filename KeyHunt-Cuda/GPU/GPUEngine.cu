@@ -26,6 +26,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <exception>
+#include <limits>
 #include <stdint.h>
 #include <string>
 
@@ -146,6 +147,44 @@ DeviceCapabilityInfo QueryDeviceCapabilityInfo(int deviceId)
         info.clusterLaunch = GetAttributeOrDefault(cudaDevAttrClusterLaunch, deviceId);
 #endif
         return info;
+}
+
+struct AsyncAllocatorConfig
+{
+        bool enabled = false;
+        cudaMemPool_t pool = nullptr;
+};
+
+AsyncAllocatorConfig ConfigureAsyncAllocatorForDevice(int deviceId)
+{
+        AsyncAllocatorConfig config;
+#if CUDART_VERSION >= 11020
+        cudaMemPool_t pool = nullptr;
+        const cudaError_t status = cudaDeviceGetDefaultMemPool(&pool, deviceId);
+        if (status == cudaSuccess) {
+                config.enabled = true;
+                config.pool = pool;
+#ifdef cudaMemPoolAttrReleaseThreshold
+                unsigned long long threshold = std::numeric_limits<unsigned long long>::max();
+                const cudaError_t attrStatus = cudaMemPoolSetAttribute(pool, cudaMemPoolAttrReleaseThreshold, &threshold);
+                if (attrStatus == cudaErrorNotSupported || attrStatus == cudaErrorInvalidValue) {
+                        cudaGetLastError();
+                }
+                else {
+                        CUDA_CHECK(attrStatus);
+                }
+#endif
+        }
+        else if (status == cudaErrorNotSupported || status == cudaErrorInvalidValue) {
+                cudaGetLastError();
+        }
+        else {
+                CUDA_CHECK(status);
+        }
+#else
+        (void)deviceId;
+#endif
+        return config;
 }
 
 } // namespace
@@ -363,6 +402,8 @@ GPUEngine::GPUEngine(Secp256K1* secp, int nbThreadGroup, int nbThreadPerGroup, i
 
         CUDA_CHECK(cudaSetDevice(gpuId));
 
+        ConfigureAsyncAllocator(gpuId);
+
         cudaDeviceProp deviceProp{};
         CUDA_CHECK(cudaGetDeviceProperties(&deviceProp, gpuId));
         const DeviceCapabilityInfo capability = QueryDeviceCapabilityInfo(gpuId);
@@ -425,17 +466,17 @@ GPUEngine::GPUEngine(Secp256K1* secp, int nbThreadGroup, int nbThreadPerGroup, i
         eventCreated_ = true;
 
         const size_t keyBufferSize = static_cast<size_t>(nbThread) * 32u * 2u;
-        CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&inputKey), keyBufferSize));
+        AllocateDeviceBuffer(reinterpret_cast<void**>(&inputKey), keyBufferSize);
         CUDA_CHECK(cudaHostAlloc(reinterpret_cast<void**>(&inputKeyPinned), keyBufferSize,
                 cudaHostAllocWriteCombined | cudaHostAllocMapped));
 
-        CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&outputBuffer), outputSize));
+        AllocateDeviceBuffer(reinterpret_cast<void**>(&outputBuffer), outputSize);
         CUDA_CHECK(cudaHostAlloc(reinterpret_cast<void**>(&outputBufferPinned), outputSize,
                 cudaHostAllocWriteCombined | cudaHostAllocMapped));
 
         if (BLOOM_SIZE > 0) {
                 const size_t bloomBytes = static_cast<size_t>(BLOOM_SIZE);
-                CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&inputBloomLookUp), bloomBytes));
+                AllocateDeviceBuffer(reinterpret_cast<void**>(&inputBloomLookUp), bloomBytes);
                 CUDA_CHECK(cudaHostAlloc(reinterpret_cast<void**>(&inputBloomLookUpPinned), bloomBytes,
                         cudaHostAllocWriteCombined | cudaHostAllocMapped));
                 std::memcpy(inputBloomLookUpPinned, BLOOM_DATA, bloomBytes);
@@ -495,6 +536,8 @@ GPUEngine::GPUEngine(Secp256K1* secp, int nbThreadGroup, int nbThreadPerGroup, i
         }
 
         CUDA_CHECK(cudaSetDevice(gpuId));
+
+        ConfigureAsyncAllocator(gpuId);
 
         cudaDeviceProp deviceProp{};
         CUDA_CHECK(cudaGetDeviceProperties(&deviceProp, gpuId));
@@ -559,11 +602,11 @@ GPUEngine::GPUEngine(Secp256K1* secp, int nbThreadGroup, int nbThreadPerGroup, i
 
         // Allocate memory
         const size_t keyBufferSize = static_cast<size_t>(nbThread) * 32u * 2u;
-        CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&inputKey), keyBufferSize));
+        AllocateDeviceBuffer(reinterpret_cast<void**>(&inputKey), keyBufferSize);
         CUDA_CHECK(cudaHostAlloc(reinterpret_cast<void**>(&inputKeyPinned), keyBufferSize,
                 cudaHostAllocWriteCombined | cudaHostAllocMapped));
 
-        CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&outputBuffer), outputSize));
+        AllocateDeviceBuffer(reinterpret_cast<void**>(&outputBuffer), outputSize);
         CUDA_CHECK(cudaHostAlloc(reinterpret_cast<void**>(&outputBufferPinned), outputSize,
                 cudaHostAllocWriteCombined | cudaHostAllocMapped));
 
@@ -572,7 +615,7 @@ GPUEngine::GPUEngine(Secp256K1* secp, int nbThreadGroup, int nbThreadPerGroup, i
                 K_SIZE = 8;
         }
 
-        CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&inputHashORxpoint), K_SIZE * sizeof(uint32_t)));
+        AllocateDeviceBuffer(reinterpret_cast<void**>(&inputHashORxpoint), K_SIZE * sizeof(uint32_t));
         CUDA_CHECK(cudaHostAlloc(reinterpret_cast<void**>(&inputHashORxpointPinned), K_SIZE * sizeof(uint32_t),
                 cudaHostAllocWriteCombined | cudaHostAllocMapped));
 
@@ -597,10 +640,106 @@ GPUEngine::GPUEngine(Secp256K1* secp, int nbThreadGroup, int nbThreadPerGroup, i
 
 // ----------------------------------------------------------------------------
 
+void GPUEngine::ConfigureAsyncAllocator(int deviceId)
+{
+        const AsyncAllocatorConfig config = ConfigureAsyncAllocatorForDevice(deviceId);
+        useAsyncAlloc_ = config.enabled;
+        memPool_ = config.pool;
+        asyncFallbackNotified_ = false;
+        if (useAsyncAlloc_) {
+                std::fprintf(stderr, "GPUEngine: enabling cudaMallocAsync with default memory pool.\n");
+        }
+}
+
+bool GPUEngine::AllocateDeviceBuffer(void** ptr, size_t size)
+{
+        if (ptr == nullptr || size == 0) {
+                return true;
+        }
+
+#if CUDART_VERSION >= 11020
+        if (useAsyncAlloc_) {
+                const cudaError_t status = cudaMallocAsync(ptr, size, stream_);
+                if (status == cudaSuccess) {
+                        return true;
+                }
+                if (status == cudaErrorNotSupported || status == cudaErrorInvalidValue) {
+                        cudaGetLastError();
+                        useAsyncAlloc_ = false;
+                        if (!asyncFallbackNotified_) {
+                                std::fprintf(stderr, "GPUEngine: cudaMallocAsync unsupported, falling back to cudaMalloc.\n");
+                                asyncFallbackNotified_ = true;
+                        }
+                }
+                else {
+                        CUDA_CHECK(status);
+                        return true;
+                }
+        }
+#else
+        useAsyncAlloc_ = false;
+        if (!asyncFallbackNotified_) {
+                std::fprintf(stderr, "GPUEngine: CUDA toolkit lacks cudaMallocAsync support, using cudaMalloc instead.\n");
+                asyncFallbackNotified_ = true;
+        }
+#endif
+
+        CUDA_CHECK(cudaMalloc(ptr, size));
+        return true;
+}
+
+void GPUEngine::FreeDeviceBuffer(void** ptr)
+{
+        if (ptr == nullptr || *ptr == nullptr) {
+                return;
+        }
+
+#if CUDART_VERSION >= 11020
+        if (useAsyncAlloc_) {
+                const cudaError_t status = cudaFreeAsync(*ptr, stream_);
+                if (status == cudaSuccess) {
+                        *ptr = nullptr;
+                        return;
+                }
+                if (status == cudaErrorNotSupported || status == cudaErrorInvalidValue) {
+                        cudaGetLastError();
+                        useAsyncAlloc_ = false;
+                        if (!asyncFallbackNotified_) {
+                                std::fprintf(stderr, "GPUEngine: cudaFreeAsync unsupported, falling back to cudaFree.\n");
+                                asyncFallbackNotified_ = true;
+                        }
+                }
+                else {
+                        CUDA_CHECK(status);
+                        *ptr = nullptr;
+                        return;
+                }
+        }
+#else
+        useAsyncAlloc_ = false;
+        if (!asyncFallbackNotified_) {
+                std::fprintf(stderr, "GPUEngine: CUDA toolkit lacks cudaFreeAsync support, using cudaFree instead.\n");
+                asyncFallbackNotified_ = true;
+        }
+#endif
+
+        CUDA_CHECK(cudaFree(*ptr));
+        *ptr = nullptr;
+}
+
+void GPUEngine::SynchronizeStreamIfNeeded()
+{
+        if (streamCreated_ && stream_ != nullptr) {
+                CUDA_CHECK(cudaStreamSynchronize(stream_));
+        }
+}
+
+// ----------------------------------------------------------------------------
+
 void GPUEngine::InitGenratorTable(Secp256K1* secp)
 {
 
-	// generator table
+        // generator table
 	uint64_t* _2GnxPinned = nullptr;
 	uint64_t* _2GnyPinned = nullptr;
 
@@ -611,22 +750,22 @@ void GPUEngine::InitGenratorTable(Secp256K1* secp)
 	constexpr int nbDigit = 4;
 	const size_t limbBytes = static_cast<size_t>(nbDigit) * sizeof(uint64_t);
 
-	CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&__2Gnx), limbBytes));
-	CUDA_CHECK(cudaHostAlloc(reinterpret_cast<void**>(&_2GnxPinned), limbBytes,
-	        cudaHostAllocWriteCombined | cudaHostAllocMapped));
+        AllocateDeviceBuffer(reinterpret_cast<void**>(&__2Gnx), limbBytes);
+        CUDA_CHECK(cudaHostAlloc(reinterpret_cast<void**>(&_2GnxPinned), limbBytes,
+                cudaHostAllocWriteCombined | cudaHostAllocMapped));
 
-	CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&__2Gny), limbBytes));
-	CUDA_CHECK(cudaHostAlloc(reinterpret_cast<void**>(&_2GnyPinned), limbBytes,
-	        cudaHostAllocWriteCombined | cudaHostAllocMapped));
+        AllocateDeviceBuffer(reinterpret_cast<void**>(&__2Gny), limbBytes);
+        CUDA_CHECK(cudaHostAlloc(reinterpret_cast<void**>(&_2GnyPinned), limbBytes,
+                cudaHostAllocWriteCombined | cudaHostAllocMapped));
 
-	const size_t tableSize = static_cast<size_t>(size / 2) * limbBytes;
-	CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&_Gx), tableSize));
-	CUDA_CHECK(cudaHostAlloc(reinterpret_cast<void**>(&GxPinned), tableSize,
-	        cudaHostAllocWriteCombined | cudaHostAllocMapped));
+        const size_t tableSize = static_cast<size_t>(size / 2) * limbBytes;
+        AllocateDeviceBuffer(reinterpret_cast<void**>(&_Gx), tableSize);
+        CUDA_CHECK(cudaHostAlloc(reinterpret_cast<void**>(&GxPinned), tableSize,
+                cudaHostAllocWriteCombined | cudaHostAllocMapped));
 
-	CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&_Gy), tableSize));
-	CUDA_CHECK(cudaHostAlloc(reinterpret_cast<void**>(&GyPinned), tableSize,
-	        cudaHostAllocWriteCombined | cudaHostAllocMapped));
+        AllocateDeviceBuffer(reinterpret_cast<void**>(&_Gy), tableSize);
+        CUDA_CHECK(cudaHostAlloc(reinterpret_cast<void**>(&GyPinned), tableSize,
+                cudaHostAllocWriteCombined | cudaHostAllocMapped));
 
 	std::vector<Point> Gn(size);
 	Point g = secp->G;
@@ -776,31 +915,18 @@ void GPUEngine::PrintCudaInfo()
 
 GPUEngine::~GPUEngine()
 {
-        if (streamCreated_) {
-                CUDA_CHECK(cudaStreamDestroy(stream_));
-                stream_ = nullptr;
-                streamCreated_ = false;
-        }
-
-        if (eventCreated_) {
-                CUDA_CHECK(cudaEventDestroy(syncEvent_));
-                syncEvent_ = nullptr;
-                eventCreated_ = false;
-        }
+        SynchronizeStreamIfNeeded();
 
         if (inputKey != nullptr) {
-                CUDA_CHECK(cudaFree(inputKey));
-                inputKey = nullptr;
+                FreeDeviceBuffer(reinterpret_cast<void**>(&inputKey));
         }
 
         if (inputBloomLookUp != nullptr) {
-                CUDA_CHECK(cudaFree(inputBloomLookUp));
-                inputBloomLookUp = nullptr;
+                FreeDeviceBuffer(reinterpret_cast<void**>(&inputBloomLookUp));
         }
 
         if (inputHashORxpoint != nullptr) {
-                CUDA_CHECK(cudaFree(inputHashORxpoint));
-                inputHashORxpoint = nullptr;
+                FreeDeviceBuffer(reinterpret_cast<void**>(&inputHashORxpoint));
         }
 
         if (inputBloomLookUpPinned != nullptr) {
@@ -819,33 +945,52 @@ GPUEngine::~GPUEngine()
         }
 
         if (outputBuffer != nullptr) {
-                CUDA_CHECK(cudaFree(outputBuffer));
-                outputBuffer = nullptr;
+                FreeDeviceBuffer(reinterpret_cast<void**>(&outputBuffer));
         }
 
         if (__2Gnx != nullptr) {
-                CUDA_CHECK(cudaFree(__2Gnx));
-                __2Gnx = nullptr;
+                FreeDeviceBuffer(reinterpret_cast<void**>(&__2Gnx));
         }
 
         if (__2Gny != nullptr) {
-                CUDA_CHECK(cudaFree(__2Gny));
-                __2Gny = nullptr;
+                FreeDeviceBuffer(reinterpret_cast<void**>(&__2Gny));
         }
 
         if (_Gx != nullptr) {
-                CUDA_CHECK(cudaFree(_Gx));
-                _Gx = nullptr;
+                FreeDeviceBuffer(reinterpret_cast<void**>(&_Gx));
         }
 
         if (_Gy != nullptr) {
-                CUDA_CHECK(cudaFree(_Gy));
-                _Gy = nullptr;
+                FreeDeviceBuffer(reinterpret_cast<void**>(&_Gy));
         }
 
         if (rKey && inputKeyPinned != nullptr) {
                 CUDA_CHECK(cudaFreeHost(inputKeyPinned));
                 inputKeyPinned = nullptr;
+        }
+
+#if CUDART_VERSION >= 11020
+        if (useAsyncAlloc_ && memPool_ != nullptr) {
+                const cudaError_t trimStatus = cudaMemPoolTrimTo(memPool_, 0);
+                if (trimStatus == cudaErrorNotSupported || trimStatus == cudaErrorInvalidValue) {
+                        cudaGetLastError();
+                }
+                else {
+                        CUDA_CHECK(trimStatus);
+                }
+        }
+#endif
+
+        if (eventCreated_) {
+                CUDA_CHECK(cudaEventDestroy(syncEvent_));
+                syncEvent_ = nullptr;
+                eventCreated_ = false;
+        }
+
+        if (streamCreated_) {
+                CUDA_CHECK(cudaStreamDestroy(stream_));
+                stream_ = nullptr;
+                streamCreated_ = false;
         }
 }
 
