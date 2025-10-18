@@ -30,6 +30,7 @@
 #include <stdint.h>
 #include <string>
 #include <tuple>
+#include <type_traits>
 #include <utility>
 #include <sstream>
 
@@ -48,6 +49,39 @@
 #include "CudaCompat.h"
 
 namespace {
+
+template <typename Func, typename Tuple, std::size_t... Indices>
+auto TupleApplyImpl(Func&& func, Tuple&& tuple, std::index_sequence<Indices...>)
+        -> decltype(std::forward<Func>(func)(std::get<Indices>(std::forward<Tuple>(tuple))...))
+{
+        return std::forward<Func>(func)(std::get<Indices>(std::forward<Tuple>(tuple))...);
+}
+
+template <typename Func, typename Tuple>
+auto TupleApply(Func&& func, Tuple&& tuple)
+        -> decltype(TupleApplyImpl(std::forward<Func>(func), std::forward<Tuple>(tuple),
+                std::make_index_sequence<std::tuple_size<typename std::remove_reference<Tuple>::type>::value>{}))
+{
+        using DecayedTuple = typename std::remove_reference<Tuple>::type;
+        return TupleApplyImpl(std::forward<Func>(func), std::forward<Tuple>(tuple),
+                std::make_index_sequence<std::tuple_size<DecayedTuple>::value>{});
+}
+
+template <typename Tuple, std::size_t... Indices>
+void FillArgPointerArrayImpl(std::array<void*, std::tuple_size<typename std::remove_reference<Tuple>::type>::value>& destination,
+        Tuple& tuple, std::index_sequence<Indices...>)
+{
+        using expander = int[];
+        (void)expander{0, ((destination[Indices] = static_cast<void*>(&std::get<Indices>(tuple))), 0)...};
+}
+
+template <typename Tuple>
+void FillArgPointerArray(std::array<void*, std::tuple_size<typename std::remove_reference<Tuple>::type>::value>& destination,
+        Tuple& tuple)
+{
+        using DecayedTuple = typename std::remove_reference<Tuple>::type;
+        FillArgPointerArrayImpl(destination, tuple, std::make_index_sequence<std::tuple_size<DecayedTuple>::value>{});
+}
 
 void CheckCuda(cudaError_t status, const char* function, const char* file, int line)
 {
@@ -490,8 +524,8 @@ bool GPUEngine::LaunchKeyKernel(KernelFunc kernel, dim3 gridDim, dim3 blockDim, 
                         config.attrs = &attribute;
                         config.numAttrs = 1;
 
-                        const cudaError_t status = std::apply([&](auto&... tupleArgs) {
-                                return cudaLaunchKernelEx(&config, kernel, tupleArgs...);
+                        const cudaError_t status = TupleApply([&](auto&... tupleArgs) {
+                                return cudaLaunchKernelEx(&config, reinterpret_cast<cudaKernel_t>(kernel), tupleArgs...);
                         }, argsTuple);
                         if (status == cudaSuccess) {
                                 return true;
@@ -509,13 +543,12 @@ bool GPUEngine::LaunchKeyKernel(KernelFunc kernel, dim3 gridDim, dim3 blockDim, 
 #endif
 
         std::array<void*, sizeof...(Args)> argPointers{};
-        std::size_t index = 0;
-        std::apply([&](auto&... tupleArgs) {
-                ((argPointers[index++] = static_cast<void*>(&tupleArgs)), ...);
-        }, argsTuple);
+        FillArgPointerArray(argPointers, argsTuple);
+
+        void** kernelArgs = sizeof...(Args) > 0 ? argPointers.data() : nullptr;
 
         const void* kernelPtr = reinterpret_cast<const void*>(kernel);
-        KH_LaunchWithDomain(kernelPtr, gridDim, blockDim, argPointers.data(), 0, stream_);
+        KH_LaunchWithDomain(kernelPtr, gridDim, blockDim, kernelArgs, 0, stream_);
         return true;
 }
 
