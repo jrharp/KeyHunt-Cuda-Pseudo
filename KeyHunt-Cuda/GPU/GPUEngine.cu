@@ -399,8 +399,7 @@ bool GPUEngine::LaunchKeyKernel(KernelFunc kernel, dim3 gridDim, dim3 blockDim, 
                         config.attrs = &attribute;
                         config.numAttrs = 1;
 
-                        std::array<void*, sizeof...(Args)> parameters{ { static_cast<void*>(&args)... } };
-                        const cudaError_t status = cudaLaunchKernelEx(&config, kernel, parameters.data());
+                        const cudaError_t status = cudaLaunchKernelEx(&config, kernel, std::forward<Args>(args)...);
                         if (status == cudaSuccess) {
                                 return true;
                         }
