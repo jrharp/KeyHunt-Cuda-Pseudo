@@ -25,7 +25,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <exception>
 #include <stdint.h>
+#include <string>
 
 #if defined(_MSC_VER)
 #include <intrin.h>
@@ -39,6 +41,7 @@
 #include "GPUMath.h"
 #include "GPUCompute.h"
 #include "GPUBase58.h"
+#include "CudaCompat.h"
 
 namespace {
 
@@ -98,6 +101,50 @@ constexpr std::array<SmToCores, 20> kSmToCores = { {
         {0x89, 128}, // Ada Generation   (SM 8.9)
         {0x90, 128}, // Hopper Generation (SM 9.0)
 } };
+
+struct DeviceCapabilityInfo
+{
+        int warpSize = 0;
+        int maxThreadsPerMultiprocessor = 0;
+        int maxBlocksPerMultiprocessor = 0;
+        int memoryPoolsSupported = 0;
+        int cooperativeMultiDeviceLaunch = 0;
+        int clusterLaunch = 0;
+};
+
+int GetAttributeOrDefault(cudaDeviceAttr attr, int deviceId, int defaultValue = 0)
+{
+        int value = defaultValue;
+        const cudaError_t status = cudaDeviceGetAttribute(&value, attr, deviceId);
+        if (status == cudaSuccess) {
+                return value;
+        }
+        if (status == cudaErrorInvalidValue
+#if defined(cudaErrorNotSupported)
+            || status == cudaErrorNotSupported
+#endif
+        ) {
+                // Clear any sticky error state before returning the default.
+                cudaGetLastError();
+                return defaultValue;
+        }
+        CUDA_CHECK(status);
+        return value;
+}
+
+DeviceCapabilityInfo QueryDeviceCapabilityInfo(int deviceId)
+{
+        DeviceCapabilityInfo info;
+        CUDA_CHECK(cudaDeviceGetAttribute(&info.warpSize, cudaDevAttrWarpSize, deviceId));
+        CUDA_CHECK(cudaDeviceGetAttribute(&info.maxThreadsPerMultiprocessor, cudaDevAttrMaxThreadsPerMultiProcessor, deviceId));
+        info.maxBlocksPerMultiprocessor = GetAttributeOrDefault(cudaDevAttrMaxBlocksPerMultiprocessor, deviceId);
+        info.memoryPoolsSupported = GetAttributeOrDefault(cudaDevAttrMemoryPoolsSupported, deviceId);
+        info.cooperativeMultiDeviceLaunch = GetAttributeOrDefault(cudaDevAttrCooperativeMultiDeviceLaunch, deviceId);
+#ifdef cudaDevAttrClusterLaunch
+        info.clusterLaunch = GetAttributeOrDefault(cudaDevAttrClusterLaunch, deviceId);
+#endif
+        return info;
+}
 
 } // namespace
 
@@ -295,6 +342,14 @@ GPUEngine::GPUEngine(Secp256K1* secp, int nbThreadGroup, int nbThreadPerGroup, i
 
         initialised = false;
 
+        try {
+                cuda_compat::EnsureRuntimeSupportsCuda13();
+        }
+        catch (const std::exception& ex) {
+                std::fprintf(stderr, "GPUEngine: %s\n", ex.what());
+                return;
+        }
+
         int deviceCount = 0;
         CUDA_CHECK(cudaGetDeviceCount(&deviceCount));
 
@@ -308,11 +363,35 @@ GPUEngine::GPUEngine(Secp256K1* secp, int nbThreadGroup, int nbThreadPerGroup, i
 
         cudaDeviceProp deviceProp{};
         CUDA_CHECK(cudaGetDeviceProperties(&deviceProp, gpuId));
+        const DeviceCapabilityInfo capability = QueryDeviceCapabilityInfo(gpuId);
+
+        if (nbThreadPerGroup > deviceProp.maxThreadsPerBlock) {
+                std::fprintf(stderr,
+                        "GPUEngine: requested %d threads per group but device limit is %d. Clamping to %d for CUDA 13 compliance.\n",
+                        nbThreadPerGroup, deviceProp.maxThreadsPerBlock, deviceProp.maxThreadsPerBlock);
+                nbThreadPerGroup = deviceProp.maxThreadsPerBlock;
+        }
+
+        if (capability.warpSize > 0 && nbThreadPerGroup % capability.warpSize != 0) {
+                const int adjusted = ((nbThreadPerGroup + capability.warpSize - 1) / capability.warpSize) * capability.warpSize;
+                std::fprintf(stderr,
+                        "GPUEngine: adjusting threads per group from %d to %d to align with warp size %d.\n",
+                        nbThreadPerGroup, adjusted, capability.warpSize);
+                nbThreadPerGroup = adjusted;
+        }
 
         if (nbThreadGroup == -1) {
                 nbThreadGroup = deviceProp.multiProcessorCount * 8;
         }
+        const int maxRecommendedGroups = capability.maxBlocksPerMultiprocessor * deviceProp.multiProcessorCount;
+        if (maxRecommendedGroups > 0 && nbThreadGroup > maxRecommendedGroups) {
+                std::fprintf(stderr,
+                        "GPUEngine: limiting thread groups from %d to %d based on SM capabilities for CUDA 13 compliance.\n",
+                        nbThreadGroup, maxRecommendedGroups);
+                nbThreadGroup = maxRecommendedGroups;
+        }
 
+        this->nbThreadPerGroup = nbThreadPerGroup;
         this->nbThread = nbThreadGroup * nbThreadPerGroup;
         this->activeThreadCount = this->nbThread;
         this->maxFound = maxFound;
@@ -322,11 +401,12 @@ GPUEngine::GPUEngine(Secp256K1* secp, int nbThreadGroup, int nbThreadPerGroup, i
         }
 
         char tmp[512];
-        std::snprintf(tmp, sizeof(tmp), "GPU #%d %s (%dx%d cores) Grid(%dx%d)",
+        std::snprintf(tmp, sizeof(tmp), "GPU #%d %s (%dx%d cores, warp %d) Grid(%dx%d)",
                 gpuId, deviceProp.name, deviceProp.multiProcessorCount,
                 _ConvertSMVer2Cores(deviceProp.major, deviceProp.minor),
-                nbThread / nbThreadPerGroup,
-                nbThreadPerGroup);
+                capability.warpSize > 0 ? capability.warpSize : deviceProp.warpSize,
+                this->nbThread / this->nbThreadPerGroup,
+                this->nbThreadPerGroup);
         deviceName = std::string(tmp);
 
         // Prefer L1 (We do not use __shared__ at all)
@@ -393,6 +473,14 @@ GPUEngine::GPUEngine(Secp256K1* secp, int nbThreadGroup, int nbThreadPerGroup, i
 
         initialised = false;
 
+        try {
+                cuda_compat::EnsureRuntimeSupportsCuda13();
+        }
+        catch (const std::exception& ex) {
+                std::fprintf(stderr, "GPUEngine: %s\n", ex.what());
+                return;
+        }
+
         int deviceCount = 0;
         CUDA_CHECK(cudaGetDeviceCount(&deviceCount));
 
@@ -406,11 +494,35 @@ GPUEngine::GPUEngine(Secp256K1* secp, int nbThreadGroup, int nbThreadPerGroup, i
 
         cudaDeviceProp deviceProp{};
         CUDA_CHECK(cudaGetDeviceProperties(&deviceProp, gpuId));
+        const DeviceCapabilityInfo capability = QueryDeviceCapabilityInfo(gpuId);
+
+        if (nbThreadPerGroup > deviceProp.maxThreadsPerBlock) {
+                std::fprintf(stderr,
+                        "GPUEngine: requested %d threads per group but device limit is %d. Clamping to %d for CUDA 13 compliance.\n",
+                        nbThreadPerGroup, deviceProp.maxThreadsPerBlock, deviceProp.maxThreadsPerBlock);
+                nbThreadPerGroup = deviceProp.maxThreadsPerBlock;
+        }
+
+        if (capability.warpSize > 0 && nbThreadPerGroup % capability.warpSize != 0) {
+                const int adjusted = ((nbThreadPerGroup + capability.warpSize - 1) / capability.warpSize) * capability.warpSize;
+                std::fprintf(stderr,
+                        "GPUEngine: adjusting threads per group from %d to %d to align with warp size %d.\n",
+                        nbThreadPerGroup, adjusted, capability.warpSize);
+                nbThreadPerGroup = adjusted;
+        }
 
         if (nbThreadGroup == -1) {
                 nbThreadGroup = deviceProp.multiProcessorCount * 8;
         }
+        const int maxRecommendedGroups = capability.maxBlocksPerMultiprocessor * deviceProp.multiProcessorCount;
+        if (maxRecommendedGroups > 0 && nbThreadGroup > maxRecommendedGroups) {
+                std::fprintf(stderr,
+                        "GPUEngine: limiting thread groups from %d to %d based on SM capabilities for CUDA 13 compliance.\n",
+                        nbThreadGroup, maxRecommendedGroups);
+                nbThreadGroup = maxRecommendedGroups;
+        }
 
+        this->nbThreadPerGroup = nbThreadPerGroup;
         this->nbThread = nbThreadGroup * nbThreadPerGroup;
         this->activeThreadCount = this->nbThread;
         this->maxFound = maxFound;
@@ -420,11 +532,12 @@ GPUEngine::GPUEngine(Secp256K1* secp, int nbThreadGroup, int nbThreadPerGroup, i
         }
 
         char tmp[512];
-        std::snprintf(tmp, sizeof(tmp), "GPU #%d %s (%dx%d cores) Grid(%dx%d)",
+        std::snprintf(tmp, sizeof(tmp), "GPU #%d %s (%dx%d cores, warp %d) Grid(%dx%d)",
                 gpuId, deviceProp.name, deviceProp.multiProcessorCount,
                 _ConvertSMVer2Cores(deviceProp.major, deviceProp.minor),
-                nbThread / nbThreadPerGroup,
-                nbThreadPerGroup);
+                capability.warpSize > 0 ? capability.warpSize : deviceProp.warpSize,
+                this->nbThread / this->nbThreadPerGroup,
+                this->nbThreadPerGroup);
         deviceName = std::string(tmp);
 
         // Prefer L1 (We do not use __shared__ at all)
@@ -599,19 +712,36 @@ void GPUEngine::PrintCudaInfo()
                 nullptr
         };
 
-	int deviceCount = 0;
-	CUDA_CHECK(cudaGetDeviceCount(&deviceCount));
+        try {
+                cuda_compat::EnsureRuntimeSupportsCuda13();
+        }
+        catch (const std::exception& ex) {
+                std::fprintf(stderr, "GPUEngine: %s\n", ex.what());
+                return;
+        }
 
-	// This function call returns 0 if there are no CUDA capable devices.
-	if (deviceCount == 0) {
-		printf("GPUEngine: There are no available device(s) that support CUDA\n");
-		return;
-	}
+        int deviceCount = 0;
+        CUDA_CHECK(cudaGetDeviceCount(&deviceCount));
 
-	for (int i = 0; i < deviceCount; i++) {
-		CUDA_CHECK(cudaSetDevice(i));
-		cudaDeviceProp deviceProp;
-		CUDA_CHECK(cudaGetDeviceProperties(&deviceProp, i));
+        // This function call returns 0 if there are no CUDA capable devices.
+        if (deviceCount == 0) {
+                printf("GPUEngine: There are no available device(s) that support CUDA\n");
+                return;
+        }
+
+        int runtimeVersion = 0;
+        CUDA_CHECK(cudaRuntimeGetVersion(&runtimeVersion));
+        int driverVersion = 0;
+        CUDA_CHECK(cudaDriverGetVersion(&driverVersion));
+        printf("CUDA Runtime %s, Driver %s\n",
+                cuda_compat::FormatCudaVersion(runtimeVersion).c_str(),
+                cuda_compat::FormatCudaVersion(driverVersion).c_str());
+
+        for (int i = 0; i < deviceCount; i++) {
+                CUDA_CHECK(cudaSetDevice(i));
+                cudaDeviceProp deviceProp;
+                CUDA_CHECK(cudaGetDeviceProperties(&deviceProp, i));
+                const DeviceCapabilityInfo capability = QueryDeviceCapabilityInfo(i);
                 int computeModeIndex = 4;
                 int computeModeValue = -1;
                 if (cudaDeviceGetAttribute(&computeModeValue, cudaDevAttrComputeMode, i) == cudaSuccess) {
@@ -625,6 +755,14 @@ void GPUEngine::PrintCudaInfo()
                         _ConvertSMVer2Cores(deviceProp.major, deviceProp.minor),
                         deviceProp.major, deviceProp.minor, (double)deviceProp.totalGlobalMem / 1048576.0,
                         sComputeMode[computeModeIndex]);
+                printf("    Warp size: %d, Max threads/SM: %d, Max blocks/SM: %d\n",
+                        capability.warpSize,
+                        capability.maxThreadsPerMultiprocessor,
+                        capability.maxBlocksPerMultiprocessor);
+                printf("    Memory pools: %s, Coop multi-device: %s, Cluster launch: %s\n",
+                        capability.memoryPoolsSupported ? "yes" : "no",
+                        capability.cooperativeMultiDeviceLaunch ? "yes" : "no",
+                        capability.clusterLaunch ? "yes" : "no");
         }
 }
 
