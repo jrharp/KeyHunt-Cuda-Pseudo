@@ -366,6 +366,8 @@ GPUEngine::GPUEngine(Secp256K1* secp, int nbThreadGroup, int nbThreadPerGroup, i
         cudaDeviceProp deviceProp{};
         CUDA_CHECK(cudaGetDeviceProperties(&deviceProp, gpuId));
         const DeviceCapabilityInfo capability = QueryDeviceCapabilityInfo(gpuId);
+        const int warpSize = capability.warpSize > 0 ? capability.warpSize : deviceProp.warpSize;
+        warpSize_ = warpSize;
 
         if (nbThreadPerGroup > deviceProp.maxThreadsPerBlock) {
                 std::fprintf(stderr,
@@ -374,11 +376,11 @@ GPUEngine::GPUEngine(Secp256K1* secp, int nbThreadGroup, int nbThreadPerGroup, i
                 nbThreadPerGroup = deviceProp.maxThreadsPerBlock;
         }
 
-        if (capability.warpSize > 0 && nbThreadPerGroup % capability.warpSize != 0) {
-                const int adjusted = ((nbThreadPerGroup + capability.warpSize - 1) / capability.warpSize) * capability.warpSize;
+        if (warpSize > 0 && nbThreadPerGroup % warpSize != 0) {
+                const int adjusted = ((nbThreadPerGroup + warpSize - 1) / warpSize) * warpSize;
                 std::fprintf(stderr,
                         "GPUEngine: adjusting threads per group from %d to %d to align with warp size %d.\n",
-                        nbThreadPerGroup, adjusted, capability.warpSize);
+                        nbThreadPerGroup, adjusted, warpSize);
                 nbThreadPerGroup = adjusted;
         }
 
@@ -406,7 +408,7 @@ GPUEngine::GPUEngine(Secp256K1* secp, int nbThreadGroup, int nbThreadPerGroup, i
         std::snprintf(tmp, sizeof(tmp), "GPU #%d %s (%dx%d cores, warp %d) Grid(%dx%d)",
                 gpuId, deviceProp.name, deviceProp.multiProcessorCount,
                 _ConvertSMVer2Cores(deviceProp.major, deviceProp.minor),
-                capability.warpSize > 0 ? capability.warpSize : deviceProp.warpSize,
+                warpSize,
                 this->nbThread / this->nbThreadPerGroup,
                 this->nbThreadPerGroup);
         deviceName = std::string(tmp);
@@ -497,6 +499,8 @@ GPUEngine::GPUEngine(Secp256K1* secp, int nbThreadGroup, int nbThreadPerGroup, i
         cudaDeviceProp deviceProp{};
         CUDA_CHECK(cudaGetDeviceProperties(&deviceProp, gpuId));
         const DeviceCapabilityInfo capability = QueryDeviceCapabilityInfo(gpuId);
+        const int warpSize = capability.warpSize > 0 ? capability.warpSize : deviceProp.warpSize;
+        warpSize_ = warpSize;
 
         if (nbThreadPerGroup > deviceProp.maxThreadsPerBlock) {
                 std::fprintf(stderr,
@@ -505,11 +509,11 @@ GPUEngine::GPUEngine(Secp256K1* secp, int nbThreadGroup, int nbThreadPerGroup, i
                 nbThreadPerGroup = deviceProp.maxThreadsPerBlock;
         }
 
-        if (capability.warpSize > 0 && nbThreadPerGroup % capability.warpSize != 0) {
-                const int adjusted = ((nbThreadPerGroup + capability.warpSize - 1) / capability.warpSize) * capability.warpSize;
+        if (warpSize > 0 && nbThreadPerGroup % warpSize != 0) {
+                const int adjusted = ((nbThreadPerGroup + warpSize - 1) / warpSize) * warpSize;
                 std::fprintf(stderr,
                         "GPUEngine: adjusting threads per group from %d to %d to align with warp size %d.\n",
-                        nbThreadPerGroup, adjusted, capability.warpSize);
+                        nbThreadPerGroup, adjusted, warpSize);
                 nbThreadPerGroup = adjusted;
         }
 
@@ -537,7 +541,7 @@ GPUEngine::GPUEngine(Secp256K1* secp, int nbThreadGroup, int nbThreadPerGroup, i
         std::snprintf(tmp, sizeof(tmp), "GPU #%d %s (%dx%d cores, warp %d) Grid(%dx%d)",
                 gpuId, deviceProp.name, deviceProp.multiProcessorCount,
                 _ConvertSMVer2Cores(deviceProp.major, deviceProp.minor),
-                capability.warpSize > 0 ? capability.warpSize : deviceProp.warpSize,
+                warpSize,
                 this->nbThread / this->nbThreadPerGroup,
                 this->nbThreadPerGroup);
         deviceName = std::string(tmp);
@@ -1029,14 +1033,21 @@ bool GPUEngine::SetKeys(Point* p, int activeThreadCountOverride)
                 return false;
         }
 
-        if (activeThreadCountOverride <= 0 || activeThreadCountOverride > nbThread) {
-                activeThreadCount = nbThread;
+        int requestedThreadCount = activeThreadCountOverride;
+        if (requestedThreadCount <= 0 || requestedThreadCount > nbThread) {
+                requestedThreadCount = nbThread;
         }
-        else {
-                activeThreadCount = activeThreadCountOverride;
+        if (requestedThreadCount <= 0) {
+                return false;
         }
 
-        if (nbThreadPerGroup > 0 && (activeThreadCount % nbThreadPerGroup) != 0) {
+        activeThreadCount = requestedThreadCount;
+
+        if (nbThreadPerGroup <= 0) {
+                return false;
+        }
+
+        if ((activeThreadCount % nbThreadPerGroup) != 0) {
                 const int groups = (activeThreadCount + nbThreadPerGroup - 1) / nbThreadPerGroup;
                 activeThreadCount = groups * nbThreadPerGroup;
                 if (activeThreadCount > nbThread) {
@@ -1044,18 +1055,41 @@ bool GPUEngine::SetKeys(Point* p, int activeThreadCountOverride)
                 }
         }
 
+        if (warpSize_ > 0 && (activeThreadCount % warpSize_) != 0) {
+                const int warps = (activeThreadCount + warpSize_ - 1) / warpSize_;
+                int padded = warps * warpSize_;
+                if (padded > nbThread) {
+                        const int trimmed = nbThread - (nbThread % warpSize_);
+                        if (trimmed > 0) {
+                                padded = trimmed;
+                        }
+                        else {
+                                padded = nbThread;
+                        }
+                }
+                if (padded > 0) {
+                        activeThreadCount = padded;
+                }
+        }
+
+        const int sourceCount = std::min(requestedThreadCount, activeThreadCount);
+        const int safeSourceCount = std::max(sourceCount, 1);
+        const int maxSourceIndex = safeSourceCount - 1;
+
         for (int i = 0; i < activeThreadCount; i += nbThreadPerGroup) {
                 for (int j = 0; j < nbThreadPerGroup && (i + j) < activeThreadCount; j++) {
+                        const int logicalIndex = i + j;
+                        const int sourceIndex = logicalIndex <= maxSourceIndex ? logicalIndex : maxSourceIndex;
 
-                        inputKeyPinned[8 * i + j + 0 * nbThreadPerGroup] = p[i + j].x.bits64[0];
-                        inputKeyPinned[8 * i + j + 1 * nbThreadPerGroup] = p[i + j].x.bits64[1];
-                        inputKeyPinned[8 * i + j + 2 * nbThreadPerGroup] = p[i + j].x.bits64[2];
-                        inputKeyPinned[8 * i + j + 3 * nbThreadPerGroup] = p[i + j].x.bits64[3];
+                        inputKeyPinned[8 * i + j + 0 * nbThreadPerGroup] = p[sourceIndex].x.bits64[0];
+                        inputKeyPinned[8 * i + j + 1 * nbThreadPerGroup] = p[sourceIndex].x.bits64[1];
+                        inputKeyPinned[8 * i + j + 2 * nbThreadPerGroup] = p[sourceIndex].x.bits64[2];
+                        inputKeyPinned[8 * i + j + 3 * nbThreadPerGroup] = p[sourceIndex].x.bits64[3];
 
-                        inputKeyPinned[8 * i + j + 4 * nbThreadPerGroup] = p[i + j].y.bits64[0];
-                        inputKeyPinned[8 * i + j + 5 * nbThreadPerGroup] = p[i + j].y.bits64[1];
-                        inputKeyPinned[8 * i + j + 6 * nbThreadPerGroup] = p[i + j].y.bits64[2];
-                        inputKeyPinned[8 * i + j + 7 * nbThreadPerGroup] = p[i + j].y.bits64[3];
+                        inputKeyPinned[8 * i + j + 4 * nbThreadPerGroup] = p[sourceIndex].y.bits64[0];
+                        inputKeyPinned[8 * i + j + 5 * nbThreadPerGroup] = p[sourceIndex].y.bits64[1];
+                        inputKeyPinned[8 * i + j + 6 * nbThreadPerGroup] = p[sourceIndex].y.bits64[2];
+                        inputKeyPinned[8 * i + j + 7 * nbThreadPerGroup] = p[sourceIndex].y.bits64[3];
 
                 }
         }

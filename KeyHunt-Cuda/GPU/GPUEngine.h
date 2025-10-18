@@ -105,6 +105,7 @@ private:
         int nbThreadPerGroup = 0;
         int activeThreadCount = 0;
         int stepMultiplier = 1;
+        int warpSize_ = 0;
 
         uint32_t* inputHashORxpoint = nullptr;
         uint32_t* inputHashORxpointPinned = nullptr;
