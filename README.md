@@ -17,16 +17,6 @@ A lot of gratitude to all the developers whose codes has been used here.
 - For XPoint[s] mode use x point of the public key, without 02 or 03 prefix(64 chars).
 - Cuda only.
 
-## Profiling and performance analysis
-
-The GPU runtime now exposes NVTX markers so that kernel launches, memory transfers, and stream synchronisation points are easy to inspect inside NVIDIA Nsight Compute. Build the project with NVTX support enabled to activate these annotations:
-
-```
-make gpu=1 nvtx=1
-```
-
-The optional `nvtx=1` flag adds the required `-DUSE_NVTX` definition, links against `nvToolsExt`, and requests line information so that collected profiles resolve source locations accurately.
-
 # Usage
 - For multiple addresses or xpoints, file format must be binary with sorted data.
 - To convert Bitcoin addresses list(text format) to rmd160 hashes binary file use provided python script ```addresses_to_hash160.py```
