@@ -22,6 +22,7 @@
 
 #include <algorithm>
 #include <array>
+#include <mutex>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -29,6 +30,7 @@
 #include <limits>
 #include <stdint.h>
 #include <string>
+#include <vector>
 #include <utility>
 
 #if defined(_MSC_VER)
@@ -85,33 +87,122 @@ inline uint64_t ComputeFastModReciprocal(uint64_t modulus)
 }
 
 #if defined(CUDART_VERSION) && (CUDART_VERSION >= 11020)
-int RecommendOccupancyBlockSize()
+
+namespace {
+
+struct OccupancyKernel
 {
-        static int cachedBlockSize = -1;
-        if (cachedBlockSize != -1) {
+        const void* func = nullptr;
+};
+
+bool IsSkippableOccupancyError(cudaError_t status)
+{
+        return status == cudaErrorNotSupported ||
+                status == cudaErrorInvalidValue ||
+                status == cudaErrorNoBinaryForGpu ||
+                status == cudaErrorNoKernelImageForDevice ||
+                status == cudaErrorInvalidDeviceFunction;
+}
+
+} // namespace
+
+int RecommendOccupancyBlockSize(int deviceId)
+{
+        if (deviceId < 0) {
+                return 0;
+        }
+
+        static std::mutex cacheMutex;
+        static std::vector<int> cachedBlockSizes;
+
+        std::lock_guard<std::mutex> lock(cacheMutex);
+        if (static_cast<size_t>(deviceId) >= cachedBlockSizes.size()) {
+                cachedBlockSizes.resize(static_cast<size_t>(deviceId) + 1,
+                        std::numeric_limits<int>::min());
+        }
+
+        int& cachedBlockSize = cachedBlockSizes[static_cast<size_t>(deviceId)];
+        if (cachedBlockSize != std::numeric_limits<int>::min()) {
                 return cachedBlockSize;
         }
 
-        int minGridSize = 0;
-        int blockSize = 0;
-        const cudaError_t status = cudaOccupancyMaxPotentialBlockSize(&minGridSize, &blockSize,
-                reinterpret_cast<const void*>(&compute_keys_comp_mode_ma), 0, 0);
-        if (status == cudaSuccess) {
-                cachedBlockSize = blockSize;
-                return cachedBlockSize;
-        }
-        if (status == cudaErrorNotSupported || status == cudaErrorInvalidValue) {
+        int originalDevice = -1;
+        cudaError_t status = cudaGetDevice(&originalDevice);
+        if (status != cudaSuccess) {
+                originalDevice = -1;
                 cudaGetLastError();
-                cachedBlockSize = 0;
-                return cachedBlockSize;
         }
-        CheckCuda(status, "cudaOccupancyMaxPotentialBlockSize", __FILE__, __LINE__);
-        cachedBlockSize = 0;
+
+        if (originalDevice != deviceId) {
+                status = cudaSetDevice(deviceId);
+                if (status != cudaSuccess) {
+                        cudaGetLastError();
+                        cachedBlockSize = 0;
+                        if (originalDevice >= 0) {
+                                cudaSetDevice(originalDevice);
+                        }
+                        return cachedBlockSize;
+                }
+        }
+
+        constexpr OccupancyKernel kKernels[] = {
+                { reinterpret_cast<const void*>(&compute_keys_comp_mode_ma) },
+                { reinterpret_cast<const void*>(&compute_keys_mode_sa) },
+                { reinterpret_cast<const void*>(&compute_keys_comp_mode_sa) },
+                { reinterpret_cast<const void*>(&compute_keys_mode_eth_sa) },
+                { reinterpret_cast<const void*>(&compute_keys_comp_mode_mx) },
+                { reinterpret_cast<const void*>(&compute_keys_comp_mode_sx) },
+        };
+
+        int bestBlockSize = std::numeric_limits<int>::max();
+        bool anySuccess = false;
+
+        for (const OccupancyKernel& kernel : kKernels) {
+                if (kernel.func == nullptr) {
+                        continue;
+                }
+
+                int minGridSize = 0;
+                int blockSize = 0;
+                status = cudaOccupancyMaxPotentialBlockSize(&minGridSize, &blockSize,
+                        kernel.func, 0, 0);
+
+                if (status == cudaSuccess) {
+                        if (blockSize > 0) {
+                                bestBlockSize = std::min(bestBlockSize, blockSize);
+                                anySuccess = true;
+                        }
+                        continue;
+                }
+
+                if (IsSkippableOccupancyError(status)) {
+                        cudaGetLastError();
+                        continue;
+                }
+
+                if (originalDevice != deviceId && originalDevice >= 0) {
+                        cudaSetDevice(originalDevice);
+                }
+                CheckCuda(status, "cudaOccupancyMaxPotentialBlockSize", __FILE__, __LINE__);
+        }
+
+        if (originalDevice != deviceId && originalDevice >= 0) {
+                cudaSetDevice(originalDevice);
+        }
+
+        if (anySuccess) {
+                cachedBlockSize = bestBlockSize;
+        }
+        else {
+                cachedBlockSize = 0;
+        }
+
         return cachedBlockSize;
 }
 #else
-int RecommendOccupancyBlockSize()
+int RecommendOccupancyBlockSize(int deviceId)
 {
+        (void)deviceId;
         return 0;
 }
 #endif
@@ -119,6 +210,11 @@ int RecommendOccupancyBlockSize()
 } // namespace
 
 #define CUDA_CHECK(call) ::CheckCuda((call), #call, __FILE__, __LINE__)
+
+int RecommendOccupancyBlockSizeForDevice(int deviceId)
+{
+        return RecommendOccupancyBlockSize(deviceId);
+}
 
 namespace {
 
@@ -576,7 +672,7 @@ GPUEngine::GPUEngine(Secp256K1* secp, int nbThreadGroup, int nbThreadPerGroup, i
 #endif
 
         if (nbThreadPerGroup <= 0) {
-                const int recommendedBlockSize = RecommendOccupancyBlockSize();
+                const int recommendedBlockSize = RecommendOccupancyBlockSize(gpuId);
                 if (recommendedBlockSize > 0) {
                         nbThreadPerGroup = recommendedBlockSize;
                         std::fprintf(stderr,
@@ -740,7 +836,7 @@ GPUEngine::GPUEngine(Secp256K1* secp, int nbThreadGroup, int nbThreadPerGroup, i
 #endif
 
         if (nbThreadPerGroup <= 0) {
-                const int recommendedBlockSize = RecommendOccupancyBlockSize();
+                const int recommendedBlockSize = RecommendOccupancyBlockSize(gpuId);
                 if (recommendedBlockSize > 0) {
                         nbThreadPerGroup = recommendedBlockSize;
                         std::fprintf(stderr,
