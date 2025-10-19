@@ -23,6 +23,10 @@
 #include <vector>
 #include "../SECP256k1.h"
 
+#ifdef __cplusplus
+int RecommendOccupancyBlockSizeForDevice(int deviceId);
+#endif
+
 #define SEARCH_COMPRESSED 0
 #define SEARCH_UNCOMPRESSED 1
 #define SEARCH_BOTH 2
