@@ -39,6 +39,14 @@ CUDA       = /usr/local/cuda-13.0
 CXXCUDA    = /usr/bin/g++
 NVCC       = $(CUDA)/bin/nvcc
 
+NVCCFLAGS_EXTRA =
+
+ifeq ($(nvtx),1)
+CXXFLAGS   += -DUSE_NVTX
+NVCCFLAGS_EXTRA += -DUSE_NVTX -lineinfo
+LFLAGS     += -lnvToolsExt
+endif
+
 ifdef gpu
 ifdef debug
 CXXFLAGS   = -DWITHGPU -m64 -mssse3 -Wno-write-strings -g -I. -I$(CUDA)/include -std=c++23
@@ -60,15 +68,15 @@ endif
 ifdef gpu
 $(OBJDIR)/GPU/GPUEngine.o: GPU/GPUEngine.cu | $(OBJDIR)/GPU
 ifdef debug
-	$(NVCC) -G -g -maxrregcount=0 --ptxas-options=-v --compile \
-	--compiler-options -fPIC -ccbin $(CXXCUDA) -m64 \
-	-I$(CUDA)/include -gencode=arch=compute_$(CCAP),code=sm_$(CCAP) \
-	-o $(OBJDIR)/GPU/GPUEngine.o -c GPU/GPUEngine.cu
+        $(NVCC) -G -g -maxrregcount=0 --ptxas-options=-v --compile \
+        --compiler-options -fPIC -ccbin $(CXXCUDA) -m64 \
+        -I$(CUDA)/include -gencode=arch=compute_$(CCAP),code=sm_$(CCAP) $(NVCCFLAGS_EXTRA) \
+        -o $(OBJDIR)/GPU/GPUEngine.o -c GPU/GPUEngine.cu
 else
-	$(NVCC) -maxrregcount=0 --ptxas-options=-v --compile \
-	--compiler-options -fPIC -ccbin $(CXXCUDA) -m64 -O2 \
-	-I$(CUDA)/include -gencode=arch=compute_$(CCAP),code=sm_$(CCAP) \
-	-o $(OBJDIR)/GPU/GPUEngine.o -c GPU/GPUEngine.cu
+        $(NVCC) -maxrregcount=0 --ptxas-options=-v --compile \
+        --compiler-options -fPIC -ccbin $(CXXCUDA) -m64 -O2 \
+        -I$(CUDA)/include -gencode=arch=compute_$(CCAP),code=sm_$(CCAP) $(NVCCFLAGS_EXTRA) \
+        -o $(OBJDIR)/GPU/GPUEngine.o -c GPU/GPUEngine.cu
 endif
 endif
 
