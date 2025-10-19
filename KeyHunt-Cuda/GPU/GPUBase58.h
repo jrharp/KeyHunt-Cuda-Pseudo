@@ -15,7 +15,11 @@
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
 */
 
+#if __has_include(<cuda/std/algorithm>)
 #include <cuda/std/algorithm>
+#else
+#include <cuda/std/__algorithm_>
+#endif
 #include <cuda/std/array>
 #include <cuda/std/bit>
 #include <cuda/std/cstdint>
