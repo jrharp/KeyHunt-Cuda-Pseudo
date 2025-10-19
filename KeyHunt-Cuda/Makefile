@@ -36,21 +36,23 @@ endif
 
 CXX        = g++
 CUDA       = /usr/local/cuda-13.0
+CUDA_TARGET ?= x86_64-linux
 CXXCUDA    = /usr/bin/g++
 NVCC       = $(CUDA)/bin/nvcc
+CUDA_INC   = -I$(CUDA)/include -I$(CUDA)/targets/$(CUDA_TARGET)/include
 
 ifdef gpu
 ifdef debug
-CXXFLAGS   = -DWITHGPU -m64 -mssse3 -Wno-write-strings -g -I. -I$(CUDA)/include -std=c++23
+CXXFLAGS   = -DWITHGPU -m64 -mssse3 -Wno-write-strings -g -I. $(CUDA_INC) -std=c++23
 else
-CXXFLAGS   = -DWITHGPU -m64 -mssse3 -Wno-write-strings -O2 -I. -I$(CUDA)/include -std=c++23
+CXXFLAGS   = -DWITHGPU -m64 -mssse3 -Wno-write-strings -O2 -I. $(CUDA_INC) -std=c++23
 endif
 LFLAGS     = -lgmp -lpthread -L$(CUDA)/lib64 -lcudart -lssl -lcrypto -lsqlite3
 else
 ifdef debug
-CXXFLAGS   = -m64 -mssse3 -Wno-write-strings -g -I. -I$(CUDA)/include -std=c++23
+CXXFLAGS   = -m64 -mssse3 -Wno-write-strings -g -I. $(CUDA_INC) -std=c++23
 else
-CXXFLAGS   = -m64 -mssse3 -Wno-write-strings -O2 -I. -I$(CUDA)/include -std=c++23
+CXXFLAGS   = -m64 -mssse3 -Wno-write-strings -O2 -I. $(CUDA_INC) -std=c++23
 endif
 LFLAGS     = -lgmp -lpthread
 endif
@@ -62,12 +64,12 @@ $(OBJDIR)/GPU/GPUEngine.o: GPU/GPUEngine.cu | $(OBJDIR)/GPU
 ifdef debug
 	$(NVCC) -G -g -maxrregcount=0 --ptxas-options=-v --compile \
 	--compiler-options -fPIC -ccbin $(CXXCUDA) -m64 \
-	-I$(CUDA)/include -gencode=arch=compute_$(CCAP),code=sm_$(CCAP) \
+	$(CUDA_INC) -gencode=arch=compute_$(CCAP),code=sm_$(CCAP) \
 	-o $(OBJDIR)/GPU/GPUEngine.o -c GPU/GPUEngine.cu
 else
 	$(NVCC) -maxrregcount=0 --ptxas-options=-v --compile \
 	--compiler-options -fPIC -ccbin $(CXXCUDA) -m64 -O2 \
-	-I$(CUDA)/include -gencode=arch=compute_$(CCAP),code=sm_$(CCAP) \
+	$(CUDA_INC) -gencode=arch=compute_$(CCAP),code=sm_$(CCAP) \
 	-o $(OBJDIR)/GPU/GPUEngine.o -c GPU/GPUEngine.cu
 endif
 endif
