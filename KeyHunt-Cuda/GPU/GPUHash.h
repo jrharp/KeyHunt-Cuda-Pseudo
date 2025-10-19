@@ -144,23 +144,11 @@ __device__ __forceinline__ uint32_t s1(uint32_t x)
 
 #else
 
-#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 350)
-__device__ __forceinline__ uint32_t RotateRight(uint32_t value, unsigned int shift)
-{
-        return __funnelshift_r(value, value, shift);
-}
-#else
-__device__ __forceinline__ uint32_t RotateRight(uint32_t value, unsigned int shift)
-{
-        return (value >> shift) | (value << (32 - shift));
-}
-#endif
-
-#define ROR(x,n) RotateRight((x), (n))
+#define ROR(x,n) ((x>>n)|(x<<(32-n)))
 #define S0(x) (ROR(x,2) ^ ROR(x,13) ^ ROR(x,22))
 #define S1(x) (ROR(x,6) ^ ROR(x,11) ^ ROR(x,25))
-#define s0(x) (ROR(x,7) ^ ROR(x,18) ^ ((x) >> 3))
-#define s1(x) (ROR(x,17) ^ ROR(x,19) ^ ((x) >> 10))
+#define s0(x) (ROR(x,7) ^ ROR(x,18) ^ (x >> 3))
+#define s1(x) (ROR(x,17) ^ ROR(x,19) ^ (x >> 10))
 
 #endif
 

@@ -15,7 +15,6 @@
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
 */
 
-#include <bit>
 #include <string.h>
 #include "sha256.h"
 
@@ -30,18 +29,18 @@ static const unsigned char pad[64] = { 0x80 };
 #ifndef WIN64
 #define _byteswap_ulong __builtin_bswap32
 #define _byteswap_uint64 __builtin_bswap64
+inline uint32_t _rotr(uint32_t x, uint8_t r)
+{
+    asm("rorl %1,%0" : "+r"(x) : "c"(r));
+    return x;
+}
 #endif
 
-constexpr uint32_t RotateRight(uint32_t value, unsigned int shift) noexcept
-{
-    return std::rotr(value, shift);
-}
-
-#define ROR(x,n) RotateRight((x), (n))
+#define ROR(x,n) _rotr(x, n)
 #define S0(x) (ROR(x,2) ^ ROR(x,13) ^ ROR(x,22))
 #define S1(x) (ROR(x,6) ^ ROR(x,11) ^ ROR(x,25))
-#define s0(x) (ROR(x,7) ^ ROR(x,18) ^ ((x) >> 3))
-#define s1(x) (ROR(x,17) ^ ROR(x,19) ^ ((x) >> 10))
+#define s0(x) (ROR(x,7) ^ ROR(x,18) ^ (x >> 3))
+#define s1(x) (ROR(x,17) ^ ROR(x,19) ^ (x >> 10))
 
 #define Maj(x,y,z) ((x&y)^(x&z)^(y&z))
 //#define Ch(x,y,z)  ((x&y)^(~x&z))
