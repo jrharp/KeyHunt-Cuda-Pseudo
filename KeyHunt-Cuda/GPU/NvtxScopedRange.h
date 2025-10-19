@@ -18,6 +18,20 @@
 #  define KEYHUNT_HAS_NVTX 0
 #endif
 
+#if KEYHUNT_HAS_NVTX && defined(__has_include)
+#  if __has_include(<nvtx3/nvToolsExtCuda.h>)
+#    include <nvtx3/nvToolsExtCuda.h>
+#    define KEYHUNT_HAS_NVTX_CUDA 1
+#  elif __has_include(<nvToolsExtCuda.h>)
+#    include <nvToolsExtCuda.h>
+#    define KEYHUNT_HAS_NVTX_CUDA 1
+#  endif
+#endif
+
+#ifndef KEYHUNT_HAS_NVTX_CUDA
+#  define KEYHUNT_HAS_NVTX_CUDA 0
+#endif
+
 namespace keyhunt::profiling {
 
 namespace detail {
@@ -92,11 +106,11 @@ private:
 
 inline void NameCudaStream(cudaStream_t stream, const char* name) noexcept
 {
-#if KEYHUNT_HAS_NVTX
+#if KEYHUNT_HAS_NVTX && KEYHUNT_HAS_NVTX_CUDA
         if (stream != nullptr && name != nullptr) {
 #  if defined(NVTX_VERSION) && (NVTX_VERSION >= 0x030000)
                 nvtxNameCuStreamA(reinterpret_cast<CUstream>(stream), name);
-#  else
+#  elif defined(NVTX_VERSION)
                 nvtxNameCudaStreamA(stream, name);
 #  endif
         }
