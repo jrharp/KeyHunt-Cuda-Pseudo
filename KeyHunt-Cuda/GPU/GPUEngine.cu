@@ -121,20 +121,20 @@ int RecommendOccupancyBlockSize(int deviceId)
                 return cachedBlockSize;
         }
 
-        int originalDevice = -1;
-        cudaError_t status = cudaGetDevice(&originalDevice);
-        if (status != cudaSuccess) {
-                originalDevice = -1;
+        int previousDevice = -1;
+        cudaError_t deviceStatus = cudaGetDevice(&previousDevice);
+        if (deviceStatus != cudaSuccess) {
+                previousDevice = -1;
                 cudaGetLastError();
         }
 
-        if (originalDevice != deviceId) {
-                status = cudaSetDevice(deviceId);
-                if (status != cudaSuccess) {
+        if (previousDevice != deviceId) {
+                deviceStatus = cudaSetDevice(deviceId);
+                if (deviceStatus != cudaSuccess) {
                         cudaGetLastError();
                         cachedBlockSize = 0;
-                        if (originalDevice >= 0) {
-                                cudaSetDevice(originalDevice);
+                        if (previousDevice >= 0) {
+                                cudaSetDevice(previousDevice);
                         }
                         return cachedBlockSize;
                 }
@@ -154,31 +154,32 @@ int RecommendOccupancyBlockSize(int deviceId)
         int recommendedBlockSize = std::numeric_limits<int>::max();
         bool occupancyComputed = false;
 
-        for (const void* kernel : kernels) {
+        for (size_t i = 0; i < (sizeof(kernels) / sizeof(kernels[0])); ++i) {
+                const void* kernel = kernels[i];
                 if (kernel == nullptr) {
                         continue;
                 }
                 int minGridSize = 0;
                 int blockSize = 0;
-                status = cudaOccupancyMaxPotentialBlockSize(&minGridSize, &blockSize, kernel, 0, 0);
-                if (status == cudaSuccess) {
+                deviceStatus = cudaOccupancyMaxPotentialBlockSize(&minGridSize, &blockSize, kernel, 0, 0);
+                if (deviceStatus == cudaSuccess) {
                         if (blockSize > 0 && blockSize < recommendedBlockSize) {
                                 recommendedBlockSize = blockSize;
                         }
                         occupancyComputed = true;
                         continue;
                 }
-                if (status == cudaErrorNotSupported || status == cudaErrorInvalidValue) {
+                if (deviceStatus == cudaErrorNotSupported || deviceStatus == cudaErrorInvalidValue) {
                         cudaGetLastError();
                         continue;
                 }
-                CheckCuda(status, "cudaOccupancyMaxPotentialBlockSize", __FILE__, __LINE__);
+                CheckCuda(deviceStatus, "cudaOccupancyMaxPotentialBlockSize", __FILE__, __LINE__);
                 // Should not reach here, but reset to avoid uninitialised use if it does.
                 occupancyComputed = false;
         }
 
-        if (originalDevice != deviceId && originalDevice >= 0) {
-                cudaSetDevice(originalDevice);
+        if (previousDevice != deviceId && previousDevice >= 0) {
+                cudaSetDevice(previousDevice);
         }
 
         if (occupancyComputed && recommendedBlockSize != std::numeric_limits<int>::max()) {
