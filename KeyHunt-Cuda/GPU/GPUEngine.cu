@@ -47,9 +47,16 @@
 #include "GPUBase58.h"
 #include "CudaCompat.h"
 
+__global__ void compute_keys_mode_ma(uint32_t mode, uint8_t* bloomLookUp, uint64_t BLOOM_BITS, uint8_t BLOOM_HASHES,
+        uint64_t bloomReciprocal, uint32_t bloomMask, uint32_t bloomIsPowerOfTwo, uint64_t* keys, uint32_t maxFound,
+        uint32_t* found, int stepMultiplier);
+
 __global__ void compute_keys_comp_mode_ma(uint32_t mode, uint8_t* bloomLookUp, uint64_t BLOOM_BITS,
         uint8_t BLOOM_HASHES, uint64_t bloomReciprocal, uint32_t bloomMask, uint32_t bloomIsPowerOfTwo,
         uint64_t* keys, uint32_t maxFound, uint32_t* found, int stepMultiplier);
+
+__global__ void compute_keys_mode_sa(uint32_t mode, const uint32_t* __restrict__ hash160, uint64_t* keys,
+        uint32_t maxFound, uint32_t* found, int stepMultiplier);
 
 __global__ void compute_keys_comp_mode_sa(uint32_t mode, const uint32_t* __restrict__ hash160, uint64_t* keys,
         uint32_t maxFound, uint32_t* found, int stepMultiplier);
@@ -59,6 +66,13 @@ __global__ void compute_keys_comp_mode_mx(uint32_t mode, uint8_t* bloomLookUp, u
         uint64_t* keys, uint32_t maxFound, uint32_t* found, int stepMultiplier);
 
 __global__ void compute_keys_comp_mode_sx(uint32_t mode, uint32_t* xpoint, uint64_t* keys, uint32_t maxFound,
+        uint32_t* found, int stepMultiplier);
+
+__global__ void compute_keys_mode_eth_ma(uint8_t* bloomLookUp, uint64_t BLOOM_BITS, uint8_t BLOOM_HASHES,
+        uint64_t bloomReciprocal, uint32_t bloomMask, uint32_t bloomIsPowerOfTwo, uint64_t* keys, uint32_t maxFound,
+        uint32_t* found, int stepMultiplier);
+
+__global__ void compute_keys_mode_eth_sa(const uint32_t* __restrict__ hash, uint64_t* keys, uint32_t maxFound,
         uint32_t* found, int stepMultiplier);
 
 namespace {
@@ -126,25 +140,52 @@ int RecommendOccupancyBlockSize(int deviceId)
                 }
         }
 
-        int minGridSize = 0;
-        int blockSize = 0;
-        status = cudaOccupancyMaxPotentialBlockSize(&minGridSize, &blockSize,
-                reinterpret_cast<const void*>(&compute_keys_comp_mode_ma), 0, 0);
+        const void* kernels[] = {
+                reinterpret_cast<const void*>(&compute_keys_mode_ma),
+                reinterpret_cast<const void*>(&compute_keys_comp_mode_ma),
+                reinterpret_cast<const void*>(&compute_keys_mode_sa),
+                reinterpret_cast<const void*>(&compute_keys_comp_mode_sa),
+                reinterpret_cast<const void*>(&compute_keys_comp_mode_mx),
+                reinterpret_cast<const void*>(&compute_keys_comp_mode_sx),
+                reinterpret_cast<const void*>(&compute_keys_mode_eth_ma),
+                reinterpret_cast<const void*>(&compute_keys_mode_eth_sa),
+        };
+
+        int recommendedBlockSize = std::numeric_limits<int>::max();
+        bool occupancyComputed = false;
+
+        for (const void* kernel : kernels) {
+                if (kernel == nullptr) {
+                        continue;
+                }
+                int minGridSize = 0;
+                int blockSize = 0;
+                status = cudaOccupancyMaxPotentialBlockSize(&minGridSize, &blockSize, kernel, 0, 0);
+                if (status == cudaSuccess) {
+                        if (blockSize > 0 && blockSize < recommendedBlockSize) {
+                                recommendedBlockSize = blockSize;
+                        }
+                        occupancyComputed = true;
+                        continue;
+                }
+                if (status == cudaErrorNotSupported || status == cudaErrorInvalidValue) {
+                        cudaGetLastError();
+                        continue;
+                }
+                CheckCuda(status, "cudaOccupancyMaxPotentialBlockSize", __FILE__, __LINE__);
+                // Should not reach here, but reset to avoid uninitialised use if it does.
+                occupancyComputed = false;
+        }
 
         if (originalDevice != deviceId && originalDevice >= 0) {
                 cudaSetDevice(originalDevice);
         }
 
-        if (status == cudaSuccess) {
-                cachedBlockSize = blockSize;
+        if (occupancyComputed && recommendedBlockSize != std::numeric_limits<int>::max()) {
+                cachedBlockSize = recommendedBlockSize;
                 return cachedBlockSize;
         }
-        if (status == cudaErrorNotSupported || status == cudaErrorInvalidValue) {
-                cudaGetLastError();
-                cachedBlockSize = 0;
-                return cachedBlockSize;
-        }
-        CheckCuda(status, "cudaOccupancyMaxPotentialBlockSize", __FILE__, __LINE__);
+
         cachedBlockSize = 0;
         return cachedBlockSize;
 }
