@@ -507,11 +507,11 @@ void Int::Set32Bytes(unsigned char* bytes) {
 
 }
 
-void Int::Get32Bytes(unsigned char* buff) {
+void Int::Get32Bytes(unsigned char* buff) const {
 
-	uint64_t* ptr = (uint64_t*)buff;
-	ptr[3] = _byteswap_uint64(bits64[0]);
-	ptr[2] = _byteswap_uint64(bits64[1]);
+        uint64_t* ptr = (uint64_t*)buff;
+        ptr[3] = _byteswap_uint64(bits64[0]);
+        ptr[2] = _byteswap_uint64(bits64[1]);
 	ptr[1] = _byteswap_uint64(bits64[2]);
 	ptr[0] = _byteswap_uint64(bits64[3]);
 

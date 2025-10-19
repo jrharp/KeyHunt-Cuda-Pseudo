@@ -166,7 +166,7 @@ public:
 	uint32_t GetInt32();
 	int GetBit(uint32_t n);
 	unsigned char GetByte(int n);
-	void Get32Bytes(unsigned char* buff);
+        void Get32Bytes(unsigned char* buff) const;
 
 	// To String
 	std::string GetBase2();

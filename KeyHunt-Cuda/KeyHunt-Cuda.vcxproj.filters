@@ -47,6 +47,9 @@
     <ClCompile Include="CmdParse.cpp">
       <Filter>CMDPARSE</Filter>
     </ClCompile>
+    <ClCompile Include="CubeRootSolver.cpp">
+      <Filter>KEYHUNT</Filter>
+    </ClCompile>
     <ClCompile Include="KeyHunt.cpp">
       <Filter>KEYHUNT</Filter>
     </ClCompile>
@@ -108,6 +111,9 @@
     </ClInclude>
     <ClInclude Include="CmdParse.h">
       <Filter>CMDPARSE</Filter>
+    </ClInclude>
+    <ClInclude Include="CubeRootSolver.h">
+      <Filter>KEYHUNT</Filter>
     </ClInclude>
     <ClInclude Include="KeyHunt.h">
       <Filter>KEYHUNT</Filter>
