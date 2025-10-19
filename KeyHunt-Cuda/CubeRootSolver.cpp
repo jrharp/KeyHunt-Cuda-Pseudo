@@ -168,9 +168,10 @@ void CubeRootSolver::walk(Point& point, Int& actual, Int& mod) const
                         return;
                 }
                 const size_t idx = stepIndex(point);
-                actual.Add(&steps[idx].distance);
+                actual.Add(const_cast<Int*>(&steps[idx].distance));
                 mod.ModAddK1order((Int*)&steps[idx].modDistance);
-                point = secp.AddDirect(point, steps[idx].delta);
+                Point delta(steps[idx].delta);
+                point = secp.AddDirect(point, delta);
         }
 }
 
@@ -186,9 +187,10 @@ bool CubeRootSolver::runWild(const Point& startPoint, Int& outKey) const
                                 Int candidate(&(it->second));
                                 candidate.Sub(&offset);
                                 if (candidate.IsNegative()) {
-                                        candidate.Add(&order);
+                                        candidate.Add(const_cast<Int*>(&order));
                                 }
-                                if (!candidate.IsLower(&rangeStart) && candidate.IsLower(&rangeEnd)) {
+                                if (!candidate.IsLower(const_cast<Int*>(&rangeStart)) &&
+                                    candidate.IsLower(const_cast<Int*>(&rangeEnd))) {
                                         outKey.Set(&candidate);
                                         return true;
                                 }
@@ -196,8 +198,9 @@ bool CubeRootSolver::runWild(const Point& startPoint, Int& outKey) const
                 }
 
                 const size_t idx = stepIndex(point);
-                offset.Add(&steps[idx].distance);
-                point = secp.AddDirect(point, steps[idx].delta);
+                offset.Add(const_cast<Int*>(&steps[idx].distance));
+                Point delta(steps[idx].delta);
+                point = secp.AddDirect(point, delta);
         }
 
         return false;
