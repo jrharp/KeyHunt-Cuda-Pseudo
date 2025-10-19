@@ -9,10 +9,10 @@
 CubeRootSolver::CubeRootSolver(Secp256K1& secpRef, const Int& start, const Int& end)
         : secp(secpRef)
 {
-        rangeStart = start;
-        rangeEnd = end;
-        rangeSize = rangeEnd;
-        rangeSize.Sub(&rangeStart);
+        rangeStart.Set((Int*)&start);
+        rangeEnd.Set((Int*)&end);
+        rangeSize.Set((Int*)&rangeEnd);
+        rangeSize.Sub((Int*)&rangeStart);
         order.Set(&secp.order);
 
         // Parameter selection guided by cube-root heuristic.
@@ -161,7 +161,7 @@ void CubeRootSolver::buildTable()
         }
 }
 
-void CubeRootSolver::walk(Point& point, Int& actual, Int& mod)
+void CubeRootSolver::walk(Point& point, Int& actual, Int& mod) const
 {
         for (uint64_t iter = 0; iter < maxIterations; ++iter) {
                 if (isDistinguished(point)) {
@@ -169,12 +169,12 @@ void CubeRootSolver::walk(Point& point, Int& actual, Int& mod)
                 }
                 const size_t idx = stepIndex(point);
                 actual.Add(&steps[idx].distance);
-                mod.ModAddK1order(&steps[idx].modDistance);
+                mod.ModAddK1order((Int*)&steps[idx].modDistance);
                 point = secp.AddDirect(point, steps[idx].delta);
         }
 }
 
-bool CubeRootSolver::runWild(const Point& startPoint, Int& outKey)
+bool CubeRootSolver::runWild(const Point& startPoint, Int& outKey) const
 {
         Point point(startPoint);
         Int offset(static_cast<uint64_t>(0));

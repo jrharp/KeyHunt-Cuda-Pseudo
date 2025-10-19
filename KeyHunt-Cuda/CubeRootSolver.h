@@ -26,8 +26,8 @@ private:
 
         void ensureTable();
         void buildTable();
-        void walk(Point& point, Int& actual, Int& mod);
-        bool runWild(const Point& startPoint, Int& outKey);
+        void walk(Point& point, Int& actual, Int& mod) const;
+        bool runWild(const Point& startPoint, Int& outKey) const;
 
         Secp256K1& secp;
         Int rangeStart;
