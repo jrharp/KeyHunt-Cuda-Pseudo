@@ -87,25 +87,6 @@ inline uint64_t ComputeFastModReciprocal(uint64_t modulus)
 }
 
 #if defined(CUDART_VERSION) && (CUDART_VERSION >= 11020)
-
-namespace {
-
-struct OccupancyKernel
-{
-        const void* func = nullptr;
-};
-
-bool IsSkippableOccupancyError(cudaError_t status)
-{
-        return status == cudaErrorNotSupported ||
-                status == cudaErrorInvalidValue ||
-                status == cudaErrorNoBinaryForGpu ||
-                status == cudaErrorNoKernelImageForDevice ||
-                status == cudaErrorInvalidDeviceFunction;
-}
-
-} // namespace
-
 int RecommendOccupancyBlockSize(int deviceId)
 {
         if (deviceId < 0) {
@@ -123,6 +104,39 @@ int RecommendOccupancyBlockSize(int deviceId)
 
         int& cachedBlockSize = cachedBlockSizes[static_cast<size_t>(deviceId)];
         if (cachedBlockSize != std::numeric_limits<int>::min()) {
+                return cachedBlockSize;
+        }
+
+        int originalDevice = -1;
+        cudaError_t status = cudaGetDevice(&originalDevice);
+        if (status != cudaSuccess) {
+                originalDevice = -1;
+                cudaGetLastError();
+        }
+
+        if (originalDevice != deviceId) {
+                status = cudaSetDevice(deviceId);
+                if (status != cudaSuccess) {
+                        cudaGetLastError();
+                        cachedBlockSize = 0;
+                        if (originalDevice >= 0) {
+                                cudaSetDevice(originalDevice);
+                        }
+                        return cachedBlockSize;
+                }
+        }
+
+        int minGridSize = 0;
+        int blockSize = 0;
+        status = cudaOccupancyMaxPotentialBlockSize(&minGridSize, &blockSize,
+                reinterpret_cast<const void*>(&compute_keys_comp_mode_ma), 0, 0);
+
+        if (originalDevice != deviceId && originalDevice >= 0) {
+                cudaSetDevice(originalDevice);
+        }
+
+        if (status == cudaSuccess) {
+                cachedBlockSize = blockSize;
                 return cachedBlockSize;
         }
 
