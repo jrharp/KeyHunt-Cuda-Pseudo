@@ -94,7 +94,11 @@ inline void NameCudaStream(cudaStream_t stream, const char* name) noexcept
 {
 #if KEYHUNT_HAS_NVTX
         if (stream != nullptr && name != nullptr) {
+#  if defined(NVTX_VERSION) && (NVTX_VERSION >= 0x030000)
                 nvtxNameCuStreamA(reinterpret_cast<CUstream>(stream), name);
+#  else
+                nvtxNameCudaStreamA(stream, name);
+#  endif
         }
 #else
         (void)stream;
