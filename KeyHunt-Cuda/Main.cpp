@@ -2,6 +2,9 @@
 #include "KeyHunt.h"
 #include "Base58.h"
 #include "CmdParse.h"
+#ifdef WITHGPU
+#include "GPU/GPUEngine.h"
+#endif
 #include <fstream>
 #include <string>
 #include <string.h>
@@ -30,8 +33,11 @@ void usage()
 	printf("-u, --uncomp                             : Search uncompressed points\n");
 	printf("-b, --both                               : Search both uncompressed or compressed points\n");
 	printf("-g, --gpu                                : Enable GPU calculation (default when available)\n");
-	printf("--gpui GPU ids: 0,1,...                  : List of GPU(s) to use, default is 0\n");
-	printf("--gpux GPU gridsize: g0x,g0y,g1x,g1y,... : Specify GPU(s) kernel gridsize, default is 8*(Device MP count),128\n");
+        printf("--gpui GPU ids: 0,1,...                  : List of GPU(s) to use, default is 0\n");
+        printf("--gpux GPU gridsize: g0x,g0y,g1x,g1y,... : Specify GPU(s) kernel gridsize, default is 8*(Device MP count),128\n");
+#ifdef WITHGPU
+        printf("--gpu-autoblock                          : Use CUDA occupancy guidance to auto-select threads per block\n");
+#endif
 	printf("-t, --thread N                           : Specify number of CPU thread and disable GPU acceleration\n");
 	printf("-i, --in FILE                            : Read rmd160 hashes or xpoints from FILE, should be in binary format with sorted\n");
 	printf("-o, --out FILE                           : Write keys to FILE, default: Found.txt\n");
@@ -207,7 +213,8 @@ int main(int argc, char** argv)
 	bool gpuEnable = false;
 	int nbCPUThread = defaultCpuThreads;
 #endif
-	bool gpuAutoGrid = true;
+        bool gpuAutoGrid = true;
+        bool gpuUseOccupancyBlockSize = false;
 	int compMode = SEARCH_COMPRESSED;
 	vector<int> gpuId = { 0 };
 	vector<int> gridSize;
@@ -244,10 +251,13 @@ int main(int argc, char** argv)
 	parser.add("-l", "--list", false);
 	parser.add("-u", "--uncomp", false);
 	parser.add("-b", "--both", false);
-	parser.add("-g", "--gpu", false);
-	parser.add("", "--gpui", true);
-	parser.add("", "--gpux", true);
-	parser.add("-t", "--thread", true);
+        parser.add("-g", "--gpu", false);
+        parser.add("", "--gpui", true);
+        parser.add("", "--gpux", true);
+#ifdef WITHGPU
+        parser.add("", "--gpu-autoblock", false);
+#endif
+        parser.add("-t", "--thread", true);
 	parser.add("-i", "--in", true);
 	parser.add("-o", "--out", true);
 	parser.add("-m", "--mode", true);
@@ -321,12 +331,17 @@ int main(int argc, char** argv)
 				string ids = optArg.arg;
 				getInts("--gpui", gpuId, ids, ',');
 			}
-			else if (optArg.equals("", "--gpux")) {
-				string grids = optArg.arg;
-				getInts("--gpux", gridSize, grids, ',');
-				gpuAutoGrid = false;
-			}
-			else if (optArg.equals("-t", "--thread")) {
+                        else if (optArg.equals("", "--gpux")) {
+                                string grids = optArg.arg;
+                                getInts("--gpux", gridSize, grids, ',');
+                                gpuAutoGrid = false;
+                        }
+#ifdef WITHGPU
+                        else if (optArg.equals("", "--gpu-autoblock")) {
+                                gpuUseOccupancyBlockSize = true;
+                        }
+#endif
+                        else if (optArg.equals("-t", "--thread")) {
 				nbCPUThread = std::stoi(optArg.arg);
 				tSpecified = true;
 				gpuEnable = false;
@@ -476,6 +491,43 @@ int main(int argc, char** argv)
 			break;
 		}
 	}
+
+#ifdef WITHGPU
+        if (gpuUseOccupancyBlockSize) {
+                if (!gpuEnable) {
+                        printf("Error: --gpu-autoblock requires GPU acceleration to be enabled.\n");
+                        usage();
+                        return -1;
+                }
+
+                if (!gpuAutoGrid) {
+                        printf("Warning: --gpu-autoblock overrides any --gpux values.\n");
+                }
+
+                gridSize.clear();
+                for (size_t i = 0; i < gpuId.size(); i++) {
+                        const int deviceId = gpuId.at(i);
+                        int recommended = RecommendOccupancyBlockSizeForDevice(deviceId);
+                        if (recommended <= 0) {
+                                printf("Warning: Unable to determine occupancy-optimized block size for GPU %d, falling back to 128 threads per block.\n",
+                                        deviceId);
+                                recommended = 128;
+                        }
+                        else {
+                                printf("Info: GPU %d occupancy-guided threads per block: %d\n", deviceId, recommended);
+                        }
+                        gridSize.push_back(-1);
+                        gridSize.push_back(recommended);
+                }
+                gpuAutoGrid = true;
+        }
+#else
+        if (gpuUseOccupancyBlockSize) {
+                printf("Error: --gpu-autoblock requested but binary was built without GPU support. Recompile with -DWITHGPU.\n");
+                usage();
+                return -1;
+        }
+#endif
 
         if (gridSize.size() == 0) {
                 for (int i = 0; i < gpuId.size(); i++) {
