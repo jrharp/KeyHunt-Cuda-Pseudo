@@ -15,19 +15,23 @@
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
 */
 
-#include <stdint.h>
+#include <cuda/std/algorithm>
+#include <cuda/std/array>
+#include <cuda/std/bit>
+#include <cuda/std/cstdint>
+#include <cuda/std/span>
 
 // ---------------------------------------------------------------------------------
 // Base58
 // ---------------------------------------------------------------------------------
 
-__device__ __constant__ char pszBase58[58] = {
+__device__ __constant__ cuda::std::array<char, 58> pszBase58 = {
     '1', '2', '3', '4', '5', '6', '7', '8', '9', 'A', 'B', 'C', 'D', 'E', 'F',
     'G', 'H', 'J', 'K', 'L', 'M', 'N', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W',
     'X', 'Y', 'Z', 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'm',
     'n', 'o', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z'};
 
-__device__ __constant__ int8_t b58digits_map[128] = {
+__device__ __constant__ cuda::std::array<int8_t, 128> b58digits_map = {
     -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
     -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
     -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
@@ -40,50 +44,49 @@ __device__ __constant__ int8_t b58digits_map[128] = {
 __device__ __noinline__ void _GetAddress(uint32_t *__restrict__ hash, char *__restrict__ b58Add)
 {
 
-    uint32_t addBytes[16];
-    uint32_t s[16];
-    unsigned char A[25];
-    unsigned char *addPtr = A;
+    cuda::std::array<uint32_t, 16> addBytes{};
+    cuda::std::array<uint32_t, 16> s{};
+    cuda::std::array<unsigned char, 25> A{};
+    auto addressSpan = cuda::std::span<unsigned char, A.size()>(A);
+    unsigned char *addPtr = addressSpan.data();
     int retPos = 0;
-    unsigned char digits[128];
+    cuda::std::array<unsigned char, 128> digits{};
 
-    A[0] = 0x00;
-    const unsigned char *hashBytes = reinterpret_cast<const unsigned char *>(hash);
-    for (int i = 0; i < 20; i++)
-        A[1 + i] = hashBytes[i];
+    addressSpan[0] = 0x00;
+    auto payloadSpan = addressSpan.subspan(1, 20);
+    const auto *hashBytes = reinterpret_cast<const cuda::std::uint8_t *>(hash);
+    cuda::std::copy_n(hashBytes, payloadSpan.size(), payloadSpan.begin());
 
     // Compute checksum
 
-    addBytes[0] = __byte_perm(hash[0], static_cast<uint32_t>(A[0]), 0x4012);
+    addBytes[0] = __byte_perm(hash[0], static_cast<uint32_t>(addressSpan[0]), 0x4012);
     addBytes[1] = __byte_perm(hash[0], hash[1], 0x3456);
     addBytes[2] = __byte_perm(hash[1], hash[2], 0x3456);
     addBytes[3] = __byte_perm(hash[2], hash[3], 0x3456);
     addBytes[4] = __byte_perm(hash[3], hash[4], 0x3456);
     addBytes[5] = __byte_perm(hash[4], 0x80u, 0x3456);
-    for (int i = 6; i < 15; i++)
-        addBytes[i] = 0u;
+    cuda::std::fill(addBytes.begin() + 6, addBytes.begin() + 15, 0u);
     addBytes[15] = 0xA8u;
 
-    SHA256Initialize(s);
-    SHA256Transform(s, addBytes);
+    SHA256Initialize(s.data());
+    SHA256Transform(s.data(), addBytes.data());
 
 #pragma unroll 8
     for (int i = 0; i < 8; i++)
         addBytes[i] = s[i];
 
     addBytes[8] = 0x80000000;
-    for (int i = 9; i < 15; i++)
-        addBytes[i] = 0u;
+    cuda::std::fill(addBytes.begin() + 9, addBytes.begin() + 15, 0u);
     addBytes[15] = 0x100u;
 
-    SHA256Initialize(s);
-    SHA256Transform(s, addBytes);
+    SHA256Initialize(s.data());
+    SHA256Transform(s.data(), addBytes.data());
 
-    const unsigned char *stateBytes = reinterpret_cast<const unsigned char *>(s);
-    A[21] = stateBytes[3];
-    A[22] = stateBytes[2];
-    A[23] = stateBytes[1];
-    A[24] = stateBytes[0];
+    const auto *stateBytes = reinterpret_cast<const cuda::std::uint8_t *>(s.data());
+    addressSpan[21] = stateBytes[3];
+    addressSpan[22] = stateBytes[2];
+    addressSpan[23] = stateBytes[1];
+    addressSpan[24] = stateBytes[0];
 
     // Base58
 
