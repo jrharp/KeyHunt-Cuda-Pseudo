@@ -35,7 +35,16 @@ OBJET = $(addprefix $(OBJDIR)/, \
 endif
 
 CXX        = g++
-CUDA       = /usr/local/cuda-13.0
+CUDA            ?= /usr/local/cuda-13.0
+CUDA_INC        := $(CUDA)/include
+CUDA_INC_TGT    := $(CUDA)/targets
+CUDA_INCLUDES   := -I$(CUDA_INC) -I$(CUDA_INC_TGT)
+
+# Apply to both host and nvcc compilations:
+CXXFLAGS += $(CUDA_INCLUDES) -std=c++23
+NVCCFLAGS += $(CUDA_INCLUDES)
+
+
 CXXCUDA    = /usr/bin/g++
 NVCC       = $(CUDA)/bin/nvcc
 
@@ -62,15 +71,18 @@ $(OBJDIR)/GPU/GPUEngine.o: GPU/GPUEngine.cu | $(OBJDIR)/GPU
 ifdef debug
 	$(NVCC) -G -g -maxrregcount=0 --ptxas-options=-v --compile \
 	--compiler-options -fPIC -ccbin $(CXXCUDA) -m64 \
-	-I$(CUDA)/include -gencode=arch=compute_$(CCAP),code=sm_$(CCAP) \
+	$(CUDA_INCLUDES) \
+	-gencode=arch=compute_$(CCAP),code=sm_$(CCAP) \
 	-o $(OBJDIR)/GPU/GPUEngine.o -c GPU/GPUEngine.cu
 else
 	$(NVCC) -maxrregcount=0 --ptxas-options=-v --compile \
 	--compiler-options -fPIC -ccbin $(CXXCUDA) -m64 -O2 \
-	-I$(CUDA)/include -gencode=arch=compute_$(CCAP),code=sm_$(CCAP) \
+	$(CUDA_INCLUDES) \
+	-gencode=arch=compute_$(CCAP),code=sm_$(CCAP) \
 	-o $(OBJDIR)/GPU/GPUEngine.o -c GPU/GPUEngine.cu
 endif
 endif
+
 
 $(OBJDIR)/%.o : %.cpp | $(OBJDIR)
 	$(CXX) $(CXXFLAGS) -o $@ -c $<

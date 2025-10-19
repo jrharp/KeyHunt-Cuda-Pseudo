@@ -65,18 +65,20 @@
 
 namespace gpumath {
 
-__device__ __forceinline__ constexpr uint64_t Secp256k1ModulusWord(int index)
-{
-    return (index == 0) ? 0xFFFFFFFEFFFFFC2FULL :
-           (index == 1) ? 0xFFFFFFFFFFFFFFFFULL :
-           (index == 2) ? 0xFFFFFFFFFFFFFFFFULL :
-                          0xFFFFFFFFFFFFFFFFULL;
-}
+inline constexpr uint64_t kSecp256k1Modulus[4] = {
+    0xFFFFFFFEFFFFFC2FULL,
+    0xFFFFFFFFFFFFFFFFULL,
+    0xFFFFFFFFFFFFFFFFULL,
+    0xFFFFFFFFFFFFFFFFULL
+};
 
-__device__ __forceinline__ constexpr uint64_t Secp256k1ModulusExtendedWord(int index)
-{
-    return (index == 4) ? 0ULL : Secp256k1ModulusWord(index);
-}
+inline constexpr uint64_t kSecp256k1ModulusExtended[5] = {
+    0xFFFFFFFEFFFFFC2FULL,
+    0xFFFFFFFFFFFFFFFFULL,
+    0xFFFFFFFFFFFFFFFFULL,
+    0xFFFFFFFFFFFFFFFFULL,
+    0ULL
+};
 
 } // namespace gpumath
 // ---------------------------------------------------------------------------------------
@@ -96,22 +98,22 @@ __device__ __forceinline__ constexpr uint64_t Secp256k1ModulusExtendedWord(int i
 
 __device__ __forceinline__ void AddP(uint64_t r[5])
 {
-    UADDO1(r[0], gpumath::Secp256k1ModulusExtendedWord(0));
-    UADDC1(r[1], gpumath::Secp256k1ModulusExtendedWord(1));
-    UADDC1(r[2], gpumath::Secp256k1ModulusExtendedWord(2));
-    UADDC1(r[3], gpumath::Secp256k1ModulusExtendedWord(3));
-    UADD1(r[4], gpumath::Secp256k1ModulusExtendedWord(4));
+    UADDO1(r[0], gpumath::kSecp256k1ModulusExtended[0]);
+    UADDC1(r[1], gpumath::kSecp256k1ModulusExtended[1]);
+    UADDC1(r[2], gpumath::kSecp256k1ModulusExtended[2]);
+    UADDC1(r[3], gpumath::kSecp256k1ModulusExtended[3]);
+    UADD1(r[4], gpumath::kSecp256k1ModulusExtended[4]);
 }
 
 // ---------------------------------------------------------------------------------------
 
 __device__ __forceinline__ void SubP(uint64_t r[5])
 {
-    USUBO1(r[0], gpumath::Secp256k1ModulusExtendedWord(0));
-    USUBC1(r[1], gpumath::Secp256k1ModulusExtendedWord(1));
-    USUBC1(r[2], gpumath::Secp256k1ModulusExtendedWord(2));
-    USUBC1(r[3], gpumath::Secp256k1ModulusExtendedWord(3));
-    USUB1(r[4], gpumath::Secp256k1ModulusExtendedWord(4));
+    USUBO1(r[0], gpumath::kSecp256k1ModulusExtended[0]);
+    USUBC1(r[1], gpumath::kSecp256k1ModulusExtended[1]);
+    USUBC1(r[2], gpumath::kSecp256k1ModulusExtended[2]);
+    USUBC1(r[3], gpumath::kSecp256k1ModulusExtended[3]);
+    USUB1(r[4], gpumath::kSecp256k1ModulusExtended[4]);
 }
 
 // ---------------------------------------------------------------------------------------
@@ -315,10 +317,10 @@ __device__ void ModNeg256(uint64_t *r, uint64_t *a)
     USUBC(t[1], 0ULL, a[1]);
     USUBC(t[2], 0ULL, a[2]);
     USUBC(t[3], 0ULL, a[3]);
-    UADDO(r[0], t[0], gpumath::Secp256k1ModulusWord(0));
-    UADDC(r[1], t[1], gpumath::Secp256k1ModulusWord(1));
-    UADDC(r[2], t[2], gpumath::Secp256k1ModulusWord(2));
-    UADD(r[3], t[3], gpumath::Secp256k1ModulusWord(3));
+    UADDO(r[0], t[0], gpumath::kSecp256k1Modulus[0]);
+    UADDC(r[1], t[1], gpumath::kSecp256k1Modulus[1]);
+    UADDC(r[2], t[2], gpumath::kSecp256k1Modulus[2]);
+    UADD(r[3], t[3], gpumath::kSecp256k1Modulus[3]);
 
 }
 
@@ -332,10 +334,10 @@ __device__ void ModNeg256(uint64_t *r)
     USUBC(t[1], 0ULL, r[1]);
     USUBC(t[2], 0ULL, r[2]);
     USUBC(t[3], 0ULL, r[3]);
-    UADDO(r[0], t[0], gpumath::Secp256k1ModulusWord(0));
-    UADDC(r[1], t[1], gpumath::Secp256k1ModulusWord(1));
-    UADDC(r[2], t[2], gpumath::Secp256k1ModulusWord(2));
-    UADD(r[3], t[3], gpumath::Secp256k1ModulusWord(3));
+    UADDO(r[0], t[0], gpumath::kSecp256k1Modulus[0]);
+    UADDC(r[1], t[1], gpumath::kSecp256k1Modulus[1]);
+    UADDC(r[2], t[2], gpumath::kSecp256k1Modulus[2]);
+    UADD(r[3], t[3], gpumath::kSecp256k1Modulus[3]);
 
 }
 
@@ -351,10 +353,10 @@ __device__ void ModSub256(uint64_t *r, uint64_t *a, uint64_t *b)
     USUBC(r[2], a[2], b[2]);
     USUBC(r[3], a[3], b[3]);
     USUB(t, 0ULL, 0ULL);
-    T[0] = gpumath::Secp256k1ModulusWord(0) & t;
-    T[1] = gpumath::Secp256k1ModulusWord(1) & t;
-    T[2] = gpumath::Secp256k1ModulusWord(2) & t;
-    T[3] = gpumath::Secp256k1ModulusWord(3) & t;
+    T[0] = gpumath::kSecp256k1Modulus[0] & t;
+    T[1] = gpumath::kSecp256k1Modulus[1] & t;
+    T[2] = gpumath::kSecp256k1Modulus[2] & t;
+    T[3] = gpumath::kSecp256k1Modulus[3] & t;
     UADDO1(r[0], T[0]);
     UADDC1(r[1], T[1]);
     UADDC1(r[2], T[2]);
@@ -374,10 +376,10 @@ __device__ void ModSub256(uint64_t *r, uint64_t *b)
     USUBC(r[2], r[2], b[2]);
     USUBC(r[3], r[3], b[3]);
     USUB(t, 0ULL, 0ULL);
-    T[0] = gpumath::Secp256k1ModulusWord(0) & t;
-    T[1] = gpumath::Secp256k1ModulusWord(1) & t;
-    T[2] = gpumath::Secp256k1ModulusWord(2) & t;
-    T[3] = gpumath::Secp256k1ModulusWord(3) & t;
+    T[0] = gpumath::kSecp256k1Modulus[0] & t;
+    T[1] = gpumath::kSecp256k1Modulus[1] & t;
+    T[2] = gpumath::kSecp256k1Modulus[2] & t;
+    T[3] = gpumath::kSecp256k1Modulus[3] & t;
     UADDO1(r[0], T[0]);
     UADDC1(r[1], T[1]);
     UADDC1(r[2], T[2]);
