@@ -44,6 +44,7 @@
 #include "GPUCompute.h"
 #include "GPUBase58.h"
 #include "CudaCompat.h"
+#include "NvtxRange.h"
 
 __global__ void compute_keys_comp_mode_ma(uint32_t mode, uint8_t* bloomLookUp, uint64_t BLOOM_BITS,
         uint8_t BLOOM_HASHES, uint64_t bloomReciprocal, uint32_t bloomMask, uint32_t bloomIsPowerOfTwo,
@@ -379,8 +380,13 @@ __global__ void compute_keys_mode_eth_sa(const uint32_t* __restrict__ hash, uint
 // ---------------------------------------------------------------------------------------
 
 template <typename KernelFunc, typename... Args>
-bool GPUEngine::LaunchKeyKernel(KernelFunc kernel, dim3 gridDim, dim3 blockDim, Args&&... args)
+bool GPUEngine::LaunchKeyKernel(const char* rangeName, KernelFunc kernel, dim3 gridDim, dim3 blockDim, Args&&... args)
 {
+#if defined(USE_NVTX)
+        NVTX_RANGE(rangeName);
+#else
+        (void)rangeName;
+#endif
 #if defined(CUDART_VERSION) && (CUDART_VERSION >= 12000)
         if (clusterLaunchActive_) {
                 const dim3 clusterDim = QueryClusterDimension(kernel, gridDim, blockDim);
@@ -662,9 +668,15 @@ GPUEngine::GPUEngine(Secp256K1* secp, int nbThreadGroup, int nbThreadPerGroup, i
                 CUDA_CHECK(cudaHostAlloc(reinterpret_cast<void**>(&inputBloomLookUpPinned), bloomBytes,
                         cudaHostAllocWriteCombined | cudaHostAllocMapped));
                 std::memcpy(inputBloomLookUpPinned, BLOOM_DATA, bloomBytes);
-                CUDA_CHECK(cudaMemcpyAsync(inputBloomLookUp, inputBloomLookUpPinned, bloomBytes,
-                        cudaMemcpyHostToDevice, stream_));
-                CUDA_CHECK(cudaStreamSynchronize(stream_));
+                {
+                        NVTX_RANGE("HtoD:BloomLookUp");
+                        CUDA_CHECK(cudaMemcpyAsync(inputBloomLookUp, inputBloomLookUpPinned, bloomBytes,
+                                cudaMemcpyHostToDevice, stream_));
+                }
+                {
+                        NVTX_RANGE("Sync:BloomLookUpUpload");
+                        CUDA_CHECK(cudaStreamSynchronize(stream_));
+                }
                 CUDA_CHECK(cudaFreeHost(inputBloomLookUpPinned));
                 inputBloomLookUpPinned = nullptr;
         }
@@ -832,9 +844,15 @@ GPUEngine::GPUEngine(Secp256K1* secp, int nbThreadGroup, int nbThreadPerGroup, i
 
         std::memcpy(inputHashORxpointPinned, hashORxpoint, K_SIZE * sizeof(uint32_t));
 
-        CUDA_CHECK(cudaMemcpyAsync(inputHashORxpoint, inputHashORxpointPinned, K_SIZE * sizeof(uint32_t),
-                cudaMemcpyHostToDevice, stream_));
-        CUDA_CHECK(cudaStreamSynchronize(stream_));
+        {
+                NVTX_RANGE("HtoD:HashOrXPoint");
+                CUDA_CHECK(cudaMemcpyAsync(inputHashORxpoint, inputHashORxpointPinned, K_SIZE * sizeof(uint32_t),
+                        cudaMemcpyHostToDevice, stream_));
+        }
+        {
+                NVTX_RANGE("Sync:HashOrXPointUpload");
+                CUDA_CHECK(cudaStreamSynchronize(stream_));
+        }
         CUDA_CHECK(cudaFreeHost(inputHashORxpointPinned));
         inputHashORxpointPinned = nullptr;
 
@@ -1001,17 +1019,26 @@ void GPUEngine::InitGenratorTable(Secp256K1* secp)
 		}
 	}
 
-	CUDA_CHECK(cudaMemcpyAsync(__2Gnx, _2GnxPinned, limbBytes, cudaMemcpyHostToDevice, stream_));
-	CUDA_CHECK(cudaMemcpyAsync(__2Gny, _2GnyPinned, limbBytes, cudaMemcpyHostToDevice, stream_));
-	CUDA_CHECK(cudaMemcpyAsync(_Gx, GxPinned, tableSize, cudaMemcpyHostToDevice, stream_));
-	CUDA_CHECK(cudaMemcpyAsync(_Gy, GyPinned, tableSize, cudaMemcpyHostToDevice, stream_));
+        {
+                NVTX_RANGE("HtoD:GeneratorTables");
+                CUDA_CHECK(cudaMemcpyAsync(__2Gnx, _2GnxPinned, limbBytes, cudaMemcpyHostToDevice, stream_));
+                CUDA_CHECK(cudaMemcpyAsync(__2Gny, _2GnyPinned, limbBytes, cudaMemcpyHostToDevice, stream_));
+                CUDA_CHECK(cudaMemcpyAsync(_Gx, GxPinned, tableSize, cudaMemcpyHostToDevice, stream_));
+                CUDA_CHECK(cudaMemcpyAsync(_Gy, GyPinned, tableSize, cudaMemcpyHostToDevice, stream_));
+        }
 
-	CUDA_CHECK(cudaMemcpyToSymbolAsync(_2Gnx, &__2Gnx, sizeof(uint64_t*), 0, cudaMemcpyHostToDevice, stream_));
-	CUDA_CHECK(cudaMemcpyToSymbolAsync(_2Gny, &__2Gny, sizeof(uint64_t*), 0, cudaMemcpyHostToDevice, stream_));
-	CUDA_CHECK(cudaMemcpyToSymbolAsync(Gx, &_Gx, sizeof(uint64_t*), 0, cudaMemcpyHostToDevice, stream_));
-	CUDA_CHECK(cudaMemcpyToSymbolAsync(Gy, &_Gy, sizeof(uint64_t*), 0, cudaMemcpyHostToDevice, stream_));
+        {
+                NVTX_RANGE("HtoD:GeneratorSymbols");
+                CUDA_CHECK(cudaMemcpyToSymbolAsync(_2Gnx, &__2Gnx, sizeof(uint64_t*), 0, cudaMemcpyHostToDevice, stream_));
+                CUDA_CHECK(cudaMemcpyToSymbolAsync(_2Gny, &__2Gny, sizeof(uint64_t*), 0, cudaMemcpyHostToDevice, stream_));
+                CUDA_CHECK(cudaMemcpyToSymbolAsync(Gx, &_Gx, sizeof(uint64_t*), 0, cudaMemcpyHostToDevice, stream_));
+                CUDA_CHECK(cudaMemcpyToSymbolAsync(Gy, &_Gy, sizeof(uint64_t*), 0, cudaMemcpyHostToDevice, stream_));
+        }
 
-	CUDA_CHECK(cudaStreamSynchronize(stream_));
+        {
+                NVTX_RANGE("Sync:GeneratorUpload");
+                CUDA_CHECK(cudaStreamSynchronize(stream_));
+        }
 
 	CUDA_CHECK(cudaFreeHost(_2GnxPinned));
 	CUDA_CHECK(cudaFreeHost(_2GnyPinned));
@@ -1239,18 +1266,18 @@ bool GPUEngine::callKernelSEARCH_MODE_MA()
         // Call the kernel (Perform STEP_SIZE keys per thread)
         if (coinType == COIN_BTC) {
                 if (compMode == SEARCH_COMPRESSED) {
-                        LaunchKeyKernel(compute_keys_comp_mode_ma, gridDim, blockDim,
+                        LaunchKeyKernel("compute_keys_comp_mode_ma", compute_keys_comp_mode_ma, gridDim, blockDim,
                                 compMode, inputBloomLookUp, BLOOM_BITS, BLOOM_HASHES, bloomFastModReciprocal_,
                                 bloomMask_, bloomIsPowerOfTwo_, inputKey, maxFound, outputBuffer, stepMultiplier);
                 }
                 else {
-                        LaunchKeyKernel(compute_keys_mode_ma, gridDim, blockDim,
+                        LaunchKeyKernel("compute_keys_mode_ma", compute_keys_mode_ma, gridDim, blockDim,
                                 compMode, inputBloomLookUp, BLOOM_BITS, BLOOM_HASHES, bloomFastModReciprocal_,
                                 bloomMask_, bloomIsPowerOfTwo_, inputKey, maxFound, outputBuffer, stepMultiplier);
                 }
         }
         else {
-                LaunchKeyKernel(compute_keys_mode_eth_ma, gridDim, blockDim,
+                LaunchKeyKernel("compute_keys_mode_eth_ma", compute_keys_mode_eth_ma, gridDim, blockDim,
                         inputBloomLookUp, BLOOM_BITS, BLOOM_HASHES, bloomFastModReciprocal_,
                         bloomMask_, bloomIsPowerOfTwo_, inputKey, maxFound, outputBuffer, stepMultiplier);
         }
@@ -1285,7 +1312,7 @@ bool GPUEngine::callKernelSEARCH_MODE_MX()
 
         // Call the kernel (Perform STEP_SIZE keys per thread)
         if (compMode == SEARCH_COMPRESSED) {
-                LaunchKeyKernel(compute_keys_comp_mode_mx, gridDim, blockDim,
+                LaunchKeyKernel("compute_keys_comp_mode_mx", compute_keys_comp_mode_mx, gridDim, blockDim,
                         compMode, inputBloomLookUp, BLOOM_BITS, BLOOM_HASHES, bloomFastModReciprocal_,
                         bloomMask_, bloomIsPowerOfTwo_, inputKey, maxFound, outputBuffer, stepMultiplier);
         }
@@ -1324,16 +1351,16 @@ bool GPUEngine::callKernelSEARCH_MODE_SA()
         // Call the kernel (Perform STEP_SIZE keys per thread)
         if (coinType == COIN_BTC) {
                 if (compMode == SEARCH_COMPRESSED) {
-                        LaunchKeyKernel(compute_keys_comp_mode_sa, gridDim, blockDim,
+                        LaunchKeyKernel("compute_keys_comp_mode_sa", compute_keys_comp_mode_sa, gridDim, blockDim,
                                 compMode, inputHashORxpoint, inputKey, maxFound, outputBuffer, stepMultiplier);
                 }
                 else {
-                        LaunchKeyKernel(compute_keys_mode_sa, gridDim, blockDim,
+                        LaunchKeyKernel("compute_keys_mode_sa", compute_keys_mode_sa, gridDim, blockDim,
                                 compMode, inputHashORxpoint, inputKey, maxFound, outputBuffer, stepMultiplier);
                 }
         }
         else {
-                LaunchKeyKernel(compute_keys_mode_eth_sa, gridDim, blockDim,
+                LaunchKeyKernel("compute_keys_mode_eth_sa", compute_keys_mode_eth_sa, gridDim, blockDim,
                         inputHashORxpoint, inputKey, maxFound, outputBuffer, stepMultiplier);
         }
 
@@ -1367,8 +1394,8 @@ bool GPUEngine::callKernelSEARCH_MODE_SX()
 
         // Call the kernel (Perform STEP_SIZE keys per thread)
         if (compMode == SEARCH_COMPRESSED) {
-                LaunchKeyKernel(compute_keys_comp_mode_sx, gridDim, blockDim,
-                        compMode, inputHashORxpoint, inputKey, maxFound, outputBuffer, stepMultiplier);
+        LaunchKeyKernel("compute_keys_comp_mode_sx", compute_keys_comp_mode_sx, gridDim, blockDim,
+                compMode, inputHashORxpoint, inputKey, maxFound, outputBuffer, stepMultiplier);
         }
         else {
                 printf("GPUEngine: PubKeys search doesn't support uncompressed\n");
@@ -1388,12 +1415,16 @@ void GPUEngine::waitForStream(bool spinWait)
         }
 
         if (spinWait || !eventCreated_) {
+                NVTX_RANGE("Sync:waitForStreamSpin");
                 CUDA_CHECK(cudaStreamSynchronize(stream_));
                 return;
         }
 
         CUDA_CHECK(cudaEventRecord(syncEvent_, stream_));
-        CUDA_CHECK(cudaEventSynchronize(syncEvent_));
+        {
+                NVTX_RANGE("Sync:waitForStreamEvent");
+                CUDA_CHECK(cudaEventSynchronize(syncEvent_));
+        }
 }
 
 // ----------------------------------------------------------------------------
@@ -1469,7 +1500,10 @@ bool GPUEngine::SetKeys(Point* p, int activeThreadCountOverride)
 
         // Fill device memory
         const size_t keyBufferSize = static_cast<size_t>(activeThreadCount) * 32u * 2u;
-        CUDA_CHECK(cudaMemcpyAsync(inputKey, inputKeyPinned, keyBufferSize, cudaMemcpyHostToDevice, stream_));
+        {
+                NVTX_RANGE("HtoD:InitialKeys");
+                CUDA_CHECK(cudaMemcpyAsync(inputKey, inputKeyPinned, keyBufferSize, cudaMemcpyHostToDevice, stream_));
+        }
         waitForStream(true);
 
         if (!rKey) {
@@ -1508,7 +1542,10 @@ bool GPUEngine::LaunchSEARCH_MODE_MA(std::vector<ITEM>& dataFound, bool spinWait
 
         dataFound.clear();
 
-        CUDA_CHECK(cudaMemcpyAsync(outputBufferPinned, outputBuffer, sizeof(uint32_t), cudaMemcpyDeviceToHost, stream_));
+        {
+                NVTX_RANGE("DtoH:MAFoundCount");
+                CUDA_CHECK(cudaMemcpyAsync(outputBufferPinned, outputBuffer, sizeof(uint32_t), cudaMemcpyDeviceToHost, stream_));
+        }
         waitForStream(spinWait);
 
         // Look for data found
@@ -1519,9 +1556,15 @@ bool GPUEngine::LaunchSEARCH_MODE_MA(std::vector<ITEM>& dataFound, bool spinWait
 
         const size_t payloadBytes = static_cast<size_t>(nbFound) * ITEM_SIZE_A + sizeof(uint32_t);
         if (payloadBytes > sizeof(uint32_t)) {
-                CUDA_CHECK(cudaMemcpyAsync(outputBufferPinned, outputBuffer, payloadBytes, cudaMemcpyDeviceToHost, stream_));
+                {
+                        NVTX_RANGE("DtoH:MAFoundPayload");
+                        CUDA_CHECK(cudaMemcpyAsync(outputBufferPinned, outputBuffer, payloadBytes, cudaMemcpyDeviceToHost, stream_));
+                }
         }
-        CUDA_CHECK(cudaStreamSynchronize(stream_));
+        {
+                NVTX_RANGE("Sync:MAResults");
+                CUDA_CHECK(cudaStreamSynchronize(stream_));
+        }
 
         if (nbFound > 0) {
                 dataFound.reserve(nbFound);
@@ -1559,7 +1602,10 @@ bool GPUEngine::LaunchSEARCH_MODE_SA(std::vector<ITEM>& dataFound, bool spinWait
 
         dataFound.clear();
 
-        CUDA_CHECK(cudaMemcpyAsync(outputBufferPinned, outputBuffer, sizeof(uint32_t), cudaMemcpyDeviceToHost, stream_));
+        {
+                NVTX_RANGE("DtoH:SAFoundCount");
+                CUDA_CHECK(cudaMemcpyAsync(outputBufferPinned, outputBuffer, sizeof(uint32_t), cudaMemcpyDeviceToHost, stream_));
+        }
         waitForStream(spinWait);
 
         // Look for data found
@@ -1570,9 +1616,15 @@ bool GPUEngine::LaunchSEARCH_MODE_SA(std::vector<ITEM>& dataFound, bool spinWait
 
         const size_t payloadBytes = static_cast<size_t>(nbFound) * ITEM_SIZE_A + sizeof(uint32_t);
         if (payloadBytes > sizeof(uint32_t)) {
-                CUDA_CHECK(cudaMemcpyAsync(outputBufferPinned, outputBuffer, payloadBytes, cudaMemcpyDeviceToHost, stream_));
+                {
+                        NVTX_RANGE("DtoH:SAFoundPayload");
+                        CUDA_CHECK(cudaMemcpyAsync(outputBufferPinned, outputBuffer, payloadBytes, cudaMemcpyDeviceToHost, stream_));
+                }
         }
-        CUDA_CHECK(cudaStreamSynchronize(stream_));
+        {
+                NVTX_RANGE("Sync:SAResults");
+                CUDA_CHECK(cudaStreamSynchronize(stream_));
+        }
 
         if (nbFound > 0) {
                 dataFound.reserve(nbFound);
@@ -1605,7 +1657,10 @@ bool GPUEngine::LaunchSEARCH_MODE_MX(std::vector<ITEM>& dataFound, bool spinWait
 
         dataFound.clear();
 
-        CUDA_CHECK(cudaMemcpyAsync(outputBufferPinned, outputBuffer, sizeof(uint32_t), cudaMemcpyDeviceToHost, stream_));
+        {
+                NVTX_RANGE("DtoH:MXFoundCount");
+                CUDA_CHECK(cudaMemcpyAsync(outputBufferPinned, outputBuffer, sizeof(uint32_t), cudaMemcpyDeviceToHost, stream_));
+        }
         waitForStream(spinWait);
 
         // Look for data found
@@ -1616,9 +1671,15 @@ bool GPUEngine::LaunchSEARCH_MODE_MX(std::vector<ITEM>& dataFound, bool spinWait
 
         const size_t payloadBytes = static_cast<size_t>(nbFound) * ITEM_SIZE_X + sizeof(uint32_t);
         if (payloadBytes > sizeof(uint32_t)) {
-                CUDA_CHECK(cudaMemcpyAsync(outputBufferPinned, outputBuffer, payloadBytes, cudaMemcpyDeviceToHost, stream_));
+                {
+                        NVTX_RANGE("DtoH:MXFoundPayload");
+                        CUDA_CHECK(cudaMemcpyAsync(outputBufferPinned, outputBuffer, payloadBytes, cudaMemcpyDeviceToHost, stream_));
+                }
         }
-        CUDA_CHECK(cudaStreamSynchronize(stream_));
+        {
+                NVTX_RANGE("Sync:MXResults");
+                CUDA_CHECK(cudaStreamSynchronize(stream_));
+        }
 
         if (nbFound > 0) {
                 dataFound.reserve(nbFound);
@@ -1657,7 +1718,10 @@ bool GPUEngine::LaunchSEARCH_MODE_SX(std::vector<ITEM>& dataFound, bool spinWait
 
         dataFound.clear();
 
-        CUDA_CHECK(cudaMemcpyAsync(outputBufferPinned, outputBuffer, sizeof(uint32_t), cudaMemcpyDeviceToHost, stream_));
+        {
+                NVTX_RANGE("DtoH:SXFoundCount");
+                CUDA_CHECK(cudaMemcpyAsync(outputBufferPinned, outputBuffer, sizeof(uint32_t), cudaMemcpyDeviceToHost, stream_));
+        }
         waitForStream(spinWait);
 
         // Look for data found
@@ -1668,9 +1732,15 @@ bool GPUEngine::LaunchSEARCH_MODE_SX(std::vector<ITEM>& dataFound, bool spinWait
 
         const size_t payloadBytes = static_cast<size_t>(nbFound) * ITEM_SIZE_X + sizeof(uint32_t);
         if (payloadBytes > sizeof(uint32_t)) {
-                CUDA_CHECK(cudaMemcpyAsync(outputBufferPinned, outputBuffer, payloadBytes, cudaMemcpyDeviceToHost, stream_));
+                {
+                        NVTX_RANGE("DtoH:SXFoundPayload");
+                        CUDA_CHECK(cudaMemcpyAsync(outputBufferPinned, outputBuffer, payloadBytes, cudaMemcpyDeviceToHost, stream_));
+                }
         }
-        CUDA_CHECK(cudaStreamSynchronize(stream_));
+        {
+                NVTX_RANGE("Sync:SXResults");
+                CUDA_CHECK(cudaStreamSynchronize(stream_));
+        }
 
         if (nbFound > 0) {
                 dataFound.reserve(nbFound);

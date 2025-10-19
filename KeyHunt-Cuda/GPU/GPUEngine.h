@@ -107,7 +107,7 @@ private:
         int CheckBinary(const uint8_t* x, int K_LENGTH);
 
         template <typename KernelFunc, typename... Args>
-        bool LaunchKeyKernel(KernelFunc kernel, dim3 gridDim, dim3 blockDim, Args&&... args);
+        bool LaunchKeyKernel(const char* rangeName, KernelFunc kernel, dim3 gridDim, dim3 blockDim, Args&&... args);
 
 #if defined(CUDART_VERSION) && (CUDART_VERSION >= 12000)
         template <typename KernelFunc>
