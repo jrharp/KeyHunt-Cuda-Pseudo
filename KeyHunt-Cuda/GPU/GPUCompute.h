@@ -55,6 +55,13 @@ struct GeneratorTableView {
         }
 };
 
+constexpr size_t kGeneratorSharedTableBytes =
+        2ULL * static_cast<size_t>(GeneratorTableView::kPointCount)
+        * static_cast<size_t>(GeneratorTableView::kLimbCount) * sizeof(uint64_t);
+
+constexpr bool kPrefetchGeneratorTablesSupported =
+        kGeneratorSharedTableBytes <= static_cast<size_t>(48U * 1024U);
+
 template <typename ThreadBlock>
 __device__ inline GeneratorTableView PrefetchGeneratorTables(ThreadBlock block,
         uint64_t (*sharedGx)[GeneratorTableView::kLimbCount],
