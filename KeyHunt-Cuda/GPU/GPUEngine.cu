@@ -33,6 +33,12 @@
 #include <vector>
 #include <utility>
 
+#if defined(CUDART_VERSION) && (CUDART_VERSION >= 12000)
+#include <cooperative_groups.h>
+#include <cooperative_groups/memcpy_async.h>
+namespace cg = cooperative_groups;
+#endif
+
 #if defined(_MSC_VER)
 #include <intrin.h>
 #endif
@@ -243,6 +249,7 @@ struct DeviceCapabilityInfo
         int maxThreadsPerMultiprocessor = 0;
         int maxBlocksPerMultiprocessor = 0;
         int memoryPoolsSupported = 0;
+        int cooperativeLaunch = 0;
         int cooperativeMultiDeviceLaunch = 0;
         int clusterLaunch = 0;
         int memSyncDomainCount = 1;
@@ -275,6 +282,9 @@ DeviceCapabilityInfo QueryDeviceCapabilityInfo(int deviceId)
         CUDA_CHECK(cudaDeviceGetAttribute(&info.maxThreadsPerMultiprocessor, cudaDevAttrMaxThreadsPerMultiProcessor, deviceId));
         info.maxBlocksPerMultiprocessor = GetAttributeOrDefault(cudaDevAttrMaxBlocksPerMultiprocessor, deviceId);
         info.memoryPoolsSupported = GetAttributeOrDefault(cudaDevAttrMemoryPoolsSupported, deviceId);
+#ifdef cudaDevAttrCooperativeLaunch
+        info.cooperativeLaunch = GetAttributeOrDefault(cudaDevAttrCooperativeLaunch, deviceId);
+#endif
 #ifdef cudaDevAttrCooperativeMultiDeviceLaunch
         info.cooperativeMultiDeviceLaunch = GetAttributeOrDefault(cudaDevAttrCooperativeMultiDeviceLaunch, deviceId);
 #endif
@@ -312,6 +322,52 @@ AsyncAllocatorConfig ConfigureAsyncAllocatorForDevice(int deviceId)
                         CUDA_CHECK(attrStatus);
                 }
 #endif
+#ifdef cudaMemPoolAttrReuseAllowOpportunistic
+                int reuseOpportunistic = 1;
+                const cudaError_t reuseOpportunisticStatus = cudaMemPoolSetAttribute(pool,
+                        cudaMemPoolAttrReuseAllowOpportunistic, &reuseOpportunistic);
+                if (reuseOpportunisticStatus == cudaErrorNotSupported || reuseOpportunisticStatus == cudaErrorInvalidValue) {
+                        cudaGetLastError();
+                }
+                else {
+                        CUDA_CHECK(reuseOpportunisticStatus);
+                }
+#endif
+#ifdef cudaMemPoolAttrReuseAllowInternalDependencies
+                int reuseInternal = 1;
+                const cudaError_t reuseInternalStatus = cudaMemPoolSetAttribute(pool,
+                        cudaMemPoolAttrReuseAllowInternalDependencies, &reuseInternal);
+                if (reuseInternalStatus == cudaErrorNotSupported || reuseInternalStatus == cudaErrorInvalidValue) {
+                        cudaGetLastError();
+                }
+                else {
+                        CUDA_CHECK(reuseInternalStatus);
+                }
+#endif
+#ifdef cudaMemPoolAttrReuseFollowEventDependencies
+                int reuseFollowEvents = 1;
+                const cudaError_t reuseFollowEventsStatus = cudaMemPoolSetAttribute(pool,
+                        cudaMemPoolAttrReuseFollowEventDependencies, &reuseFollowEvents);
+                if (reuseFollowEventsStatus == cudaErrorNotSupported || reuseFollowEventsStatus == cudaErrorInvalidValue) {
+                        cudaGetLastError();
+                }
+                else {
+                        CUDA_CHECK(reuseFollowEventsStatus);
+                }
+#endif
+#ifdef cudaMemPoolAttrAccessDesc
+                cudaMemAccessDesc accessDesc{};
+                accessDesc.location.type = cudaMemLocationTypeDevice;
+                accessDesc.location.id = deviceId;
+                accessDesc.flags = cudaMemAccessFlagsProtReadWrite;
+                const cudaError_t accessStatus = cudaMemPoolSetAttribute(pool, cudaMemPoolAttrAccessDesc, &accessDesc);
+                if (accessStatus == cudaErrorNotSupported || accessStatus == cudaErrorInvalidValue) {
+                        cudaGetLastError();
+                }
+                else {
+                        CUDA_CHECK(accessStatus);
+                }
+#endif
         }
         else if (status == cudaErrorNotSupported || status == cudaErrorInvalidValue) {
                 cudaGetLastError();
@@ -329,72 +385,167 @@ AsyncAllocatorConfig ConfigureAsyncAllocatorForDevice(int deviceId)
 
 // ---------------------------------------------------------------------------------------
 
+namespace {
+
+template <typename ComputeFunctor>
+__device__ void RunKeyComputation(uint64_t* keys, int stepMultiplier, ComputeFunctor compute)
+{
+        const int baseIndex = (blockIdx.x * blockDim.x) * 8;
+        uint64_t* xPtr = keys + baseIndex;
+        uint64_t* yPtr = xPtr + 4 * blockDim.x;
+        for (int iteration = 0; iteration < stepMultiplier; ++iteration) {
+                const uint32_t baseOffset = static_cast<uint32_t>(iteration) * static_cast<uint32_t>(GRP_SIZE);
+                compute(xPtr, yPtr, baseOffset);
+        }
+}
+
+template <typename T, size_t N>
+__device__ void LoadToShared(T (&shared)[N], const T* __restrict__ source)
+{
+#if defined(CUDART_VERSION) && (CUDART_VERSION >= 12000)
+        cg::thread_block block = cg::this_thread_block();
+        cg::memcpy_async(block, shared, source, sizeof(T) * N);
+        cg::wait(block);
+#else
+        if (threadIdx.x < static_cast<int>(N)) {
+                shared[threadIdx.x] = source[threadIdx.x];
+        }
+        __syncthreads();
+#endif
+}
+
+struct ModeMaFunctor
+{
+        uint32_t mode;
+        uint8_t* bloomLookUp;
+        uint64_t BLOOM_BITS;
+        uint8_t BLOOM_HASHES;
+        uint64_t bloomReciprocal;
+        uint32_t bloomMask;
+        uint32_t bloomIsPowerOfTwo;
+        uint32_t maxFound;
+        uint32_t* found;
+
+        __device__ void operator()(uint64_t* xPtr, uint64_t* yPtr, uint32_t baseOffset) const
+        {
+                ComputeKeysSEARCH_MODE_MA(mode, xPtr, yPtr, bloomLookUp, BLOOM_BITS, BLOOM_HASHES,
+                        bloomReciprocal, bloomMask, bloomIsPowerOfTwo, maxFound, found, baseOffset);
+        }
+};
+
+struct ModeMxFunctor
+{
+        uint32_t mode;
+        uint8_t* bloomLookUp;
+        uint64_t BLOOM_BITS;
+        uint8_t BLOOM_HASHES;
+        uint64_t bloomReciprocal;
+        uint32_t bloomMask;
+        uint32_t bloomIsPowerOfTwo;
+        uint32_t maxFound;
+        uint32_t* found;
+
+        __device__ void operator()(uint64_t* xPtr, uint64_t* yPtr, uint32_t baseOffset) const
+        {
+                ComputeKeysSEARCH_MODE_MX(mode, xPtr, yPtr, bloomLookUp, BLOOM_BITS, BLOOM_HASHES,
+                        bloomReciprocal, bloomMask, bloomIsPowerOfTwo, maxFound, found, baseOffset);
+        }
+};
+
+struct ModeSaFunctor
+{
+        uint32_t mode;
+        const uint32_t* hash160;
+        uint32_t maxFound;
+        uint32_t* found;
+
+        __device__ void operator()(uint64_t* xPtr, uint64_t* yPtr, uint32_t baseOffset) const
+        {
+                ComputeKeysSEARCH_MODE_SA(mode, xPtr, yPtr, hash160, maxFound, found, baseOffset);
+        }
+};
+
+struct ModeSxFunctor
+{
+        uint32_t mode;
+        uint32_t* xpoint;
+        uint32_t maxFound;
+        uint32_t* found;
+
+        __device__ void operator()(uint64_t* xPtr, uint64_t* yPtr, uint32_t baseOffset) const
+        {
+                ComputeKeysSEARCH_MODE_SX(mode, xPtr, yPtr, xpoint, maxFound, found, baseOffset);
+        }
+};
+
+struct ModeEthMaFunctor
+{
+        uint8_t* bloomLookUp;
+        uint64_t BLOOM_BITS;
+        uint8_t BLOOM_HASHES;
+        uint64_t bloomReciprocal;
+        uint32_t bloomMask;
+        uint32_t bloomIsPowerOfTwo;
+        uint32_t maxFound;
+        uint32_t* found;
+
+        __device__ void operator()(uint64_t* xPtr, uint64_t* yPtr, uint32_t baseOffset) const
+        {
+                ComputeKeysSEARCH_ETH_MODE_MA(xPtr, yPtr, bloomLookUp, BLOOM_BITS, BLOOM_HASHES,
+                        bloomReciprocal, bloomMask, bloomIsPowerOfTwo, maxFound, found, baseOffset);
+        }
+};
+
+struct ModeEthSaFunctor
+{
+        const uint32_t* hash;
+        uint32_t maxFound;
+        uint32_t* found;
+
+        __device__ void operator()(uint64_t* xPtr, uint64_t* yPtr, uint32_t baseOffset) const
+        {
+                ComputeKeysSEARCH_ETH_MODE_SA(xPtr, yPtr, hash, maxFound, found, baseOffset);
+        }
+};
+
+} // namespace
+
 // mode multiple addresses
 __global__ void compute_keys_mode_ma(uint32_t mode, uint8_t* bloomLookUp, uint64_t BLOOM_BITS, uint8_t BLOOM_HASHES,
         uint64_t bloomReciprocal, uint32_t bloomMask, uint32_t bloomIsPowerOfTwo,
         uint64_t* keys, uint32_t maxFound, uint32_t* found, int stepMultiplier)
 {
-
-        int xPtr = (blockIdx.x * blockDim.x) * 8;
-        int yPtr = xPtr + 4 * blockDim.x;
-        for (int iteration = 0; iteration < stepMultiplier; ++iteration) {
-                const uint32_t baseOffset = static_cast<uint32_t>(iteration) * static_cast<uint32_t>(GRP_SIZE);
-                ComputeKeysSEARCH_MODE_MA(mode, keys + xPtr, keys + yPtr, bloomLookUp, BLOOM_BITS, BLOOM_HASHES,
-                        bloomReciprocal, bloomMask, bloomIsPowerOfTwo, maxFound, found, baseOffset);
-        }
-
+        RunKeyComputation(keys, stepMultiplier,
+                ModeMaFunctor{mode, bloomLookUp, BLOOM_BITS, BLOOM_HASHES, bloomReciprocal, bloomMask,
+                        bloomIsPowerOfTwo, maxFound, found});
 }
 
 __global__ void compute_keys_comp_mode_ma(uint32_t mode, uint8_t* bloomLookUp, uint64_t BLOOM_BITS, uint8_t BLOOM_HASHES,
         uint64_t bloomReciprocal, uint32_t bloomMask, uint32_t bloomIsPowerOfTwo,
         uint64_t* keys, uint32_t maxFound, uint32_t* found, int stepMultiplier)
 {
-
-        int xPtr = (blockIdx.x * blockDim.x) * 8;
-        int yPtr = xPtr + 4 * blockDim.x;
-        for (int iteration = 0; iteration < stepMultiplier; ++iteration) {
-                const uint32_t baseOffset = static_cast<uint32_t>(iteration) * static_cast<uint32_t>(GRP_SIZE);
-                ComputeKeysSEARCH_MODE_MA(mode, keys + xPtr, keys + yPtr, bloomLookUp, BLOOM_BITS, BLOOM_HASHES,
-                        bloomReciprocal, bloomMask, bloomIsPowerOfTwo, maxFound, found, baseOffset);
-        }
-
+        RunKeyComputation(keys, stepMultiplier,
+                ModeMaFunctor{mode, bloomLookUp, BLOOM_BITS, BLOOM_HASHES, bloomReciprocal, bloomMask,
+                        bloomIsPowerOfTwo, maxFound, found});
 }
 
 // mode single address
 __global__ void compute_keys_mode_sa(uint32_t mode, const uint32_t* __restrict__ hash160, uint64_t* keys, uint32_t maxFound, uint32_t* found,
         int stepMultiplier)
 {
-
-        int xPtr = (blockIdx.x * blockDim.x) * 8;
-        int yPtr = xPtr + 4 * blockDim.x;
         __shared__ uint32_t sharedHash160[5];
-        if (threadIdx.x < 5) {
-                sharedHash160[threadIdx.x] = hash160[threadIdx.x];
-        }
-        __syncthreads();
-        for (int iteration = 0; iteration < stepMultiplier; ++iteration) {
-                const uint32_t baseOffset = static_cast<uint32_t>(iteration) * static_cast<uint32_t>(GRP_SIZE);
-                ComputeKeysSEARCH_MODE_SA(mode, keys + xPtr, keys + yPtr, sharedHash160, maxFound, found, baseOffset);
-        }
-
+        LoadToShared(sharedHash160, hash160);
+        RunKeyComputation(keys, stepMultiplier,
+                ModeSaFunctor{mode, sharedHash160, maxFound, found});
 }
 
 __global__ void compute_keys_comp_mode_sa(uint32_t mode, const uint32_t* __restrict__ hash160, uint64_t* keys, uint32_t maxFound, uint32_t* found,
         int stepMultiplier)
 {
-
-        int xPtr = (blockIdx.x * blockDim.x) * 8;
-        int yPtr = xPtr + 4 * blockDim.x;
         __shared__ uint32_t sharedHash160[5];
-        if (threadIdx.x < 5) {
-                sharedHash160[threadIdx.x] = hash160[threadIdx.x];
-        }
-        __syncthreads();
-        for (int iteration = 0; iteration < stepMultiplier; ++iteration) {
-                const uint32_t baseOffset = static_cast<uint32_t>(iteration) * static_cast<uint32_t>(GRP_SIZE);
-                ComputeKeysSEARCH_MODE_SA(mode, keys + xPtr, keys + yPtr, sharedHash160, maxFound, found, baseOffset);
-        }
-
+        LoadToShared(sharedHash160, hash160);
+        RunKeyComputation(keys, stepMultiplier,
+                ModeSaFunctor{mode, sharedHash160, maxFound, found});
 }
 
 // mode multiple x points
@@ -402,29 +553,17 @@ __global__ void compute_keys_comp_mode_mx(uint32_t mode, uint8_t* bloomLookUp, u
         uint64_t bloomReciprocal, uint32_t bloomMask, uint32_t bloomIsPowerOfTwo, uint64_t* keys,
         uint32_t maxFound, uint32_t* found, int stepMultiplier)
 {
-
-        int xPtr = (blockIdx.x * blockDim.x) * 8;
-        int yPtr = xPtr + 4 * blockDim.x;
-        for (int iteration = 0; iteration < stepMultiplier; ++iteration) {
-                const uint32_t baseOffset = static_cast<uint32_t>(iteration) * static_cast<uint32_t>(GRP_SIZE);
-                ComputeKeysSEARCH_MODE_MX(mode, keys + xPtr, keys + yPtr, bloomLookUp, BLOOM_BITS, BLOOM_HASHES,
-                        bloomReciprocal, bloomMask, bloomIsPowerOfTwo, maxFound, found, baseOffset);
-        }
-
+        RunKeyComputation(keys, stepMultiplier,
+                ModeMxFunctor{mode, bloomLookUp, BLOOM_BITS, BLOOM_HASHES, bloomReciprocal, bloomMask,
+                        bloomIsPowerOfTwo, maxFound, found});
 }
 
 // mode single x point
 __global__ void compute_keys_comp_mode_sx(uint32_t mode, uint32_t* xpoint, uint64_t* keys, uint32_t maxFound, uint32_t* found,
         int stepMultiplier)
 {
-
-        int xPtr = (blockIdx.x * blockDim.x) * 8;
-        int yPtr = xPtr + 4 * blockDim.x;
-        for (int iteration = 0; iteration < stepMultiplier; ++iteration) {
-                const uint32_t baseOffset = static_cast<uint32_t>(iteration) * static_cast<uint32_t>(GRP_SIZE);
-                ComputeKeysSEARCH_MODE_SX(mode, keys + xPtr, keys + yPtr, xpoint, maxFound, found, baseOffset);
-        }
-
+        RunKeyComputation(keys, stepMultiplier,
+                ModeSxFunctor{mode, xpoint, maxFound, found});
 }
 
 // ---------------------------------------------------------------------------------------
@@ -434,33 +573,18 @@ __global__ void compute_keys_mode_eth_ma(uint8_t* bloomLookUp, uint64_t BLOOM_BI
         uint64_t bloomReciprocal, uint32_t bloomMask, uint32_t bloomIsPowerOfTwo, uint64_t* keys,
         uint32_t maxFound, uint32_t* found, int stepMultiplier)
 {
-
-        int xPtr = (blockIdx.x * blockDim.x) * 8;
-        int yPtr = xPtr + 4 * blockDim.x;
-        for (int iteration = 0; iteration < stepMultiplier; ++iteration) {
-                const uint32_t baseOffset = static_cast<uint32_t>(iteration) * static_cast<uint32_t>(GRP_SIZE);
-                ComputeKeysSEARCH_ETH_MODE_MA(keys + xPtr, keys + yPtr, bloomLookUp, BLOOM_BITS, BLOOM_HASHES,
-                        bloomReciprocal, bloomMask, bloomIsPowerOfTwo, maxFound, found, baseOffset);
-        }
-
+        RunKeyComputation(keys, stepMultiplier,
+                ModeEthMaFunctor{bloomLookUp, BLOOM_BITS, BLOOM_HASHES, bloomReciprocal, bloomMask,
+                        bloomIsPowerOfTwo, maxFound, found});
 }
 
 __global__ void compute_keys_mode_eth_sa(const uint32_t* __restrict__ hash, uint64_t* keys, uint32_t maxFound, uint32_t* found,
         int stepMultiplier)
 {
-
-        int xPtr = (blockIdx.x * blockDim.x) * 8;
-        int yPtr = xPtr + 4 * blockDim.x;
         __shared__ uint32_t sharedHash[5];
-        if (threadIdx.x < 5) {
-                sharedHash[threadIdx.x] = hash[threadIdx.x];
-        }
-        __syncthreads();
-        for (int iteration = 0; iteration < stepMultiplier; ++iteration) {
-                const uint32_t baseOffset = static_cast<uint32_t>(iteration) * static_cast<uint32_t>(GRP_SIZE);
-                ComputeKeysSEARCH_ETH_MODE_SA(keys + xPtr, keys + yPtr, sharedHash, maxFound, found, baseOffset);
-        }
-
+        LoadToShared(sharedHash, hash);
+        RunKeyComputation(keys, stepMultiplier,
+                ModeEthSaFunctor{sharedHash, maxFound, found});
 }
 
 // ---------------------------------------------------------------------------------------
@@ -498,6 +622,32 @@ bool GPUEngine::LaunchKeyKernel(KernelFunc kernel, dim3 gridDim, dim3 blockDim, 
                                 CheckCuda(status, "cudaLaunchKernelEx", __FILE__, __LINE__);
                                 return true;
                         }
+                }
+        }
+        if (cooperativeLaunchActive_) {
+                cudaLaunchConfig_t config{};
+                config.gridDim = gridDim;
+                config.blockDim = blockDim;
+                config.dynamicSmemBytes = 0;
+                config.stream = stream_;
+
+                cudaLaunchAttribute attribute{};
+                attribute.id = cudaLaunchAttributeCooperative;
+                attribute.val.cooperative = 1;
+                config.attrs = &attribute;
+                config.numAttrs = 1;
+
+                const cudaError_t status = cudaLaunchKernelEx(&config, kernel, std::forward<Args>(args)...);
+                if (status == cudaSuccess) {
+                        return true;
+                }
+                if (status == cudaErrorNotSupported || status == cudaErrorInvalidValue) {
+                        cudaGetLastError();
+                        cooperativeLaunchActive_ = false;
+                }
+                else {
+                        CheckCuda(status, "cudaLaunchKernelEx", __FILE__, __LINE__);
+                        return true;
                 }
         }
 #endif
@@ -657,9 +807,17 @@ GPUEngine::GPUEngine(Secp256K1* secp, int nbThreadGroup, int nbThreadPerGroup, i
                 std::fprintf(stderr,
                         "GPUEngine: thread block clusters supported, attempting cudaLaunchKernelEx launches.\n");
         }
+        cooperativeLaunchSupported_ = capability.cooperativeLaunch != 0;
+        cooperativeLaunchActive_ = cooperativeLaunchSupported_;
+        if (cooperativeLaunchSupported_ && !clusterLaunchSupported_) {
+                std::fprintf(stderr,
+                        "GPUEngine: cooperative launches supported, enabling cudaLaunchKernelEx cooperative attribute.\n");
+        }
 #else
         clusterLaunchSupported_ = false;
         clusterLaunchActive_ = false;
+        cooperativeLaunchSupported_ = false;
+        cooperativeLaunchActive_ = false;
 #endif
 
         if (nbThreadPerGroup <= 0) {
@@ -821,9 +979,17 @@ GPUEngine::GPUEngine(Secp256K1* secp, int nbThreadGroup, int nbThreadPerGroup, i
                 std::fprintf(stderr,
                         "GPUEngine: thread block clusters supported, attempting cudaLaunchKernelEx launches.\n");
         }
+        cooperativeLaunchSupported_ = capability.cooperativeLaunch != 0;
+        cooperativeLaunchActive_ = cooperativeLaunchSupported_;
+        if (cooperativeLaunchSupported_ && !clusterLaunchSupported_) {
+                std::fprintf(stderr,
+                        "GPUEngine: cooperative launches supported, enabling cudaLaunchKernelEx cooperative attribute.\n");
+        }
 #else
         clusterLaunchSupported_ = false;
         clusterLaunchActive_ = false;
+        cooperativeLaunchSupported_ = false;
+        cooperativeLaunchActive_ = false;
 #endif
 
         if (nbThreadPerGroup <= 0) {
@@ -1202,8 +1368,9 @@ void GPUEngine::PrintCudaInfo()
                         capability.warpSize,
                         capability.maxThreadsPerMultiprocessor,
                         capability.maxBlocksPerMultiprocessor);
-                printf("    Memory pools: %s, Coop multi-device: %s, Cluster launch: %s, Mem sync domains: %d\n",
+                printf("    Memory pools: %s, Coop launch: %s, Coop multi-device: %s, Cluster launch: %s, Mem sync domains: %d\n",
                         capability.memoryPoolsSupported ? "yes" : "no",
+                        capability.cooperativeLaunch ? "yes" : "no",
                         capability.cooperativeMultiDeviceLaunch ? "yes" : "no",
                         capability.clusterLaunch ? "yes" : "no",
                         capability.memSyncDomainCount);

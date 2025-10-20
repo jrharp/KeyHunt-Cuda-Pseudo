@@ -175,6 +175,8 @@ private:
 
         bool clusterLaunchSupported_ = false;
         bool clusterLaunchActive_ = false;
+        bool cooperativeLaunchSupported_ = false;
+        bool cooperativeLaunchActive_ = false;
 
 };
 
