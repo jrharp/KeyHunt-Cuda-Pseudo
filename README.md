@@ -27,6 +27,36 @@ A lot of gratitude to all the developers whose codes has been used here.
 - CPU and GPU can not be used together; when GPU support is enabled the CPU search threads are automatically disabled so that the GPU can process the entire keyspace efficiently.
 - Minimum entries for bloom filter is >= 2.
 
+## Building and Profiling with NVIDIA Nsight Compute 25.3.1
+
+Nsight Compute 25.3.1 expects binaries built with CUDA 12 or newer and benefits from NVTX ranges plus source line information when profiling kernels. The GNU Make build exposes a `PROFILE` flag that enables these options and links against `nvToolsExt` so that Nsight tools can attribute collected metrics to the high-level KeyHunt kernels.
+
+1. Ensure the `CUDA` environment variable points to the CUDA toolkit that ships with Nsight Compute 25.3.1 (for example `/usr/local/cuda-12.5`).
+2. Build a GPU-enabled binary with profiling markers enabled:
+   ```bash
+   make gpu=1 PROFILE=1 CCAP=86
+   ```
+   * Set `CCAP` to the compute capability of your GPU (e.g. `90` for compute capability 9.0 devices).
+   * The resulting binary is placed in `build/ccap_<CCAP>/bin/KeyHunt`.
+
+### Collecting a kernel profile with Nsight Compute
+
+Run the KeyHunt binary under Nsight Compute with your desired command-line arguments. The example below profiles a single kernel launch while searching compressed Bitcoin addresses:
+
+```bash
+ncu --set full --target-processes all \
+    --launch-skip 0 --launch-count 1 \
+    ./build/ccap_86/bin/KeyHunt \
+    --gpu --gpui 0 --gpux 256,256 \
+    -m addresses --coin BTC --range 1:1fffffffff \
+    -i puzzle_1_37_hash160_out_sorted.bin
+```
+
+* The `PROFILE=1` build injects NVTX ranges named after the GPU kernels (for example `compute_keys_comp_mode_ma`) and names the GPU stream `GPUEngine Stream`, allowing Nsight Compute and Nsight Systems to attribute collected metrics to specific parts of the workload.
+* Adjust the Nsight Compute CLI options (`--set`, `--launch-skip`, `--launch-count`, etc.) to suit your investigation. You can also open the generated `.ncu-rep` file in the Nsight Compute GUI for an interactive analysis.
+
+Refer to the [Nsight Compute documentation](https://docs.nvidia.com/nsight-compute/) for additional profiling presets and workflow tips.
+
 ## addresses_to_hash160.py
 ```
 python3 addresses_to_hash160.py addresses_in.txt hash160_out.bin

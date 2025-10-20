@@ -33,6 +33,53 @@
 #include <vector>
 #include <utility>
 
+#if defined(ENABLE_NVTX)
+#include <nvToolsExt.h>
+#include <nvToolsExtCuda.h>
+namespace {
+class NvtxRange
+{
+public:
+        explicit NvtxRange(const char* message, uint32_t color = 0xFF2563EB)
+                : id_(0)
+        {
+                if (message == nullptr || message[0] == '\0') {
+                        message = "KeyHunt Kernel";
+                }
+                nvtxEventAttributes_t event{};
+                event.version = NVTX_VERSION;
+                event.size = NVTX_EVENT_ATTRIB_STRUCT_SIZE;
+                event.colorType = NVTX_COLOR_ARGB;
+                event.color = color;
+                event.messageType = NVTX_MESSAGE_TYPE_ASCII;
+                event.message.ascii = message;
+                id_ = nvtxRangeStartEx(&event);
+        }
+
+        NvtxRange(const NvtxRange&) = delete;
+        NvtxRange& operator=(const NvtxRange&) = delete;
+
+        ~NvtxRange()
+        {
+                if (id_ != 0) {
+                        nvtxRangeEnd(id_);
+                }
+        }
+
+private:
+        nvtxRangeId_t id_;
+};
+} // namespace
+#else
+namespace {
+class NvtxRange
+{
+public:
+        explicit NvtxRange(const char*, uint32_t = 0) {}
+};
+} // namespace
+#endif
+
 #if defined(CUDART_VERSION) && (CUDART_VERSION >= 12000)
 #include <cooperative_groups.h>
 #include <cooperative_groups/memcpy_async.h>
@@ -610,8 +657,17 @@ __global__ void compute_keys_mode_eth_sa(const uint32_t* __restrict__ hash, uint
 // ---------------------------------------------------------------------------------------
 
 template <typename KernelFunc, typename... Args>
-bool GPUEngine::LaunchKeyKernel(KernelFunc kernel, dim3 gridDim, dim3 blockDim, Args&&... args)
+bool GPUEngine::LaunchKeyKernel(const char* label, KernelFunc kernel, dim3 gridDim, dim3 blockDim, Args&&... args)
 {
+#if defined(ENABLE_NVTX)
+        if (label == nullptr || label[0] == '\0') {
+                label = "KeyHunt Kernel";
+        }
+        nvtxNameCuFunctionA(reinterpret_cast<const void*>(kernel), label);
+        NvtxRange range{label};
+#else
+        (void)label;
+#endif
 #if defined(CUDART_VERSION) && (CUDART_VERSION >= 12000)
         if (clusterLaunchActive_) {
                 const dim3 clusterDim = QueryClusterDimension(kernel, gridDim, blockDim);
@@ -908,6 +964,9 @@ GPUEngine::GPUEngine(Secp256K1* secp, int nbThreadGroup, int nbThreadPerGroup, i
         CUDA_CHECK(cudaDeviceSetLimit(cudaLimitStackSize, stackSize));
 
         CUDA_CHECK(cudaStreamCreateWithFlags(&stream_, cudaStreamNonBlocking));
+#if defined(ENABLE_NVTX)
+        nvtxNameCudaStreamA(stream_, "GPUEngine Stream");
+#endif
         streamCreated_ = true;
         CUDA_CHECK(cudaEventCreateWithFlags(&syncEvent_, cudaEventDisableTiming));
         eventCreated_ = true;
@@ -1080,6 +1139,9 @@ GPUEngine::GPUEngine(Secp256K1* secp, int nbThreadGroup, int nbThreadPerGroup, i
         CUDA_CHECK(cudaDeviceSetLimit(cudaLimitStackSize, stackSize));
 
         CUDA_CHECK(cudaStreamCreateWithFlags(&stream_, cudaStreamNonBlocking));
+#if defined(ENABLE_NVTX)
+        nvtxNameCudaStreamA(stream_, "GPUEngine Stream");
+#endif
         streamCreated_ = true;
         CUDA_CHECK(cudaEventCreateWithFlags(&syncEvent_, cudaEventDisableTiming));
         eventCreated_ = true;
@@ -1513,18 +1575,18 @@ bool GPUEngine::callKernelSEARCH_MODE_MA()
         // Call the kernel (Perform STEP_SIZE keys per thread)
         if (coinType == COIN_BTC) {
                 if (compMode == SEARCH_COMPRESSED) {
-                        LaunchKeyKernel(compute_keys_comp_mode_ma, gridDim, blockDim,
+                        LaunchKeyKernel("compute_keys_comp_mode_ma", compute_keys_comp_mode_ma, gridDim, blockDim,
                                 compMode, inputBloomLookUp, BLOOM_BITS, BLOOM_HASHES, bloomFastModReciprocal_,
                                 bloomMask_, bloomIsPowerOfTwo_, inputKey, maxFound, outputBuffer, stepMultiplier);
                 }
                 else {
-                        LaunchKeyKernel(compute_keys_mode_ma, gridDim, blockDim,
+                        LaunchKeyKernel("compute_keys_mode_ma", compute_keys_mode_ma, gridDim, blockDim,
                                 compMode, inputBloomLookUp, BLOOM_BITS, BLOOM_HASHES, bloomFastModReciprocal_,
                                 bloomMask_, bloomIsPowerOfTwo_, inputKey, maxFound, outputBuffer, stepMultiplier);
                 }
         }
         else {
-                LaunchKeyKernel(compute_keys_mode_eth_ma, gridDim, blockDim,
+                LaunchKeyKernel("compute_keys_mode_eth_ma", compute_keys_mode_eth_ma, gridDim, blockDim,
                         inputBloomLookUp, BLOOM_BITS, BLOOM_HASHES, bloomFastModReciprocal_,
                         bloomMask_, bloomIsPowerOfTwo_, inputKey, maxFound, outputBuffer, stepMultiplier);
         }
@@ -1559,7 +1621,7 @@ bool GPUEngine::callKernelSEARCH_MODE_MX()
 
         // Call the kernel (Perform STEP_SIZE keys per thread)
         if (compMode == SEARCH_COMPRESSED) {
-                LaunchKeyKernel(compute_keys_comp_mode_mx, gridDim, blockDim,
+                LaunchKeyKernel("compute_keys_comp_mode_mx", compute_keys_comp_mode_mx, gridDim, blockDim,
                         compMode, inputBloomLookUp, BLOOM_BITS, BLOOM_HASHES, bloomFastModReciprocal_,
                         bloomMask_, bloomIsPowerOfTwo_, inputKey, maxFound, outputBuffer, stepMultiplier);
         }
@@ -1598,16 +1660,16 @@ bool GPUEngine::callKernelSEARCH_MODE_SA()
         // Call the kernel (Perform STEP_SIZE keys per thread)
         if (coinType == COIN_BTC) {
                 if (compMode == SEARCH_COMPRESSED) {
-                        LaunchKeyKernel(compute_keys_comp_mode_sa, gridDim, blockDim,
+                        LaunchKeyKernel("compute_keys_comp_mode_sa", compute_keys_comp_mode_sa, gridDim, blockDim,
                                 compMode, inputHashORxpoint, inputKey, maxFound, outputBuffer, stepMultiplier);
                 }
                 else {
-                        LaunchKeyKernel(compute_keys_mode_sa, gridDim, blockDim,
+                        LaunchKeyKernel("compute_keys_mode_sa", compute_keys_mode_sa, gridDim, blockDim,
                                 compMode, inputHashORxpoint, inputKey, maxFound, outputBuffer, stepMultiplier);
                 }
         }
         else {
-                LaunchKeyKernel(compute_keys_mode_eth_sa, gridDim, blockDim,
+                LaunchKeyKernel("compute_keys_mode_eth_sa", compute_keys_mode_eth_sa, gridDim, blockDim,
                         inputHashORxpoint, inputKey, maxFound, outputBuffer, stepMultiplier);
         }
 
@@ -1641,7 +1703,7 @@ bool GPUEngine::callKernelSEARCH_MODE_SX()
 
         // Call the kernel (Perform STEP_SIZE keys per thread)
         if (compMode == SEARCH_COMPRESSED) {
-                LaunchKeyKernel(compute_keys_comp_mode_sx, gridDim, blockDim,
+                LaunchKeyKernel("compute_keys_comp_mode_sx", compute_keys_comp_mode_sx, gridDim, blockDim,
                         compMode, inputHashORxpoint, inputKey, maxFound, outputBuffer, stepMultiplier);
         }
         else {

@@ -11,6 +11,17 @@ SRC = Base58.cpp IntGroup.cpp Main.cpp Bloom.cpp Random.cpp \
 
 # Dynamic object and build directories based on CCAP value
 CCAP ?= 86  # Default Compute Capability
+PROFILE ?= 0
+
+PROFILE_CXXFLAGS :=
+PROFILE_NVCCFLAGS :=
+NVTX_LIB :=
+
+ifeq ($(PROFILE),1)
+PROFILE_CXXFLAGS += -g -DENABLE_NVTX
+PROFILE_NVCCFLAGS += -lineinfo -DENABLE_NVTX
+NVTX_LIB := -lnvToolsExt
+endif
 OBJDIR = build/ccap_$(CCAP)/obj
 BINDIR = build/ccap_$(CCAP)/bin
 
@@ -40,10 +51,6 @@ CUDA_INC        := $(CUDA)/include
 CUDA_INC_TGT    := $(CUDA)/targets
 CUDA_INCLUDES   := -I$(CUDA_INC) -I$(CUDA_INC_TGT)
 
-# Apply to both host and nvcc compilations:
-CXXFLAGS += $(CUDA_INCLUDES) -std=c++23
-NVCCFLAGS += $(CUDA_INCLUDES)
-
 
 CXXCUDA    = /usr/bin/g++
 NVCC       = $(CUDA)/bin/nvcc
@@ -54,15 +61,18 @@ CXXFLAGS   = -DWITHGPU -m64 -mssse3 -Wno-write-strings -g -I. -I$(CUDA)/include 
 else
 CXXFLAGS   = -DWITHGPU -m64 -mssse3 -Wno-write-strings -O2 -I. -I$(CUDA)/include -std=c++23
 endif
-LFLAGS     = -lgmp -lpthread -L$(CUDA)/lib64 -lcudart -lssl -lcrypto -lsqlite3
+LFLAGS     = -lgmp -lpthread -L$(CUDA)/lib64 -lcudart -lssl -lcrypto -lsqlite3 $(NVTX_LIB)
 else
 ifdef debug
 CXXFLAGS   = -m64 -mssse3 -Wno-write-strings -g -I. -I$(CUDA)/include -std=c++23
 else
 CXXFLAGS   = -m64 -mssse3 -Wno-write-strings -O2 -I. -I$(CUDA)/include -std=c++23
 endif
-LFLAGS     = -lgmp -lpthread
+LFLAGS     = -lgmp -lpthread $(NVTX_LIB)
 endif
+
+CXXFLAGS += $(CUDA_INCLUDES) -std=c++23 $(PROFILE_CXXFLAGS)
+NVCCFLAGS += $(CUDA_INCLUDES) $(PROFILE_NVCCFLAGS)
 
 #---------------------------------------------------------------------
 
@@ -71,13 +81,13 @@ $(OBJDIR)/GPU/GPUEngine.o: GPU/GPUEngine.cu | $(OBJDIR)/GPU
 ifdef debug
 	$(NVCC) -G -g -maxrregcount=0 --ptxas-options=-v --compile \
 	--compiler-options -fPIC -ccbin $(CXXCUDA) -m64 \
-	$(CUDA_INCLUDES) \
+	$(NVCCFLAGS) \
 	-gencode=arch=compute_$(CCAP),code=sm_$(CCAP) \
 	-o $(OBJDIR)/GPU/GPUEngine.o -c GPU/GPUEngine.cu
 else
 	$(NVCC) -maxrregcount=0 --ptxas-options=-v --compile \
 	--compiler-options -fPIC -ccbin $(CXXCUDA) -m64 -O2 \
-	$(CUDA_INCLUDES) \
+	$(NVCCFLAGS) \
 	-gencode=arch=compute_$(CCAP),code=sm_$(CCAP) \
 	-o $(OBJDIR)/GPU/GPUEngine.o -c GPU/GPUEngine.cu
 endif
