@@ -15,8 +15,50 @@
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
 */
 
+#include <cooperative_groups.h>
+#include <cooperative_groups/memcpy_async.h>
 #include <cuda_runtime.h>
 #include <stdint.h>
+
+#include "GPUMath.h"
+
+namespace cg = cooperative_groups;
+
+struct GeneratorTableView {
+        static constexpr int kLimbCount = 4;
+        static constexpr int kPointCount = GRP_SIZE / 2 + 1;
+
+        const uint64_t* __restrict__ gx = nullptr;
+        const uint64_t* __restrict__ gy = nullptr;
+
+        __device__ __forceinline__ const uint64_t* GxPtr(int index) const
+        {
+                return gx + (index * kLimbCount);
+        }
+
+        __device__ __forceinline__ const uint64_t* GyPtr(int index) const
+        {
+                return gy + (index * kLimbCount);
+        }
+};
+
+template <typename ThreadBlock>
+__device__ inline GeneratorTableView PrefetchGeneratorTables(ThreadBlock block,
+        uint64_t (*sharedGx)[GeneratorTableView::kLimbCount],
+        uint64_t (*sharedGy)[GeneratorTableView::kLimbCount])
+{
+        constexpr size_t copyBytes = static_cast<size_t>(GeneratorTableView::kPointCount)
+                * static_cast<size_t>(GeneratorTableView::kLimbCount) * sizeof(uint64_t);
+
+        cg::memcpy_async(block, &sharedGx[0][0], Gx, copyBytes);
+        cg::memcpy_async(block, &sharedGy[0][0], Gy, copyBytes);
+        cg::wait(block);
+
+        GeneratorTableView view{};
+        view.gx = &sharedGx[0][0];
+        view.gy = &sharedGy[0][0];
+        return view;
+}
 
 #if __CUDA_ARCH__ >= 350
 #define GPU_LDG(ptr) __ldg(ptr)
@@ -140,18 +182,37 @@ __device__ __forceinline__ void CheckPointSEARCH_MODE_MA(uint32_t* __restrict__ 
         uint32_t bloomMask, uint32_t bloomIsPowerOfTwo, uint32_t maxFound, uint32_t* __restrict__ out)
 {
         const uint32_t tid = (blockIdx.x * blockDim.x) + threadIdx.x;
+        const bool matched = BloomCheck(_h, bloomLookUp, BLOOM_BITS, BLOOM_HASHES, 20,
+                bloomReciprocal, bloomMask, bloomIsPowerOfTwo) > 0;
+        const unsigned int active = __activemask();
+        const unsigned int ballot = __ballot_sync(active, matched);
+        if (ballot == 0u) {
+                return;
+        }
 
-        if (BloomCheck(_h, bloomLookUp, BLOOM_BITS, BLOOM_HASHES, 20, bloomReciprocal, bloomMask, bloomIsPowerOfTwo) > 0) {
-                const uint32_t pos = atomicAdd(out, 1u);
-                if (pos < maxFound) {
-                        const uint32_t base = pos * ITEM_SIZE_A32;
-                        out[base + 1] = tid;
-                        const uint32_t packed = (mode ? 0x80000000u : 0u) | (offset & 0x7FFFFFFFu);
-                        out[base + 2] = packed;
-                        #pragma unroll
-                        for (int i = 0; i < 5; ++i) {
-                                out[base + 3 + i] = _h[i];
-                        }
+        const int lane = threadIdx.x & 31;
+        const int warpPrefix = __popc(ballot & ((1u << lane) - 1u));
+        const int warpHits = __popc(ballot);
+
+        uint32_t warpBase = 0u;
+        if (lane == 0) {
+                warpBase = atomicAdd(out, static_cast<uint32_t>(warpHits));
+        }
+        warpBase = __shfl_sync(active, warpBase, 0);
+
+        if (!matched) {
+                return;
+        }
+
+        const uint32_t pos = warpBase + static_cast<uint32_t>(warpPrefix);
+        if (pos < maxFound) {
+                const uint32_t base = pos * ITEM_SIZE_A32;
+                out[base + 1] = tid;
+                const uint32_t packed = (mode ? 0x80000000u : 0u) | (offset & 0x7FFFFFFFu);
+                out[base + 2] = packed;
+#pragma unroll
+                for (int i = 0; i < 5; ++i) {
+                        out[base + 3 + i] = _h[i];
                 }
         }
 }
@@ -163,20 +224,39 @@ __device__ __forceinline__ void CheckPointSEARCH_MODE_MX(uint32_t* __restrict__ 
         uint32_t bloomMask, uint32_t bloomIsPowerOfTwo, uint32_t maxFound, uint32_t* __restrict__ out)
 {
         const uint32_t tid = (blockIdx.x * blockDim.x) + threadIdx.x;
+        const bool matched = BloomCheck(_h, bloomLookUp, BLOOM_BITS, BLOOM_HASHES, 32,
+                bloomReciprocal, bloomMask, bloomIsPowerOfTwo) > 0;
+        const unsigned int active = __activemask();
+        const unsigned int ballot = __ballot_sync(active, matched);
+        if (ballot == 0u) {
+                return;
+        }
 
-        if (BloomCheck(_h, bloomLookUp, BLOOM_BITS, BLOOM_HASHES, 32, bloomReciprocal, bloomMask, bloomIsPowerOfTwo) > 0) {
-                const uint32_t pos = atomicAdd(out, 1u);
-                if (pos < maxFound) {
-                        const uint32_t base = pos * ITEM_SIZE_X32;
-                        out[base + 1] = tid;
-                        const uint32_t packed = (mode ? 0x80000000u : 0u) | (offset & 0x7FFFFFFFu);
-                        out[base + 2] = packed;
-                        #pragma unroll
-                        for (int i = 0; i < 8; ++i) {
-                                out[base + 3 + i] = _h[i];
-                        }
+        const int lane = threadIdx.x & 31;
+        const int warpPrefix = __popc(ballot & ((1u << lane) - 1u));
+        const int warpHits = __popc(ballot);
+
+        uint32_t warpBase = 0u;
+        if (lane == 0) {
+                warpBase = atomicAdd(out, static_cast<uint32_t>(warpHits));
+        }
+        warpBase = __shfl_sync(active, warpBase, 0);
+
+        if (!matched) {
+                return;
+        }
+
+        const uint32_t pos = warpBase + static_cast<uint32_t>(warpPrefix);
+        if (pos < maxFound) {
+                const uint32_t base = pos * ITEM_SIZE_X32;
+                out[base + 1] = tid;
+                const uint32_t packed = (mode ? 0x80000000u : 0u) | (offset & 0x7FFFFFFFu);
+                out[base + 2] = packed;
+#pragma unroll
+                for (int i = 0; i < 8; ++i) {
+                        out[base + 3 + i] = _h[i];
                 }
-	}
+        }
 }
 
 // ---------------------------------------------------------------------------------------
@@ -219,22 +299,36 @@ __device__ __forceinline__ void CheckPointSEARCH_MODE_SA(uint32_t* __restrict__ 
         const uint32_t* __restrict__ hash160, uint32_t maxFound, uint32_t* __restrict__ out)
 {
         const uint32_t tid = (blockIdx.x * blockDim.x) + threadIdx.x;
-
-        if (!MatchHash(_h, hash160)) {
+        const bool matched = Hash160Equals(_h, hash160);
+        const unsigned int active = __activemask();
+        const unsigned int ballot = __ballot_sync(active, matched);
+        if (ballot == 0u) {
                 return;
         }
 
-        if (Hash160Equals(_h, hash160)) {
-                const uint32_t pos = atomicAdd(out, 1u);
-                if (pos < maxFound) {
-                        const uint32_t base = pos * ITEM_SIZE_A32;
-                        out[base + 1] = tid;
-                        const uint32_t packed = (mode ? 0x80000000u : 0u) | (offset & 0x7FFFFFFFu);
-                        out[base + 2] = packed;
-                        #pragma unroll
-                        for (int i = 0; i < 5; ++i) {
-                                out[base + 3 + i] = _h[i];
-                        }
+        const int lane = threadIdx.x & 31;
+        const int warpPrefix = __popc(ballot & ((1u << lane) - 1u));
+        const int warpHits = __popc(ballot);
+
+        uint32_t warpBase = 0u;
+        if (lane == 0) {
+                warpBase = atomicAdd(out, static_cast<uint32_t>(warpHits));
+        }
+        warpBase = __shfl_sync(active, warpBase, 0);
+
+        if (!matched) {
+                return;
+        }
+
+        const uint32_t pos = warpBase + static_cast<uint32_t>(warpPrefix);
+        if (pos < maxFound) {
+                const uint32_t base = pos * ITEM_SIZE_A32;
+                out[base + 1] = tid;
+                const uint32_t packed = (mode ? 0x80000000u : 0u) | (offset & 0x7FFFFFFFu);
+                out[base + 2] = packed;
+#pragma unroll
+                for (int i = 0; i < 5; ++i) {
+                        out[base + 3 + i] = _h[i];
                 }
         }
 }
@@ -245,20 +339,38 @@ __device__ __forceinline__ void CheckPointSEARCH_MODE_SX(uint32_t* __restrict__ 
         uint32_t* __restrict__ xpoint, uint32_t maxFound, uint32_t* __restrict__ out)
 {
         const uint32_t tid = (blockIdx.x * blockDim.x) + threadIdx.x;
+        const bool matched = MatchXPoint(_h, xpoint);
+        const unsigned int active = __activemask();
+        const unsigned int ballot = __ballot_sync(active, matched);
+        if (ballot == 0u) {
+                return;
+        }
 
-        if (MatchXPoint(_h, xpoint)) {
-                const uint32_t pos = atomicAdd(out, 1u);
-                if (pos < maxFound) {
-                        const uint32_t base = pos * ITEM_SIZE_X32;
-                        out[base + 1] = tid;
-                        const uint32_t packed = (mode ? 0x80000000u : 0u) | (offset & 0x7FFFFFFFu);
-                        out[base + 2] = packed;
-                        #pragma unroll
-                        for (int i = 0; i < 8; ++i) {
-                                out[base + 3 + i] = _h[i];
-                        }
+        const int lane = threadIdx.x & 31;
+        const int warpPrefix = __popc(ballot & ((1u << lane) - 1u));
+        const int warpHits = __popc(ballot);
+
+        uint32_t warpBase = 0u;
+        if (lane == 0) {
+                warpBase = atomicAdd(out, static_cast<uint32_t>(warpHits));
+        }
+        warpBase = __shfl_sync(active, warpBase, 0);
+
+        if (!matched) {
+                return;
+        }
+
+        const uint32_t pos = warpBase + static_cast<uint32_t>(warpPrefix);
+        if (pos < maxFound) {
+                const uint32_t base = pos * ITEM_SIZE_X32;
+                out[base + 1] = tid;
+                const uint32_t packed = (mode ? 0x80000000u : 0u) | (offset & 0x7FFFFFFFu);
+                out[base + 2] = packed;
+#pragma unroll
+                for (int i = 0; i < 8; ++i) {
+                        out[base + 3 + i] = _h[i];
                 }
-	}
+        }
 }
 
 // -----------------------------------------------------------------------------------------
@@ -410,7 +522,7 @@ __device__ __noinline__ void CheckPubSEARCH_MODE_SX(uint32_t mode, uint64_t* px,
 #define CHECK_HASH_SEARCH_MODE_MA(offset) CheckHashSEARCH_MODE_MA(mode, px, py, offset, bloomLookUp, BLOOM_BITS, BLOOM_HASHES, bloomReciprocal, bloomMask, bloomIsPowerOfTwo, maxFound, out)
 
 __device__ void ComputeKeysSEARCH_MODE_MA(uint32_t mode, uint64_t* startx, uint64_t* starty,
-        uint8_t* bloomLookUp, uint64_t BLOOM_BITS, uint8_t BLOOM_HASHES, uint64_t bloomReciprocal,
+        const GeneratorTableView& tables, uint8_t* bloomLookUp, uint64_t BLOOM_BITS, uint8_t BLOOM_HASHES, uint64_t bloomReciprocal,
         uint32_t bloomMask, uint32_t bloomIsPowerOfTwo, uint32_t maxFound, uint32_t* out, uint32_t baseOffset)
 {
 
@@ -426,6 +538,9 @@ __device__ void ComputeKeysSEARCH_MODE_MA(uint32_t mode, uint64_t* startx, uint6
         uint64_t twoGx[4];
         uint64_t twoGy[4];
 
+        const uint64_t* __restrict__ tableGx = tables.gx;
+        const uint64_t* __restrict__ tableGy = tables.gy;
+
         LoadGeneratorPoint(twoGx, _2Gnx);
         LoadGeneratorPoint(twoGy, _2Gny);
 
@@ -440,11 +555,11 @@ __device__ void ComputeKeysSEARCH_MODE_MA(uint32_t mode, uint64_t* startx, uint6
 	uint32_t i;
         for (i = 0; i < HSIZE; i++) {
                 uint64_t gxVal[4];
-                LoadGeneratorPoint(gxVal, Gx + 4 * i);
+                LoadGeneratorPoint(gxVal, tableGx + 4 * i);
                 ModSub256(dx[i], gxVal, sx);
         }
         uint64_t centerGx[4];
-        LoadGeneratorPoint(centerGx, Gx + 4 * i);
+        LoadGeneratorPoint(centerGx, tableGx + 4 * i);
         ModSub256(dx[i], centerGx, sx);   // For the first point
         ModSub256(dx[i + 1], twoGx, sx); // For the next center point
 
@@ -466,8 +581,8 @@ __device__ void ComputeKeysSEARCH_MODE_MA(uint32_t mode, uint64_t* startx, uint6
                 Load256(py, sy);
                 uint64_t gxVal[4];
                 uint64_t gyVal[4];
-                LoadGeneratorPoint(gxVal, Gx + 4 * i);
-                LoadGeneratorPoint(gyVal, Gy + 4 * i);
+                LoadGeneratorPoint(gxVal, tableGx + 4 * i);
+                LoadGeneratorPoint(gyVal, tableGy + 4 * i);
                 ModSub256(dy, gyVal, py);
 
                 _ModMult(_s, dy, dx[i]);                 //  s = (p2.y-p1.y)*inverse(p2.x-p1.x)
@@ -505,8 +620,8 @@ __device__ void ComputeKeysSEARCH_MODE_MA(uint32_t mode, uint64_t* startx, uint6
         Load256(py, sy);
         uint64_t boundaryGx[4];
         uint64_t boundaryGy[4];
-        LoadGeneratorPoint(boundaryGx, Gx + 4 * i);
-        LoadGeneratorPoint(boundaryGy, Gy + 4 * i);
+        LoadGeneratorPoint(boundaryGx, tableGx + 4 * i);
+        LoadGeneratorPoint(boundaryGy, tableGy + 4 * i);
         ModNeg256(dy, boundaryGy);
         ModSub256(dy, py);
 
@@ -571,7 +686,7 @@ __device__ __noinline__ void CheckHashSEARCH_MODE_SA(uint32_t mode, uint64_t* px
 #define CHECK_HASH_SEARCH_MODE_SA(offset) CheckHashSEARCH_MODE_SA(mode, px, py, offset, hash160, maxFound, out)
 
 __device__ void ComputeKeysSEARCH_MODE_SA(uint32_t mode, uint64_t* startx, uint64_t* starty,
-        const uint32_t* __restrict__ hash160, uint32_t maxFound, uint32_t* out, uint32_t baseOffset)
+        const GeneratorTableView& tables, const uint32_t* __restrict__ hash160, uint32_t maxFound, uint32_t* out, uint32_t baseOffset)
 {
 
         uint64_t dx[GRP_SIZE / 2 + 1][4];
@@ -586,12 +701,8 @@ __device__ void ComputeKeysSEARCH_MODE_SA(uint32_t mode, uint64_t* startx, uint6
         uint64_t twoGx[4];
         uint64_t twoGy[4];
 
-        __shared__ uint32_t sharedHash160[5];
-        if (threadIdx.x < 5) {
-                sharedHash160[threadIdx.x] = hash160[threadIdx.x];
-        }
-        __syncthreads();
-        hash160 = sharedHash160;
+        const uint64_t* __restrict__ tableGx = tables.gx;
+        const uint64_t* __restrict__ tableGy = tables.gy;
 
         LoadGeneratorPoint(twoGx, _2Gnx);
         LoadGeneratorPoint(twoGy, _2Gny);
@@ -607,11 +718,11 @@ __device__ void ComputeKeysSEARCH_MODE_SA(uint32_t mode, uint64_t* startx, uint6
 	uint32_t i;
         for (i = 0; i < HSIZE; i++) {
                 uint64_t gxVal[4];
-                LoadGeneratorPoint(gxVal, Gx + 4 * i);
+                LoadGeneratorPoint(gxVal, tableGx + 4 * i);
                 ModSub256(dx[i], gxVal, sx);
         }
         uint64_t centerGx[4];
-        LoadGeneratorPoint(centerGx, Gx + 4 * i);
+        LoadGeneratorPoint(centerGx, tableGx + 4 * i);
         ModSub256(dx[i], centerGx, sx);   // For the first point
         ModSub256(dx[i + 1], twoGx, sx); // For the next center point
 
@@ -633,8 +744,8 @@ __device__ void ComputeKeysSEARCH_MODE_SA(uint32_t mode, uint64_t* startx, uint6
                 Load256(py, sy);
                 uint64_t gxVal[4];
                 uint64_t gyVal[4];
-                LoadGeneratorPoint(gxVal, Gx + 4 * i);
-                LoadGeneratorPoint(gyVal, Gy + 4 * i);
+                LoadGeneratorPoint(gxVal, tableGx + 4 * i);
+                LoadGeneratorPoint(gyVal, tableGy + 4 * i);
                 ModSub256(dy, gyVal, py);
 
                 _ModMult(_s, dy, dx[i]);             //  s = (p2.y-p1.y)*inverse(p2.x-p1.x)
@@ -672,8 +783,8 @@ __device__ void ComputeKeysSEARCH_MODE_SA(uint32_t mode, uint64_t* startx, uint6
         Load256(py, sy);
         uint64_t boundaryGx[4];
         uint64_t boundaryGy[4];
-        LoadGeneratorPoint(boundaryGx, Gx + 4 * i);
-        LoadGeneratorPoint(boundaryGy, Gy + 4 * i);
+        LoadGeneratorPoint(boundaryGx, tableGx + 4 * i);
+        LoadGeneratorPoint(boundaryGy, tableGy + 4 * i);
         ModNeg256(dy, boundaryGy);
         ModSub256(dy, py);
 
@@ -720,11 +831,11 @@ __device__ void ComputeKeysSEARCH_MODE_SA(uint32_t mode, uint64_t* startx, uint6
 #define CHECK_PUB_SEARCH_MODE_MX(offset) CheckPubSEARCH_MODE_MX(mode, px, py, offset, bloomLookUp, BLOOM_BITS, BLOOM_HASHES, bloomReciprocal, bloomMask, bloomIsPowerOfTwo, maxFound, out)
 
 __device__ void ComputeKeysSEARCH_MODE_MX(uint32_t mode, uint64_t* startx, uint64_t* starty,
-        uint8_t* bloomLookUp, uint64_t BLOOM_BITS, uint8_t BLOOM_HASHES, uint64_t bloomReciprocal,
+        const GeneratorTableView& tables, uint8_t* bloomLookUp, uint64_t BLOOM_BITS, uint8_t BLOOM_HASHES, uint64_t bloomReciprocal,
         uint32_t bloomMask, uint32_t bloomIsPowerOfTwo, uint32_t maxFound, uint32_t* out, uint32_t baseOffset)
 {
 
-	uint64_t dx[GRP_SIZE / 2 + 1][4];
+        uint64_t dx[GRP_SIZE / 2 + 1][4];
 	uint64_t px[4];
 	uint64_t py[4];
         uint64_t pyn[4];
@@ -735,6 +846,9 @@ __device__ void ComputeKeysSEARCH_MODE_MX(uint32_t mode, uint64_t* startx, uint6
         uint64_t _p2[4];
         uint64_t twoGx[4];
         uint64_t twoGy[4];
+
+        const uint64_t* __restrict__ tableGx = tables.gx;
+        const uint64_t* __restrict__ tableGy = tables.gy;
 
         LoadGeneratorPoint(twoGx, _2Gnx);
         LoadGeneratorPoint(twoGy, _2Gny);
@@ -750,11 +864,11 @@ __device__ void ComputeKeysSEARCH_MODE_MX(uint32_t mode, uint64_t* startx, uint6
 	uint32_t i;
         for (i = 0; i < HSIZE; i++) {
                 uint64_t gxVal[4];
-                LoadGeneratorPoint(gxVal, Gx + 4 * i);
+                LoadGeneratorPoint(gxVal, tableGx + 4 * i);
                 ModSub256(dx[i], gxVal, sx);
         }
         uint64_t centerGx[4];
-        LoadGeneratorPoint(centerGx, Gx + 4 * i);
+        LoadGeneratorPoint(centerGx, tableGx + 4 * i);
         ModSub256(dx[i], centerGx, sx);   // For the first point
         ModSub256(dx[i + 1], twoGx, sx); // For the next center point
 
@@ -776,8 +890,8 @@ __device__ void ComputeKeysSEARCH_MODE_MX(uint32_t mode, uint64_t* startx, uint6
                 Load256(py, sy);
                 uint64_t gxVal[4];
                 uint64_t gyVal[4];
-                LoadGeneratorPoint(gxVal, Gx + 4 * i);
-                LoadGeneratorPoint(gyVal, Gy + 4 * i);
+                LoadGeneratorPoint(gxVal, tableGx + 4 * i);
+                LoadGeneratorPoint(gyVal, tableGy + 4 * i);
                 ModSub256(dy, gyVal, py);
 
                 _ModMult(_s, dy, dx[i]);                 //  s = (p2.y-p1.y)*inverse(p2.x-p1.x)
@@ -815,8 +929,8 @@ __device__ void ComputeKeysSEARCH_MODE_MX(uint32_t mode, uint64_t* startx, uint6
         Load256(py, sy);
         uint64_t boundaryGx[4];
         uint64_t boundaryGy[4];
-        LoadGeneratorPoint(boundaryGx, Gx + 4 * i);
-        LoadGeneratorPoint(boundaryGy, Gy + 4 * i);
+        LoadGeneratorPoint(boundaryGx, tableGx + 4 * i);
+        LoadGeneratorPoint(boundaryGy, tableGy + 4 * i);
         ModNeg256(dy, boundaryGy);
         ModSub256(dy, py);
 
@@ -861,11 +975,11 @@ __device__ void ComputeKeysSEARCH_MODE_MX(uint32_t mode, uint64_t* startx, uint6
 #define CHECK_PUB_SEARCH_MODE_SX(offset) CheckPubSEARCH_MODE_SX(mode, px, py, offset, xpoint, maxFound, out)
 
 __device__ void ComputeKeysSEARCH_MODE_SX(uint32_t mode, uint64_t* startx, uint64_t* starty,
-        uint32_t* xpoint, uint32_t maxFound, uint32_t* out, uint32_t baseOffset)
+        const GeneratorTableView& tables, uint32_t* xpoint, uint32_t maxFound, uint32_t* out, uint32_t baseOffset)
 {
 
-	uint64_t dx[GRP_SIZE / 2 + 1][4];
-	uint64_t px[4];
+        uint64_t dx[GRP_SIZE / 2 + 1][4];
+        uint64_t px[4];
 	uint64_t py[4];
         uint64_t pyn[4];
         uint64_t sx[4];
@@ -875,6 +989,9 @@ __device__ void ComputeKeysSEARCH_MODE_SX(uint32_t mode, uint64_t* startx, uint6
         uint64_t _p2[4];
         uint64_t twoGx[4];
         uint64_t twoGy[4];
+
+        const uint64_t* __restrict__ tableGx = tables.gx;
+        const uint64_t* __restrict__ tableGy = tables.gy;
 
         LoadGeneratorPoint(twoGx, _2Gnx);
         LoadGeneratorPoint(twoGy, _2Gny);
@@ -890,11 +1007,11 @@ __device__ void ComputeKeysSEARCH_MODE_SX(uint32_t mode, uint64_t* startx, uint6
 	uint32_t i;
         for (i = 0; i < HSIZE; i++) {
                 uint64_t gxVal[4];
-                LoadGeneratorPoint(gxVal, Gx + 4 * i);
+                LoadGeneratorPoint(gxVal, tableGx + 4 * i);
                 ModSub256(dx[i], gxVal, sx);
         }
         uint64_t centerGx[4];
-        LoadGeneratorPoint(centerGx, Gx + 4 * i);
+        LoadGeneratorPoint(centerGx, tableGx + 4 * i);
         ModSub256(dx[i], centerGx, sx);      // For the first point
         ModSub256(dx[i + 1], twoGx, sx);       // For the next center point
 
@@ -916,8 +1033,8 @@ __device__ void ComputeKeysSEARCH_MODE_SX(uint32_t mode, uint64_t* startx, uint6
                 Load256(py, sy);
                 uint64_t gxVal[4];
                 uint64_t gyVal[4];
-                LoadGeneratorPoint(gxVal, Gx + 4 * i);
-                LoadGeneratorPoint(gyVal, Gy + 4 * i);
+                LoadGeneratorPoint(gxVal, tableGx + 4 * i);
+                LoadGeneratorPoint(gyVal, tableGy + 4 * i);
                 ModSub256(dy, gyVal, py);
 
                 _ModMult(_s, dy, dx[i]);           //  s = (p2.y-p1.y)*inverse(p2.x-p1.x)
@@ -955,8 +1072,8 @@ __device__ void ComputeKeysSEARCH_MODE_SX(uint32_t mode, uint64_t* startx, uint6
         Load256(py, sy);
         uint64_t boundaryGx[4];
         uint64_t boundaryGy[4];
-        LoadGeneratorPoint(boundaryGx, Gx + 4 * i);
-        LoadGeneratorPoint(boundaryGy, Gy + 4 * i);
+        LoadGeneratorPoint(boundaryGx, tableGx + 4 * i);
+        LoadGeneratorPoint(boundaryGy, tableGy + 4 * i);
         ModNeg256(dy, boundaryGy);
         ModSub256(dy, py);
 
@@ -1006,20 +1123,40 @@ __device__ __noinline__ void CheckPointSEARCH_ETH_MODE_MA(uint32_t* _h, uint32_t
         uint8_t* bloomLookUp, uint64_t BLOOM_BITS, uint8_t BLOOM_HASHES, uint64_t bloomReciprocal,
         uint32_t bloomMask, uint32_t bloomIsPowerOfTwo, uint32_t maxFound, uint32_t* out)
 {
-        uint32_t tid = (blockIdx.x * blockDim.x) + threadIdx.x;
+        const uint32_t tid = (blockIdx.x * blockDim.x) + threadIdx.x;
+        const bool matched = BloomCheck(_h, bloomLookUp, BLOOM_BITS, BLOOM_HASHES, 20,
+                bloomReciprocal, bloomMask, bloomIsPowerOfTwo) > 0;
+        const unsigned int active = __activemask();
+        const unsigned int ballot = __ballot_sync(active, matched);
+        if (ballot == 0u) {
+                return;
+        }
 
-        if (BloomCheck(_h, bloomLookUp, BLOOM_BITS, BLOOM_HASHES, 20, bloomReciprocal, bloomMask, bloomIsPowerOfTwo) > 0) {
-                uint32_t pos = atomicAdd(out, 1);
-                if (pos < maxFound) {
-                        out[pos * ITEM_SIZE_A32 + 1] = tid;
-                        out[pos * ITEM_SIZE_A32 + 2] = offset & 0x7FFFFFFF;
-                        out[pos * ITEM_SIZE_A32 + 3] = _h[0];
-			out[pos * ITEM_SIZE_A32 + 4] = _h[1];
-			out[pos * ITEM_SIZE_A32 + 5] = _h[2];
-			out[pos * ITEM_SIZE_A32 + 6] = _h[3];
-			out[pos * ITEM_SIZE_A32 + 7] = _h[4];
-		}
-	}
+        const int lane = threadIdx.x & 31;
+        const int warpPrefix = __popc(ballot & ((1u << lane) - 1u));
+        const int warpHits = __popc(ballot);
+
+        uint32_t warpBase = 0u;
+        if (lane == 0) {
+                warpBase = atomicAdd(out, static_cast<uint32_t>(warpHits));
+        }
+        warpBase = __shfl_sync(active, warpBase, 0);
+
+        if (!matched) {
+                return;
+        }
+
+        const uint32_t pos = warpBase + static_cast<uint32_t>(warpPrefix);
+        if (pos < maxFound) {
+                const uint32_t base = pos * ITEM_SIZE_A32;
+                out[base + 1] = tid;
+                out[base + 2] = offset & 0x7FFFFFFF;
+                out[base + 3] = _h[0];
+                out[base + 4] = _h[1];
+                out[base + 5] = _h[2];
+                out[base + 6] = _h[3];
+                out[base + 7] = _h[4];
+        }
 }
 
 
@@ -1047,11 +1184,11 @@ __device__ __noinline__ void CheckHashSEARCH_ETH_MODE_MA(uint64_t* px, uint64_t*
 #define CHECK_HASH_SEARCH_ETH_MODE_MA(offset) CheckHashSEARCH_ETH_MODE_MA(px, py, offset, bloomLookUp, BLOOM_BITS, BLOOM_HASHES, bloomReciprocal, bloomMask, bloomIsPowerOfTwo, maxFound, out)
 
 __device__ void ComputeKeysSEARCH_ETH_MODE_MA(uint64_t* startx, uint64_t* starty,
-        uint8_t* bloomLookUp, uint64_t BLOOM_BITS, uint8_t BLOOM_HASHES, uint64_t bloomReciprocal,
+        const GeneratorTableView& tables, uint8_t* bloomLookUp, uint64_t BLOOM_BITS, uint8_t BLOOM_HASHES, uint64_t bloomReciprocal,
         uint32_t bloomMask, uint32_t bloomIsPowerOfTwo, uint32_t maxFound, uint32_t* out, uint32_t baseOffset)
 {
 
-	uint64_t dx[GRP_SIZE / 2 + 1][4];
+        uint64_t dx[GRP_SIZE / 2 + 1][4];
 	uint64_t px[4];
 	uint64_t py[4];
         uint64_t pyn[4];
@@ -1062,6 +1199,9 @@ __device__ void ComputeKeysSEARCH_ETH_MODE_MA(uint64_t* startx, uint64_t* starty
         uint64_t _p2[4];
         uint64_t twoGx[4];
         uint64_t twoGy[4];
+
+        const uint64_t* __restrict__ tableGx = tables.gx;
+        const uint64_t* __restrict__ tableGy = tables.gy;
 
         LoadGeneratorPoint(twoGx, _2Gnx);
         LoadGeneratorPoint(twoGy, _2Gny);
@@ -1077,11 +1217,11 @@ __device__ void ComputeKeysSEARCH_ETH_MODE_MA(uint64_t* startx, uint64_t* starty
 	uint32_t i;
         for (i = 0; i < HSIZE; i++) {
                 uint64_t gxVal[4];
-                LoadGeneratorPoint(gxVal, Gx + 4 * i);
+                LoadGeneratorPoint(gxVal, tableGx + 4 * i);
                 ModSub256(dx[i], gxVal, sx);
         }
         uint64_t centerGx[4];
-        LoadGeneratorPoint(centerGx, Gx + 4 * i);
+        LoadGeneratorPoint(centerGx, tableGx + 4 * i);
         ModSub256(dx[i], centerGx, sx);   // For the first point
         ModSub256(dx[i + 1], twoGx, sx); // For the next center point
 
@@ -1103,8 +1243,8 @@ __device__ void ComputeKeysSEARCH_ETH_MODE_MA(uint64_t* startx, uint64_t* starty
                 Load256(py, sy);
                 uint64_t gxVal[4];
                 uint64_t gyVal[4];
-                LoadGeneratorPoint(gxVal, Gx + 4 * i);
-                LoadGeneratorPoint(gyVal, Gy + 4 * i);
+                LoadGeneratorPoint(gxVal, tableGx + 4 * i);
+                LoadGeneratorPoint(gyVal, tableGy + 4 * i);
                 ModSub256(dy, gyVal, py);
 
                 _ModMult(_s, dy, dx[i]);                 //  s = (p2.y-p1.y)*inverse(p2.x-p1.x)
@@ -1142,8 +1282,8 @@ __device__ void ComputeKeysSEARCH_ETH_MODE_MA(uint64_t* startx, uint64_t* starty
         Load256(py, sy);
         uint64_t boundaryGx[4];
         uint64_t boundaryGy[4];
-        LoadGeneratorPoint(boundaryGx, Gx + 4 * i);
-        LoadGeneratorPoint(boundaryGy, Gy + 4 * i);
+        LoadGeneratorPoint(boundaryGx, tableGx + 4 * i);
+        LoadGeneratorPoint(boundaryGy, tableGy + 4 * i);
         ModNeg256(dy, boundaryGy);
         ModSub256(dy, py);
 
@@ -1190,23 +1330,38 @@ __device__ __noinline__ void CheckPointSEARCH_MODE_SA(uint32_t* _h, uint32_t off
         const uint32_t* __restrict__ hash, uint32_t maxFound, uint32_t* out)
 {
         const uint32_t tid = (blockIdx.x * blockDim.x) + threadIdx.x;
-
-        if (!MatchHash(_h, hash)) {
+        const bool matched = Hash160Equals(_h, hash);
+        const unsigned int active = __activemask();
+        const unsigned int ballot = __ballot_sync(active, matched);
+        if (ballot == 0u) {
                 return;
         }
 
-        if (Hash160Equals(_h, hash)) {
-                uint32_t pos = atomicAdd(out, 1);
-                if (pos < maxFound) {
-                        out[pos * ITEM_SIZE_A32 + 1] = tid;
-                        out[pos * ITEM_SIZE_A32 + 2] = offset & 0x7FFFFFFF;
-                        out[pos * ITEM_SIZE_A32 + 3] = _h[0];
-			out[pos * ITEM_SIZE_A32 + 4] = _h[1];
-			out[pos * ITEM_SIZE_A32 + 5] = _h[2];
-			out[pos * ITEM_SIZE_A32 + 6] = _h[3];
-			out[pos * ITEM_SIZE_A32 + 7] = _h[4];
-		}
-	}
+        const int lane = threadIdx.x & 31;
+        const int warpPrefix = __popc(ballot & ((1u << lane) - 1u));
+        const int warpHits = __popc(ballot);
+
+        uint32_t warpBase = 0u;
+        if (lane == 0) {
+                warpBase = atomicAdd(out, static_cast<uint32_t>(warpHits));
+        }
+        warpBase = __shfl_sync(active, warpBase, 0);
+
+        if (!matched) {
+                return;
+        }
+
+        const uint32_t pos = warpBase + static_cast<uint32_t>(warpPrefix);
+        if (pos < maxFound) {
+                const uint32_t base = pos * ITEM_SIZE_A32;
+                out[base + 1] = tid;
+                out[base + 2] = offset & 0x7FFFFFFF;
+                out[base + 3] = _h[0];
+                out[base + 4] = _h[1];
+                out[base + 5] = _h[2];
+                out[base + 6] = _h[3];
+                out[base + 7] = _h[4];
+        }
 }
 
 #define CHECK_POINT_SEARCH_ETH_MODE_SA(_h,offset)  CheckPointSEARCH_MODE_SA(_h,offset,hash,maxFound,out)
@@ -1228,11 +1383,11 @@ __device__ __noinline__ void CheckHashSEARCH_ETH_MODE_SA(uint64_t* px, uint64_t*
 #define CHECK_HASH_SEARCH_ETH_MODE_SA(offset) CheckHashSEARCH_ETH_MODE_SA(px, py, offset, hash, maxFound, out)
 
 __device__ void ComputeKeysSEARCH_ETH_MODE_SA(uint64_t* startx, uint64_t* starty,
-        const uint32_t* __restrict__ hash, uint32_t maxFound, uint32_t* out, uint32_t baseOffset)
+        const GeneratorTableView& tables, const uint32_t* __restrict__ hash, uint32_t maxFound, uint32_t* out, uint32_t baseOffset)
 {
 
         uint64_t dx[GRP_SIZE / 2 + 1][4];
-	uint64_t px[4];
+        uint64_t px[4];
 	uint64_t py[4];
         uint64_t pyn[4];
         uint64_t sx[4];
@@ -1243,12 +1398,8 @@ __device__ void ComputeKeysSEARCH_ETH_MODE_SA(uint64_t* startx, uint64_t* starty
         uint64_t twoGx[4];
         uint64_t twoGy[4];
 
-        __shared__ uint32_t sharedHash160[5];
-        if (threadIdx.x < 5) {
-                sharedHash160[threadIdx.x] = hash[threadIdx.x];
-        }
-        __syncthreads();
-        hash = sharedHash160;
+        const uint64_t* __restrict__ tableGx = tables.gx;
+        const uint64_t* __restrict__ tableGy = tables.gy;
 
         LoadGeneratorPoint(twoGx, _2Gnx);
         LoadGeneratorPoint(twoGy, _2Gny);
@@ -1264,11 +1415,11 @@ __device__ void ComputeKeysSEARCH_ETH_MODE_SA(uint64_t* startx, uint64_t* starty
 	uint32_t i;
         for (i = 0; i < HSIZE; i++) {
                 uint64_t gxVal[4];
-                LoadGeneratorPoint(gxVal, Gx + 4 * i);
+                LoadGeneratorPoint(gxVal, tableGx + 4 * i);
                 ModSub256(dx[i], gxVal, sx);
         }
         uint64_t centerGx[4];
-        LoadGeneratorPoint(centerGx, Gx + 4 * i);
+        LoadGeneratorPoint(centerGx, tableGx + 4 * i);
         ModSub256(dx[i], centerGx, sx);   // For the first point
         ModSub256(dx[i + 1], twoGx, sx); // For the next center point
 
@@ -1290,8 +1441,8 @@ __device__ void ComputeKeysSEARCH_ETH_MODE_SA(uint64_t* startx, uint64_t* starty
                 Load256(py, sy);
                 uint64_t gxVal[4];
                 uint64_t gyVal[4];
-                LoadGeneratorPoint(gxVal, Gx + 4 * i);
-                LoadGeneratorPoint(gyVal, Gy + 4 * i);
+                LoadGeneratorPoint(gxVal, tableGx + 4 * i);
+                LoadGeneratorPoint(gyVal, tableGy + 4 * i);
                 ModSub256(dy, gyVal, py);
 
                 _ModMult(_s, dy, dx[i]);             //  s = (p2.y-p1.y)*inverse(p2.x-p1.x)
@@ -1329,8 +1480,8 @@ __device__ void ComputeKeysSEARCH_ETH_MODE_SA(uint64_t* startx, uint64_t* starty
         Load256(py, sy);
         uint64_t boundaryGx[4];
         uint64_t boundaryGy[4];
-        LoadGeneratorPoint(boundaryGx, Gx + 4 * i);
-        LoadGeneratorPoint(boundaryGy, Gy + 4 * i);
+        LoadGeneratorPoint(boundaryGx, tableGx + 4 * i);
+        LoadGeneratorPoint(boundaryGy, tableGy + 4 * i);
         ModNeg256(dy, boundaryGy);
         ModSub256(dy, py);
 
