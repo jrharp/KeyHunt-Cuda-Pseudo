@@ -15,6 +15,8 @@
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
 */
 
+#pragma once
+
 #include <cooperative_groups.h>
 #include <cooperative_groups/memcpy_async.h>
 #include <cuda_runtime.h>
@@ -23,6 +25,11 @@
 #include "GPUMath.h"
 
 namespace cg = cooperative_groups;
+
+extern __device__ uint64_t* _2Gnx;
+extern __device__ uint64_t* _2Gny;
+extern __device__ uint64_t* Gx;
+extern __device__ uint64_t* Gy;
 
 struct GeneratorTableView {
         static constexpr int kLimbCount = 4;
@@ -80,12 +87,6 @@ __device__ __forceinline__ GeneratorTableView GlobalGeneratorTables()
 #else
 #define GPU_LDG(ptr) (*(ptr))
 #endif
-
-__device__ uint64_t* _2Gnx = nullptr;
-__device__ uint64_t* _2Gny = nullptr;
-
-__device__ uint64_t* Gx = nullptr;
-__device__ uint64_t* Gy = nullptr;
 
 // ---------------------------------------------------------------------------------------
 
