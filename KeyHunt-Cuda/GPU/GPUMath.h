@@ -65,14 +65,14 @@
 
 namespace gpumath {
 
-inline constexpr uint64_t kSecp256k1Modulus[4] = {
+__device__ __constant__ uint64_t kSecp256k1Modulus[4] = {
     0xFFFFFFFEFFFFFC2FULL,
     0xFFFFFFFFFFFFFFFFULL,
     0xFFFFFFFFFFFFFFFFULL,
     0xFFFFFFFFFFFFFFFFULL
 };
 
-inline constexpr uint64_t kSecp256k1ModulusExtended[5] = {
+__device__ __constant__ uint64_t kSecp256k1ModulusExtended[5] = {
     0xFFFFFFFEFFFFFC2FULL,
     0xFFFFFFFFFFFFFFFFULL,
     0xFFFFFFFFFFFFFFFFULL,
