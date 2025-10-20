@@ -395,11 +395,7 @@ __device__ void RunKeyComputation(uint64_t* keys, int stepMultiplier, ComputeFun
         const int baseIndex = (blockIdx.x * blockDim.x) * 8;
         uint64_t* xPtr = keys + baseIndex;
         uint64_t* yPtr = xPtr + 4 * blockDim.x;
-        for (int iteration = 0; iteration < stepMultiplier; ++iteration) {
-                const uint32_t baseOffset = static_cast<uint32_t>(iteration) * static_cast<uint32_t>(GRP_SIZE);
-                compute(xPtr, yPtr, baseOffset);
-        int xPtr = (blockIdx.x * blockDim.x) * 8;
-        int yPtr = xPtr + 4 * blockDim.x;
+
         GeneratorTableView tables = GlobalGeneratorTables();
 #if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 800)
         if constexpr (kPrefetchGeneratorTablesSupported) {
@@ -409,10 +405,10 @@ __device__ void RunKeyComputation(uint64_t* keys, int stepMultiplier, ComputeFun
                 tables = PrefetchGeneratorTables(block, sharedGx, sharedGy);
         }
 #endif
+
         for (int iteration = 0; iteration < stepMultiplier; ++iteration) {
                 const uint32_t baseOffset = static_cast<uint32_t>(iteration) * static_cast<uint32_t>(GRP_SIZE);
-                ComputeKeysSEARCH_MODE_MA(mode, keys + xPtr, keys + yPtr, tables, bloomLookUp, BLOOM_BITS, BLOOM_HASHES,
-                        bloomReciprocal, bloomMask, bloomIsPowerOfTwo, maxFound, found, baseOffset);
+                compute(tables, xPtr, yPtr, baseOffset);
         }
 }
 
@@ -444,9 +440,9 @@ struct ModeMaFunctor
         uint32_t maxFound;
         uint32_t* found;
 
-        __device__ void operator()(uint64_t* xPtr, uint64_t* yPtr, uint32_t baseOffset) const
+        __device__ void operator()(const GeneratorTableView& tables, uint64_t* xPtr, uint64_t* yPtr, uint32_t baseOffset) const
         {
-                ComputeKeysSEARCH_MODE_MA(mode, xPtr, yPtr, bloomLookUp, BLOOM_BITS, BLOOM_HASHES,
+                ComputeKeysSEARCH_MODE_MA(mode, xPtr, yPtr, tables, bloomLookUp, BLOOM_BITS, BLOOM_HASHES,
                         bloomReciprocal, bloomMask, bloomIsPowerOfTwo, maxFound, found, baseOffset);
         }
 };
@@ -463,9 +459,9 @@ struct ModeMxFunctor
         uint32_t maxFound;
         uint32_t* found;
 
-        __device__ void operator()(uint64_t* xPtr, uint64_t* yPtr, uint32_t baseOffset) const
+        __device__ void operator()(const GeneratorTableView& tables, uint64_t* xPtr, uint64_t* yPtr, uint32_t baseOffset) const
         {
-                ComputeKeysSEARCH_MODE_MX(mode, xPtr, yPtr, bloomLookUp, BLOOM_BITS, BLOOM_HASHES,
+                ComputeKeysSEARCH_MODE_MX(mode, xPtr, yPtr, tables, bloomLookUp, BLOOM_BITS, BLOOM_HASHES,
                         bloomReciprocal, bloomMask, bloomIsPowerOfTwo, maxFound, found, baseOffset);
         }
 };
@@ -477,9 +473,9 @@ struct ModeSaFunctor
         uint32_t maxFound;
         uint32_t* found;
 
-        __device__ void operator()(uint64_t* xPtr, uint64_t* yPtr, uint32_t baseOffset) const
+        __device__ void operator()(const GeneratorTableView& tables, uint64_t* xPtr, uint64_t* yPtr, uint32_t baseOffset) const
         {
-                ComputeKeysSEARCH_MODE_SA(mode, xPtr, yPtr, hash160, maxFound, found, baseOffset);
+                ComputeKeysSEARCH_MODE_SA(mode, xPtr, yPtr, tables, hash160, maxFound, found, baseOffset);
         }
 };
 
@@ -490,9 +486,9 @@ struct ModeSxFunctor
         uint32_t maxFound;
         uint32_t* found;
 
-        __device__ void operator()(uint64_t* xPtr, uint64_t* yPtr, uint32_t baseOffset) const
+        __device__ void operator()(const GeneratorTableView& tables, uint64_t* xPtr, uint64_t* yPtr, uint32_t baseOffset) const
         {
-                ComputeKeysSEARCH_MODE_SX(mode, xPtr, yPtr, xpoint, maxFound, found, baseOffset);
+                ComputeKeysSEARCH_MODE_SX(mode, xPtr, yPtr, tables, xpoint, maxFound, found, baseOffset);
         }
 };
 
@@ -507,23 +503,9 @@ struct ModeEthMaFunctor
         uint32_t maxFound;
         uint32_t* found;
 
-        __device__ void operator()(uint64_t* xPtr, uint64_t* yPtr, uint32_t baseOffset) const
+        __device__ void operator()(const GeneratorTableView& tables, uint64_t* xPtr, uint64_t* yPtr, uint32_t baseOffset) const
         {
-                ComputeKeysSEARCH_ETH_MODE_MA(xPtr, yPtr, bloomLookUp, BLOOM_BITS, BLOOM_HASHES,
-        int xPtr = (blockIdx.x * blockDim.x) * 8;
-        int yPtr = xPtr + 4 * blockDim.x;
-        GeneratorTableView tables = GlobalGeneratorTables();
-#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 800)
-        if constexpr (kPrefetchGeneratorTablesSupported) {
-                __shared__ uint64_t sharedGx[GeneratorTableView::kPointCount][GeneratorTableView::kLimbCount];
-                __shared__ uint64_t sharedGy[GeneratorTableView::kPointCount][GeneratorTableView::kLimbCount];
-                const auto block = cg::this_thread_block();
-                tables = PrefetchGeneratorTables(block, sharedGx, sharedGy);
-        }
-#endif
-        for (int iteration = 0; iteration < stepMultiplier; ++iteration) {
-                const uint32_t baseOffset = static_cast<uint32_t>(iteration) * static_cast<uint32_t>(GRP_SIZE);
-                ComputeKeysSEARCH_MODE_MA(mode, keys + xPtr, keys + yPtr, tables, bloomLookUp, BLOOM_BITS, BLOOM_HASHES,
+                ComputeKeysSEARCH_ETH_MODE_MA(xPtr, yPtr, tables, bloomLookUp, BLOOM_BITS, BLOOM_HASHES,
                         bloomReciprocal, bloomMask, bloomIsPowerOfTwo, maxFound, found, baseOffset);
         }
 };
@@ -534,9 +516,9 @@ struct ModeEthSaFunctor
         uint32_t maxFound;
         uint32_t* found;
 
-        __device__ void operator()(uint64_t* xPtr, uint64_t* yPtr, uint32_t baseOffset) const
+        __device__ void operator()(const GeneratorTableView& tables, uint64_t* xPtr, uint64_t* yPtr, uint32_t baseOffset) const
         {
-                ComputeKeysSEARCH_ETH_MODE_SA(xPtr, yPtr, hash, maxFound, found, baseOffset);
+                ComputeKeysSEARCH_ETH_MODE_SA(xPtr, yPtr, tables, hash, maxFound, found, baseOffset);
         }
 };
 
@@ -569,23 +551,6 @@ __global__ void compute_keys_mode_sa(uint32_t mode, const uint32_t* __restrict__
         LoadToShared(sharedHash160, hash160);
         RunKeyComputation(keys, stepMultiplier,
                 ModeSaFunctor{mode, sharedHash160, maxFound, found});
-        if (threadIdx.x < 5) {
-                sharedHash160[threadIdx.x] = hash160[threadIdx.x];
-        }
-        __syncthreads();
-        GeneratorTableView tables = GlobalGeneratorTables();
-#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 800)
-        if constexpr (kPrefetchGeneratorTablesSupported) {
-                __shared__ uint64_t sharedGx[GeneratorTableView::kPointCount][GeneratorTableView::kLimbCount];
-                __shared__ uint64_t sharedGy[GeneratorTableView::kPointCount][GeneratorTableView::kLimbCount];
-                const auto block = cg::this_thread_block();
-                tables = PrefetchGeneratorTables(block, sharedGx, sharedGy);
-        }
-#endif
-        for (int iteration = 0; iteration < stepMultiplier; ++iteration) {
-                const uint32_t baseOffset = static_cast<uint32_t>(iteration) * static_cast<uint32_t>(GRP_SIZE);
-                ComputeKeysSEARCH_MODE_SA(mode, keys + xPtr, keys + yPtr, tables, sharedHash160, maxFound, found, baseOffset);
-        }
 
 }
 
@@ -596,23 +561,6 @@ __global__ void compute_keys_comp_mode_sa(uint32_t mode, const uint32_t* __restr
         LoadToShared(sharedHash160, hash160);
         RunKeyComputation(keys, stepMultiplier,
                 ModeSaFunctor{mode, sharedHash160, maxFound, found});
-        if (threadIdx.x < 5) {
-                sharedHash160[threadIdx.x] = hash160[threadIdx.x];
-        }
-        __syncthreads();
-        GeneratorTableView tables = GlobalGeneratorTables();
-#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 800)
-        if constexpr (kPrefetchGeneratorTablesSupported) {
-                __shared__ uint64_t sharedGx[GeneratorTableView::kPointCount][GeneratorTableView::kLimbCount];
-                __shared__ uint64_t sharedGy[GeneratorTableView::kPointCount][GeneratorTableView::kLimbCount];
-                const auto block = cg::this_thread_block();
-                tables = PrefetchGeneratorTables(block, sharedGx, sharedGy);
-        }
-#endif
-        for (int iteration = 0; iteration < stepMultiplier; ++iteration) {
-                const uint32_t baseOffset = static_cast<uint32_t>(iteration) * static_cast<uint32_t>(GRP_SIZE);
-                ComputeKeysSEARCH_MODE_SA(mode, keys + xPtr, keys + yPtr, tables, sharedHash160, maxFound, found, baseOffset);
-        }
 
 }
 
@@ -625,23 +573,6 @@ __global__ void compute_keys_comp_mode_mx(uint32_t mode, uint8_t* bloomLookUp, u
                 ModeMxFunctor{mode, bloomLookUp, BLOOM_BITS, BLOOM_HASHES, bloomReciprocal, bloomMask,
                         bloomIsPowerOfTwo, maxFound, found});
 
-        int xPtr = (blockIdx.x * blockDim.x) * 8;
-        int yPtr = xPtr + 4 * blockDim.x;
-        GeneratorTableView tables = GlobalGeneratorTables();
-#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 800)
-        if constexpr (kPrefetchGeneratorTablesSupported) {
-                __shared__ uint64_t sharedGx[GeneratorTableView::kPointCount][GeneratorTableView::kLimbCount];
-                __shared__ uint64_t sharedGy[GeneratorTableView::kPointCount][GeneratorTableView::kLimbCount];
-                const auto block = cg::this_thread_block();
-                tables = PrefetchGeneratorTables(block, sharedGx, sharedGy);
-        }
-#endif
-        for (int iteration = 0; iteration < stepMultiplier; ++iteration) {
-                const uint32_t baseOffset = static_cast<uint32_t>(iteration) * static_cast<uint32_t>(GRP_SIZE);
-                ComputeKeysSEARCH_MODE_MX(mode, keys + xPtr, keys + yPtr, tables, bloomLookUp, BLOOM_BITS, BLOOM_HASHES,
-                        bloomReciprocal, bloomMask, bloomIsPowerOfTwo, maxFound, found, baseOffset);
-        }
-
 }
 
 // mode single x point
@@ -650,22 +581,6 @@ __global__ void compute_keys_comp_mode_sx(uint32_t mode, uint32_t* xpoint, uint6
 {
         RunKeyComputation(keys, stepMultiplier,
                 ModeSxFunctor{mode, xpoint, maxFound, found});
-
-        int xPtr = (blockIdx.x * blockDim.x) * 8;
-        int yPtr = xPtr + 4 * blockDim.x;
-        GeneratorTableView tables = GlobalGeneratorTables();
-#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 800)
-        if constexpr (kPrefetchGeneratorTablesSupported) {
-                __shared__ uint64_t sharedGx[GeneratorTableView::kPointCount][GeneratorTableView::kLimbCount];
-                __shared__ uint64_t sharedGy[GeneratorTableView::kPointCount][GeneratorTableView::kLimbCount];
-                const auto block = cg::this_thread_block();
-                tables = PrefetchGeneratorTables(block, sharedGx, sharedGy);
-        }
-#endif
-        for (int iteration = 0; iteration < stepMultiplier; ++iteration) {
-                const uint32_t baseOffset = static_cast<uint32_t>(iteration) * static_cast<uint32_t>(GRP_SIZE);
-                ComputeKeysSEARCH_MODE_SX(mode, keys + xPtr, keys + yPtr, tables, xpoint, maxFound, found, baseOffset);
-        }
 
 }
 
@@ -680,23 +595,6 @@ __global__ void compute_keys_mode_eth_ma(uint8_t* bloomLookUp, uint64_t BLOOM_BI
                 ModeEthMaFunctor{bloomLookUp, BLOOM_BITS, BLOOM_HASHES, bloomReciprocal, bloomMask,
                         bloomIsPowerOfTwo, maxFound, found});
 
-        int xPtr = (blockIdx.x * blockDim.x) * 8;
-        int yPtr = xPtr + 4 * blockDim.x;
-        GeneratorTableView tables = GlobalGeneratorTables();
-#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 800)
-        if constexpr (kPrefetchGeneratorTablesSupported) {
-                __shared__ uint64_t sharedGx[GeneratorTableView::kPointCount][GeneratorTableView::kLimbCount];
-                __shared__ uint64_t sharedGy[GeneratorTableView::kPointCount][GeneratorTableView::kLimbCount];
-                const auto block = cg::this_thread_block();
-                tables = PrefetchGeneratorTables(block, sharedGx, sharedGy);
-        }
-#endif
-        for (int iteration = 0; iteration < stepMultiplier; ++iteration) {
-                const uint32_t baseOffset = static_cast<uint32_t>(iteration) * static_cast<uint32_t>(GRP_SIZE);
-                ComputeKeysSEARCH_ETH_MODE_MA(keys + xPtr, keys + yPtr, tables, bloomLookUp, BLOOM_BITS, BLOOM_HASHES,
-                        bloomReciprocal, bloomMask, bloomIsPowerOfTwo, maxFound, found, baseOffset);
-        }
-
 }
 
 __global__ void compute_keys_mode_eth_sa(const uint32_t* __restrict__ hash, uint64_t* keys, uint32_t maxFound, uint32_t* found,
@@ -706,23 +604,6 @@ __global__ void compute_keys_mode_eth_sa(const uint32_t* __restrict__ hash, uint
         LoadToShared(sharedHash, hash);
         RunKeyComputation(keys, stepMultiplier,
                 ModeEthSaFunctor{sharedHash, maxFound, found});
-        if (threadIdx.x < 5) {
-                sharedHash[threadIdx.x] = hash[threadIdx.x];
-        }
-        __syncthreads();
-        GeneratorTableView tables = GlobalGeneratorTables();
-#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 800)
-        if constexpr (kPrefetchGeneratorTablesSupported) {
-                __shared__ uint64_t sharedGx[GeneratorTableView::kPointCount][GeneratorTableView::kLimbCount];
-                __shared__ uint64_t sharedGy[GeneratorTableView::kPointCount][GeneratorTableView::kLimbCount];
-                const auto block = cg::this_thread_block();
-                tables = PrefetchGeneratorTables(block, sharedGx, sharedGy);
-        }
-#endif
-        for (int iteration = 0; iteration < stepMultiplier; ++iteration) {
-                const uint32_t baseOffset = static_cast<uint32_t>(iteration) * static_cast<uint32_t>(GRP_SIZE);
-                ComputeKeysSEARCH_ETH_MODE_SA(keys + xPtr, keys + yPtr, tables, sharedHash, maxFound, found, baseOffset);
-        }
 
 }
 
