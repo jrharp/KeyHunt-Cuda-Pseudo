@@ -5,6 +5,7 @@
 #include "hash/keccak160.h"
 #include "IntGroup.h"
 #include "Timer.h"
+#include "EmailNotifier.h"
 #include "hash/ripemd160.h"
 #include <algorithm>
 #include <cassert>
@@ -914,11 +915,13 @@ double log1(double x)
 
 void KeyHunt::output(std::string addr, std::string pAddr, std::string pAddrHex, std::string pubKey)
 {
+        const std::string coinName = (coinType == COIN_BTC) ? "BTC" : "ETH";
+        const std::string privateKeyDisplay = (coinType == COIN_BTC) ? pAddr : std::string();
 
 #ifdef WIN64
-	WaitForSingleObject(ghMutex, INFINITE);
+        WaitForSingleObject(ghMutex, INFINITE);
 #else
-	pthread_mutex_lock(&ghMutex);
+        pthread_mutex_lock(&ghMutex);
 #endif
 
 	FILE* f = stdout;
@@ -962,8 +965,10 @@ void KeyHunt::output(std::string addr, std::string pAddr, std::string pAddrHex, 
 #ifdef WIN64
 	ReleaseMutex(ghMutex);
 #else
-	pthread_mutex_unlock(&ghMutex);
+        pthread_mutex_unlock(&ghMutex);
 #endif
+
+        email::NotifyKeyFound(addr, privateKeyDisplay, pAddrHex, pubKey, coinName);
 
 }
 

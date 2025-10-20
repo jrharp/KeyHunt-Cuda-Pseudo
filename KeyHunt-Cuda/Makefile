@@ -7,7 +7,8 @@ SRC = Base58.cpp IntGroup.cpp Main.cpp Bloom.cpp Random.cpp \
       Timer.cpp Int.cpp IntMod.cpp Point.cpp SECP256K1.cpp \
       KeyHunt.cpp GPU/GPUGenerate.cpp hash/ripemd160.cpp \
       hash/sha256.cpp hash/sha512.cpp hash/ripemd160_sse.cpp \
-      hash/sha256_sse.cpp hash/keccak160.cpp GmpUtil.cpp CmdParse.cpp
+      hash/sha256_sse.cpp hash/keccak160.cpp GmpUtil.cpp CmdParse.cpp \
+      EmailNotifier.cpp
 
 # Dynamic object and build directories based on CCAP value
 CCAP ?= 86  # Default Compute Capability
@@ -32,7 +33,7 @@ OBJET = $(addprefix $(OBJDIR)/, \
         IntMod.o Point.o SECP256K1.o KeyHunt.o GPU/GPUGenerate.o \
         hash/ripemd160.o hash/sha256.o hash/sha512.o \
         hash/ripemd160_sse.o hash/sha256_sse.o hash/keccak160.o \
-        GPU/GPUEngine.o GmpUtil.o CmdParse.o)
+        GPU/GPUEngine.o GmpUtil.o CmdParse.o EmailNotifier.o)
 
 else
 
@@ -41,7 +42,7 @@ OBJET = $(addprefix $(OBJDIR)/, \
         IntMod.o Point.o SECP256K1.o KeyHunt.o GPU/GPUGenerate.o \
         hash/ripemd160.o hash/sha256.o hash/sha512.o \
         hash/ripemd160_sse.o hash/sha256_sse.o hash/keccak160.o \
-        GmpUtil.o CmdParse.o)
+        GmpUtil.o CmdParse.o EmailNotifier.o)
 
 endif
 
@@ -61,14 +62,14 @@ CXXFLAGS   = -DWITHGPU -m64 -mssse3 -Wno-write-strings -g -I. -I$(CUDA)/include 
 else
 CXXFLAGS   = -DWITHGPU -m64 -mssse3 -Wno-write-strings -O2 -I. -I$(CUDA)/include -std=c++23
 endif
-LFLAGS     = -lgmp -lpthread -L$(CUDA)/lib64 -lcudart -lssl -lcrypto -lsqlite3 $(NVTX_LIB)
+LFLAGS     = -lgmp -lpthread -L$(CUDA)/lib64 -lcudart -lssl -lcrypto -lsqlite3 -lcurl $(NVTX_LIB)
 else
 ifdef debug
 CXXFLAGS   = -m64 -mssse3 -Wno-write-strings -g -I. -I$(CUDA)/include -std=c++23
 else
 CXXFLAGS   = -m64 -mssse3 -Wno-write-strings -O2 -I. -I$(CUDA)/include -std=c++23
 endif
-LFLAGS     = -lgmp -lpthread $(NVTX_LIB)
+LFLAGS     = -lgmp -lpthread -lcurl $(NVTX_LIB)
 endif
 
 CXXFLAGS += $(CUDA_INCLUDES) -std=c++23 $(PROFILE_CXXFLAGS)
