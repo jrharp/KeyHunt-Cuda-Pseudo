@@ -19,7 +19,7 @@
 // SHA256
 // ---------------------------------------------------------------------------------
 
-__device__ __constant__ uint32_t K[] = {
+__device__ __constant__ alignas(16) uint32_t K[] = {
 	0x428A2F98, 0x71374491, 0xB5C0FBCF, 0xE9B5DBA5,
 	0x3956C25B, 0x59F111F1, 0x923F82A4, 0xAB1C5ED5,
 	0xD807AA98, 0x12835B01, 0x243185BE, 0x550C7DC3,
@@ -38,7 +38,7 @@ __device__ __constant__ uint32_t K[] = {
 	0x90BEFFFA, 0xA4506CEB, 0xBEF9A3F7, 0xC67178F2,
 };
 
-__device__ __constant__ uint32_t I[] = {
+__device__ __constant__ alignas(16) uint32_t I[] = {
 	0x6a09e667ul,
 	0xbb67ae85ul,
 	0x3c6ef372ul,
@@ -49,165 +49,90 @@ __device__ __constant__ uint32_t I[] = {
 	0x5be0cd19ul,
 };
 
-//#define ASSEMBLY_SIGMA
-#ifdef ASSEMBLY_SIGMA
-
-__device__ __forceinline__ uint32_t S0(uint32_t x)
+__device__ __forceinline__ uint32_t rotr32(uint32_t x, unsigned int n)
 {
-
-	uint32_t y;
-	asm("{\n\t"
-		" .reg .u64 r1,r2,r3;\n\t"
-		" cvt.u64.u32 r1, %1;\n\t"
-		" mov.u64 r2, r1;\n\t"
-		" shl.b64 r2, r2,32;\n\t"
-		" or.b64  r1, r1,r2;\n\t"
-		" shr.b64 r3, r1, 2;\n\t"
-		" mov.u64 r2, r3;\n\t"
-		" shr.b64 r3, r1, 13;\n\t"
-		" xor.b64 r2, r2, r3;\n\t"
-		" shr.b64 r3, r1, 22;\n\t"
-		" xor.b64 r2, r2, r3;\n\t"
-		" cvt.u32.u64 %0,r2;\n\t"
-		"}\n\t"
-		: "=r"(y) : "r"(x));
-	return y;
-
-}
-
-__device__ __forceinline__ uint32_t S1(uint32_t x)
-{
-
-	uint32_t y;
-	asm("{\n\t"
-		" .reg .u64 r1,r2,r3;\n\t"
-		" cvt.u64.u32 r1, %1;\n\t"
-		" mov.u64 r2, r1;\n\t"
-		" shl.b64 r2, r2,32;\n\t"
-		" or.b64  r1, r1,r2;\n\t"
-		" shr.b64 r3, r1, 6;\n\t"
-		" mov.u64 r2, r3;\n\t"
-		" shr.b64 r3, r1, 11;\n\t"
-		" xor.b64 r2, r2, r3;\n\t"
-		" shr.b64 r3, r1, 25;\n\t"
-		" xor.b64 r2, r2, r3;\n\t"
-		" cvt.u32.u64 %0,r2;\n\t"
-		"}\n\t"
-		: "=r"(y) : "r"(x));
-	return y;
-
-}
-
-__device__ __forceinline__ uint32_t s0(uint32_t x)
-{
-
-	uint32_t y;
-	asm("{\n\t"
-		" .reg .u64 r1,r2,r3;\n\t"
-		" cvt.u64.u32 r1, %1;\n\t"
-		" mov.u64 r2, r1;\n\t"
-		" shl.b64 r2, r2,32;\n\t"
-		" or.b64  r1, r1,r2;\n\t"
-		" shr.b64 r2, r2, 35;\n\t"
-		" shr.b64 r3, r1, 18;\n\t"
-		" xor.b64 r2, r2, r3;\n\t"
-		" shr.b64 r3, r1, 7;\n\t"
-		" xor.b64 r2, r2, r3;\n\t"
-		" cvt.u32.u64 %0,r2;\n\t"
-		"}\n\t"
-		: "=r"(y) : "r"(x));
-	return y;
-
-}
-
-__device__ __forceinline__ uint32_t s1(uint32_t x)
-{
-
-	uint32_t y;
-	asm("{\n\t"
-		" .reg .u64 r1,r2,r3;\n\t"
-		" cvt.u64.u32 r1, %1;\n\t"
-		" mov.u64 r2, r1;\n\t"
-		" shl.b64 r2, r2,32;\n\t"
-		" or.b64  r1, r1,r2;\n\t"
-		" shr.b64 r2, r2, 42;\n\t"
-		" shr.b64 r3, r1, 19;\n\t"
-		" xor.b64 r2, r2, r3;\n\t"
-		" shr.b64 r3, r1, 17;\n\t"
-		" xor.b64 r2, r2, r3;\n\t"
-		" cvt.u32.u64 %0,r2;\n\t"
-		"}\n\t"
-		: "=r"(y) : "r"(x));
-	return y;
-
-}
-
+#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 200)
+        return __funnelshift_r(x, x, n);
 #else
-
-#define ROR(x,n) ((x>>n)|(x<<(32-n)))
-#define S0(x) (ROR(x,2) ^ ROR(x,13) ^ ROR(x,22))
-#define S1(x) (ROR(x,6) ^ ROR(x,11) ^ ROR(x,25))
-#define s0(x) (ROR(x,7) ^ ROR(x,18) ^ (x >> 3))
-#define s1(x) (ROR(x,17) ^ ROR(x,19) ^ (x >> 10))
-
+        return (x >> n) | (x << (32 - n));
 #endif
-
-//#define Maj(x,y,z) ((x&y)^(x&z)^(y&z))
-//#define Ch(x,y,z)  ((x&y)^(~x&z))
-
-// The following functions are equivalent to the above
-#define Maj(x,y,z) ((x & y) | (z & (x | y)))
-#define Ch(x,y,z) (z ^ (x & (y ^ z)))
-
-// SHA-256 inner round
-#define S2Round(a, b, c, d, e, f, g, h, k, w) \
-    t1 = h + S1(e) + Ch(e,f,g) + k + (w); \
-    t2 = S0(a) + Maj(a,b,c); \
-    d += t1; \
-    h = t1 + t2;
-
-// WMIX
-#define WMIX() { \
-w[0] += s1(w[14]) + w[9] + s0(w[1]);\
-w[1] += s1(w[15]) + w[10] + s0(w[2]);\
-w[2] += s1(w[0]) + w[11] + s0(w[3]);\
-w[3] += s1(w[1]) + w[12] + s0(w[4]);\
-w[4] += s1(w[2]) + w[13] + s0(w[5]);\
-w[5] += s1(w[3]) + w[14] + s0(w[6]);\
-w[6] += s1(w[4]) + w[15] + s0(w[7]);\
-w[7] += s1(w[5]) + w[0] + s0(w[8]);\
-w[8] += s1(w[6]) + w[1] + s0(w[9]);\
-w[9] += s1(w[7]) + w[2] + s0(w[10]);\
-w[10] += s1(w[8]) + w[3] + s0(w[11]);\
-w[11] += s1(w[9]) + w[4] + s0(w[12]);\
-w[12] += s1(w[10]) + w[5] + s0(w[13]);\
-w[13] += s1(w[11]) + w[6] + s0(w[14]);\
-w[14] += s1(w[12]) + w[7] + s0(w[15]);\
-w[15] += s1(w[13]) + w[8] + s0(w[0]);\
 }
 
-// ROUND
-#define SHA256_RND(k) {\
-S2Round(a, b, c, d, e, f, g, h, K[k], w[0]);\
-S2Round(h, a, b, c, d, e, f, g, K[k + 1], w[1]);\
-S2Round(g, h, a, b, c, d, e, f, K[k + 2], w[2]);\
-S2Round(f, g, h, a, b, c, d, e, K[k + 3], w[3]);\
-S2Round(e, f, g, h, a, b, c, d, K[k + 4], w[4]);\
-S2Round(d, e, f, g, h, a, b, c, K[k + 5], w[5]);\
-S2Round(c, d, e, f, g, h, a, b, K[k + 6], w[6]);\
-S2Round(b, c, d, e, f, g, h, a, K[k + 7], w[7]);\
-S2Round(a, b, c, d, e, f, g, h, K[k + 8], w[8]);\
-S2Round(h, a, b, c, d, e, f, g, K[k + 9], w[9]);\
-S2Round(g, h, a, b, c, d, e, f, K[k + 10], w[10]);\
-S2Round(f, g, h, a, b, c, d, e, K[k + 11], w[11]);\
-S2Round(e, f, g, h, a, b, c, d, K[k + 12], w[12]);\
-S2Round(d, e, f, g, h, a, b, c, K[k + 13], w[13]);\
-S2Round(c, d, e, f, g, h, a, b, K[k + 14], w[14]);\
-S2Round(b, c, d, e, f, g, h, a, K[k + 15], w[15]);\
+__device__ __forceinline__ uint32_t Sigma0(uint32_t x)
+{
+        return rotr32(x, 2) ^ rotr32(x, 13) ^ rotr32(x, 22);
 }
 
-//#define bswap32(v) (((v) >> 24) | (((v) >> 8) & 0xff00) | (((v) << 8) & 0xff0000) | ((v) << 24))
-#define bswap32(v) __byte_perm(v, 0, 0x0123)
+__device__ __forceinline__ uint32_t Sigma1(uint32_t x)
+{
+        return rotr32(x, 6) ^ rotr32(x, 11) ^ rotr32(x, 25);
+}
+
+__device__ __forceinline__ uint32_t sigma0(uint32_t x)
+{
+        return rotr32(x, 7) ^ rotr32(x, 18) ^ (x >> 3);
+}
+
+__device__ __forceinline__ uint32_t sigma1(uint32_t x)
+{
+        return rotr32(x, 17) ^ rotr32(x, 19) ^ (x >> 10);
+}
+
+__device__ __forceinline__ uint32_t Maj(uint32_t x, uint32_t y, uint32_t z)
+{
+        return (x & y) | (z & (x | y));
+}
+
+__device__ __forceinline__ uint32_t Ch(uint32_t x, uint32_t y, uint32_t z)
+{
+        return z ^ (x & (y ^ z));
+}
+
+__device__ __forceinline__ void sha256_round_step(uint32_t& a, uint32_t& b, uint32_t& c, uint32_t& d,
+        uint32_t& e, uint32_t& f, uint32_t& g, uint32_t& h, uint32_t k, uint32_t w)
+{
+        const uint32_t t1 = h + Sigma1(e) + Ch(e, f, g) + k + w;
+        const uint32_t t2 = Sigma0(a) + Maj(a, b, c);
+        d += t1;
+        h = t1 + t2;
+}
+
+template <int Offset>
+__device__ __forceinline__ void sha256_round_group(uint32_t& a, uint32_t& b, uint32_t& c, uint32_t& d,
+        uint32_t& e, uint32_t& f, uint32_t& g, uint32_t& h, const uint32_t* __restrict__ w)
+{
+        sha256_round_step(a, b, c, d, e, f, g, h, K[Offset + 0], w[0]);
+        sha256_round_step(h, a, b, c, d, e, f, g, K[Offset + 1], w[1]);
+        sha256_round_step(g, h, a, b, c, d, e, f, K[Offset + 2], w[2]);
+        sha256_round_step(f, g, h, a, b, c, d, e, K[Offset + 3], w[3]);
+        sha256_round_step(e, f, g, h, a, b, c, d, K[Offset + 4], w[4]);
+        sha256_round_step(d, e, f, g, h, a, b, c, K[Offset + 5], w[5]);
+        sha256_round_step(c, d, e, f, g, h, a, b, K[Offset + 6], w[6]);
+        sha256_round_step(b, c, d, e, f, g, h, a, K[Offset + 7], w[7]);
+        sha256_round_step(a, b, c, d, e, f, g, h, K[Offset + 8], w[8]);
+        sha256_round_step(h, a, b, c, d, e, f, g, K[Offset + 9], w[9]);
+        sha256_round_step(g, h, a, b, c, d, e, f, K[Offset + 10], w[10]);
+        sha256_round_step(f, g, h, a, b, c, d, e, K[Offset + 11], w[11]);
+        sha256_round_step(e, f, g, h, a, b, c, d, K[Offset + 12], w[12]);
+        sha256_round_step(d, e, f, g, h, a, b, c, K[Offset + 13], w[13]);
+        sha256_round_step(c, d, e, f, g, h, a, b, K[Offset + 14], w[14]);
+        sha256_round_step(b, c, d, e, f, g, h, a, K[Offset + 15], w[15]);
+}
+
+__device__ __forceinline__ void sha256_schedule_mix(uint32_t* __restrict__ w)
+{
+#pragma unroll
+        for (int i = 0; i < 16; ++i) {
+                const uint32_t s1_prev = sigma1(w[(i + 14) & 15]);
+                const uint32_t s0_next = sigma0(w[(i + 1) & 15]);
+                w[i] += s1_prev + w[(i + 9) & 15] + s0_next;
+        }
+}
+
+__device__ __forceinline__ uint32_t bswap32(uint32_t v)
+{
+        return __byte_perm(v, 0, 0x0123);
+}
 
 // Initialise state
 __device__ void SHA256Initialize(uint32_t s[8])
@@ -217,40 +142,34 @@ __device__ void SHA256Initialize(uint32_t s[8])
 		s[i] = I[i];
 }
 
-#define DEF(x,y) uint32_t x = s[y]
-
 // Perform SHA-256 transformations, process 64-byte chunks
 __device__ void SHA256Transform(uint32_t s[8], uint32_t* w)
 {
+        uint32_t a = s[0];
+        uint32_t b = s[1];
+        uint32_t c = s[2];
+        uint32_t d = s[3];
+        uint32_t e = s[4];
+        uint32_t f = s[5];
+        uint32_t g = s[6];
+        uint32_t h = s[7];
 
-	uint32_t t1;
-	uint32_t t2;
+        sha256_round_group<0>(a, b, c, d, e, f, g, h, w);
+        sha256_schedule_mix(w);
+        sha256_round_group<16>(a, b, c, d, e, f, g, h, w);
+        sha256_schedule_mix(w);
+        sha256_round_group<32>(a, b, c, d, e, f, g, h, w);
+        sha256_schedule_mix(w);
+        sha256_round_group<48>(a, b, c, d, e, f, g, h, w);
 
-	DEF(a, 0);
-	DEF(b, 1);
-	DEF(c, 2);
-	DEF(d, 3);
-	DEF(e, 4);
-	DEF(f, 5);
-	DEF(g, 6);
-	DEF(h, 7);
-
-	SHA256_RND(0);
-	WMIX();
-	SHA256_RND(16);
-	WMIX();
-	SHA256_RND(32);
-	WMIX();
-	SHA256_RND(48);
-
-	s[0] += a;
-	s[1] += b;
-	s[2] += c;
-	s[3] += d;
-	s[4] += e;
-	s[5] += f;
-	s[6] += g;
-	s[7] += h;
+        s[0] += a;
+        s[1] += b;
+        s[2] += c;
+        s[3] += d;
+        s[4] += e;
+        s[5] += f;
+        s[6] += g;
+        s[7] += h;
 
 }
 
