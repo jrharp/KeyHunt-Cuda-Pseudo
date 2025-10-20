@@ -34,8 +34,34 @@
 #include <utility>
 
 #if defined(ENABLE_NVTX)
+#if !defined(__has_include)
+#define __has_include(x) 0
+#endif
+#if __has_include(<nvtx3/nvToolsExt.h>)
+#include <nvtx3/nvToolsExt.h>
+#else
 #include <nvToolsExt.h>
+#endif
+#if __has_include(<nvtx3/nvToolsExtCuda.h>)
+#include <nvtx3/nvToolsExtCuda.h>
+#define GPUENGINE_HAS_NVTX_CU_FUNCTION 0
+#elif __has_include(<nvToolsExtCuda.h>)
 #include <nvToolsExtCuda.h>
+#define GPUENGINE_HAS_NVTX_CU_FUNCTION 1
+#endif
+#if __has_include(<nvtx3/nvToolsExtCudaRt.h>)
+#include <nvtx3/nvToolsExtCudaRt.h>
+#define GPUENGINE_HAS_NVTX_CUDA_STREAM 1
+#elif __has_include(<nvToolsExtCudaRt.h>)
+#include <nvToolsExtCudaRt.h>
+#define GPUENGINE_HAS_NVTX_CUDA_STREAM 1
+#endif
+#ifndef GPUENGINE_HAS_NVTX_CU_FUNCTION
+#define GPUENGINE_HAS_NVTX_CU_FUNCTION 0
+#endif
+#ifndef GPUENGINE_HAS_NVTX_CUDA_STREAM
+#define GPUENGINE_HAS_NVTX_CUDA_STREAM 0
+#endif
 namespace {
 class NvtxRange
 {
@@ -663,7 +689,11 @@ bool GPUEngine::LaunchKeyKernel(const char* label, KernelFunc kernel, dim3 gridD
         if (label == nullptr || label[0] == '\0') {
                 label = "KeyHunt Kernel";
         }
+#if GPUENGINE_HAS_NVTX_CU_FUNCTION
         nvtxNameCuFunctionA(reinterpret_cast<const void*>(kernel), label);
+#else
+        (void)kernel;
+#endif
         NvtxRange range{label};
 #else
         (void)label;
@@ -965,7 +995,9 @@ GPUEngine::GPUEngine(Secp256K1* secp, int nbThreadGroup, int nbThreadPerGroup, i
 
         CUDA_CHECK(cudaStreamCreateWithFlags(&stream_, cudaStreamNonBlocking));
 #if defined(ENABLE_NVTX)
+#if GPUENGINE_HAS_NVTX_CUDA_STREAM
         nvtxNameCudaStreamA(stream_, "GPUEngine Stream");
+#endif
 #endif
         streamCreated_ = true;
         CUDA_CHECK(cudaEventCreateWithFlags(&syncEvent_, cudaEventDisableTiming));
@@ -1140,7 +1172,9 @@ GPUEngine::GPUEngine(Secp256K1* secp, int nbThreadGroup, int nbThreadPerGroup, i
 
         CUDA_CHECK(cudaStreamCreateWithFlags(&stream_, cudaStreamNonBlocking));
 #if defined(ENABLE_NVTX)
+#if GPUENGINE_HAS_NVTX_CUDA_STREAM
         nvtxNameCudaStreamA(stream_, "GPUEngine Stream");
+#endif
 #endif
         streamCreated_ = true;
         CUDA_CHECK(cudaEventCreateWithFlags(&syncEvent_, cudaEventDisableTiming));
