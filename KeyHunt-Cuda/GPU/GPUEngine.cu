@@ -406,6 +406,7 @@ __device__ void LoadToShared(T (&shared)[N], const T* __restrict__ source)
         cg::thread_block block = cg::this_thread_block();
         cg::memcpy_async(block, shared, source, sizeof(T) * N);
         cg::wait(block);
+        block.sync();
 #else
         if (threadIdx.x < static_cast<int>(N)) {
                 shared[threadIdx.x] = source[threadIdx.x];
