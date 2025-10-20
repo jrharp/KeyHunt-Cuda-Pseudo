@@ -43,15 +43,11 @@
 
 #include "GPUHash.h"
 #include "GPUMath.h"
+#define GPU_COMPUTE_DEFINE_DEVICE_TABLES
 #include "GPUCompute.h"
+#undef GPU_COMPUTE_DEFINE_DEVICE_TABLES
 #include "GPUBase58.h"
 #include "CudaCompat.h"
-
-__device__ uint64_t* _2Gnx = nullptr;
-__device__ uint64_t* _2Gny = nullptr;
-
-__device__ uint64_t* Gx = nullptr;
-__device__ uint64_t* Gy = nullptr;
 
 __global__ void compute_keys_mode_ma(uint32_t mode, uint8_t* bloomLookUp, uint64_t BLOOM_BITS, uint8_t BLOOM_HASHES,
         uint64_t bloomReciprocal, uint32_t bloomMask, uint32_t bloomIsPowerOfTwo, uint64_t* keys, uint32_t maxFound,

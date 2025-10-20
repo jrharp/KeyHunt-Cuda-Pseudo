@@ -26,10 +26,17 @@
 
 namespace cg = cooperative_groups;
 
-extern __device__ uint64_t* _2Gnx;
-extern __device__ uint64_t* _2Gny;
-extern __device__ uint64_t* Gx;
-extern __device__ uint64_t* Gy;
+#ifdef GPU_COMPUTE_DEFINE_DEVICE_TABLES
+__device__ __constant__ uint64_t* _2Gnx = nullptr;
+__device__ __constant__ uint64_t* _2Gny = nullptr;
+__device__ __constant__ uint64_t* Gx = nullptr;
+__device__ __constant__ uint64_t* Gy = nullptr;
+#else
+extern __device__ __constant__ uint64_t* _2Gnx;
+extern __device__ __constant__ uint64_t* _2Gny;
+extern __device__ __constant__ uint64_t* Gx;
+extern __device__ __constant__ uint64_t* Gy;
+#endif
 
 struct GeneratorTableView {
         static constexpr int kLimbCount = 4;
