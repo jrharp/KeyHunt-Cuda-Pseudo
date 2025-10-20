@@ -1,5 +1,5 @@
 /*
-* This file is part of the VanitySearch distribution (https://github.com/JeanLucPons/VanitySearch).
+ * This file is part of the VanitySearch distribution (https://github.com/JeanLucPons/VanitySearch).
 * Copyright (c) 2019 Jean Luc PONS.
 *
 * This program is free software: you can redistribute it and/or modify
@@ -19,6 +19,9 @@
 // 256(+64) bits integer CUDA libray for SECPK1
 // ---------------------------------------------------------------------------------
 
+#pragma once
+
+#include <cuda/std/bit>
 
 #define GRP_SIZE (1024*2)
 
@@ -60,6 +63,25 @@
 
 // 64bits lsb negative inverse of P (mod 2^64)
 #define MM64 0xD838091DD2253531ULL
+
+namespace gpumath {
+
+__device__ __constant__ uint64_t kSecp256k1Modulus[4] = {
+    0xFFFFFFFEFFFFFC2FULL,
+    0xFFFFFFFFFFFFFFFFULL,
+    0xFFFFFFFFFFFFFFFFULL,
+    0xFFFFFFFFFFFFFFFFULL
+};
+
+__device__ __constant__ uint64_t kSecp256k1ModulusExtended[5] = {
+    0xFFFFFFFEFFFFFC2FULL,
+    0xFFFFFFFFFFFFFFFFULL,
+    0xFFFFFFFFFFFFFFFFULL,
+    0xFFFFFFFFFFFFFFFFULL,
+    0ULL
+};
+
+} // namespace gpumath
 // ---------------------------------------------------------------------------------------
 
 #define _IsPositive(x) (((int64_t)(x[4]))>=0LL)
@@ -75,101 +97,124 @@
 
 // ---------------------------------------------------------------------------------------
 
-#define AddP(r) { \
-  UADDO1(r[0], 0xFFFFFFFEFFFFFC2FULL); \
-  UADDC1(r[1], 0xFFFFFFFFFFFFFFFFULL); \
-  UADDC1(r[2], 0xFFFFFFFFFFFFFFFFULL); \
-  UADDC1(r[3], 0xFFFFFFFFFFFFFFFFULL); \
-  UADD1(r[4], 0ULL);}
+__device__ __forceinline__ void AddP(uint64_t r[5])
+{
+    UADDO1(r[0], gpumath::kSecp256k1ModulusExtended[0]);
+    UADDC1(r[1], gpumath::kSecp256k1ModulusExtended[1]);
+    UADDC1(r[2], gpumath::kSecp256k1ModulusExtended[2]);
+    UADDC1(r[3], gpumath::kSecp256k1ModulusExtended[3]);
+    UADD1(r[4], gpumath::kSecp256k1ModulusExtended[4]);
+}
 
 // ---------------------------------------------------------------------------------------
 
-#define SubP(r) { \
-  USUBO1(r[0], 0xFFFFFFFEFFFFFC2FULL); \
-  USUBC1(r[1], 0xFFFFFFFFFFFFFFFFULL); \
-  USUBC1(r[2], 0xFFFFFFFFFFFFFFFFULL); \
-  USUBC1(r[3], 0xFFFFFFFFFFFFFFFFULL); \
-  USUB1(r[4], 0ULL);}
+__device__ __forceinline__ void SubP(uint64_t r[5])
+{
+    USUBO1(r[0], gpumath::kSecp256k1ModulusExtended[0]);
+    USUBC1(r[1], gpumath::kSecp256k1ModulusExtended[1]);
+    USUBC1(r[2], gpumath::kSecp256k1ModulusExtended[2]);
+    USUBC1(r[3], gpumath::kSecp256k1ModulusExtended[3]);
+    USUB1(r[4], gpumath::kSecp256k1ModulusExtended[4]);
+}
 
 // ---------------------------------------------------------------------------------------
 
-#define Sub2(r,a,b)  {\
-  USUBO(r[0], a[0], b[0]); \
-  USUBC(r[1], a[1], b[1]); \
-  USUBC(r[2], a[2], b[2]); \
-  USUBC(r[3], a[3], b[3]); \
-  USUB(r[4], a[4], b[4]);}
+__device__ __forceinline__ void Sub2(uint64_t r[5], const uint64_t a[5], const uint64_t b[5])
+{
+    USUBO(r[0], a[0], b[0]);
+    USUBC(r[1], a[1], b[1]);
+    USUBC(r[2], a[2], b[2]);
+    USUBC(r[3], a[3], b[3]);
+    USUB(r[4], a[4], b[4]);
+}
 
 // ---------------------------------------------------------------------------------------
 
-#define Sub1(r,a) {\
-  USUBO1(r[0], a[0]); \
-  USUBC1(r[1], a[1]); \
-  USUBC1(r[2], a[2]); \
-  USUBC1(r[3], a[3]); \
-  USUB1(r[4], a[4]);}
+__device__ __forceinline__ void Sub1(uint64_t r[5], const uint64_t a[5])
+{
+    USUBO1(r[0], a[0]);
+    USUBC1(r[1], a[1]);
+    USUBC1(r[2], a[2]);
+    USUBC1(r[3], a[3]);
+    USUB1(r[4], a[4]);
+}
 
 // ---------------------------------------------------------------------------------------
 
-#define Neg(r) {\
-USUBO(r[0],0ULL,r[0]); \
-USUBC(r[1],0ULL,r[1]); \
-USUBC(r[2],0ULL,r[2]); \
-USUBC(r[3],0ULL,r[3]); \
-USUB(r[4],0ULL,r[4]); }
+__device__ __forceinline__ void Neg(uint64_t r[5])
+{
+    USUBO(r[0], 0ULL, r[0]);
+    USUBC(r[1], 0ULL, r[1]);
+    USUBC(r[2], 0ULL, r[2]);
+    USUBC(r[3], 0ULL, r[3]);
+    USUB(r[4], 0ULL, r[4]);
+}
 
 // ---------------------------------------------------------------------------------------
 
-#define UMult(r, a, b) {\
-  UMULLO(r[0],a[0],b); \
-  UMULLO(r[1],a[1],b); \
-  MADDO(r[1], a[0],b,r[1]); \
-  UMULLO(r[2],a[2], b); \
-  MADDC(r[2], a[1], b, r[2]); \
-  UMULLO(r[3],a[3], b); \
-  MADDC(r[3], a[2], b, r[3]); \
-  MADD(r[4], a[3], b, 0ULL);}
+__device__ __forceinline__ void UMult(uint64_t r[5], const uint64_t a[5], uint64_t b)
+{
+    UMULLO(r[0], a[0], b);
+    UMULLO(r[1], a[1], b);
+    MADDO(r[1], a[0], b, r[1]);
+    UMULLO(r[2], a[2], b);
+    MADDC(r[2], a[1], b, r[2]);
+    UMULLO(r[3], a[3], b);
+    MADDC(r[3], a[2], b, r[3]);
+    MADD(r[4], a[3], b, 0ULL);
+}
 
 // ---------------------------------------------------------------------------------------
 
-#define Load(r, a) {\
-  (r)[0] = (a)[0]; \
-  (r)[1] = (a)[1]; \
-  (r)[2] = (a)[2]; \
-  (r)[3] = (a)[3]; \
-  (r)[4] = (a)[4];}
+__device__ __forceinline__ void Load(uint64_t r[5], const uint64_t a[5])
+{
+    r[0] = a[0];
+    r[1] = a[1];
+    r[2] = a[2];
+    r[3] = a[3];
+    r[4] = a[4];
+}
 
 // ---------------------------------------------------------------------------------------
 
-#define _LoadI64(r, a) {\
-  (r)[0] = a; \
-  (r)[1] = a>>63; \
-  (r)[2] = (r)[1]; \
-  (r)[3] = (r)[1]; \
-  (r)[4] = (r)[1];}
+__device__ __forceinline__ void _LoadI64(uint64_t r[5], int64_t a)
+{
+    r[0] = static_cast<uint64_t>(a);
+    uint64_t sign = static_cast<uint64_t>(a >> 63);
+    r[1] = sign;
+    r[2] = sign;
+    r[3] = sign;
+    r[4] = sign;
+}
 // ---------------------------------------------------------------------------------------
 
-#define Load256(r, a) {\
-  (r)[0] = (a)[0]; \
-  (r)[1] = (a)[1]; \
-  (r)[2] = (a)[2]; \
-  (r)[3] = (a)[3];}
-
-// ---------------------------------------------------------------------------------------
-
-#define Load256A(r, a) {\
-  (r)[0] = (a)[IDX]; \
-  (r)[1] = (a)[IDX+blockDim.x]; \
-  (r)[2] = (a)[IDX+2*blockDim.x]; \
-  (r)[3] = (a)[IDX+3*blockDim.x];}
+__device__ __forceinline__ void Load256(uint64_t r[4], const uint64_t a[4])
+{
+    r[0] = a[0];
+    r[1] = a[1];
+    r[2] = a[2];
+    r[3] = a[3];
+}
 
 // ---------------------------------------------------------------------------------------
 
-#define Store256A(r, a) {\
-  (r)[IDX] = (a)[0]; \
-  (r)[IDX+blockDim.x] = (a)[1]; \
-  (r)[IDX+2*blockDim.x] = (a)[2]; \
-  (r)[IDX+3*blockDim.x] = (a)[3];}
+__device__ __forceinline__ void Load256A(uint64_t r[4], const uint64_t *a)
+{
+    r[0] = a[IDX];
+    r[1] = a[IDX + blockDim.x];
+    r[2] = a[IDX + 2 * blockDim.x];
+    r[3] = a[IDX + 3 * blockDim.x];
+}
+
+// ---------------------------------------------------------------------------------------
+
+__device__ __forceinline__ void Store256A(uint64_t *r, const uint64_t a[4])
+{
+    r[IDX] = a[0];
+    r[IDX + blockDim.x] = a[1];
+    r[IDX + 2 * blockDim.x] = a[2];
+    r[IDX + 3 * blockDim.x] = a[3];
+}
 
 // ---------------------------------------------------------------------------------------
 
@@ -198,21 +243,17 @@ __device__ void ShiftR62(uint64_t dest[5], uint64_t r[5], uint64_t carry)
 
 // ---------------------------------------------------------------------------------------
 
-__device__ void IMult(uint64_t *r, uint64_t *a, int64_t b)
-{
+namespace gpumath {
+namespace detail {
 
+__device__ __forceinline__ uint64_t IMultImpl(uint64_t *r, uint64_t *a, int64_t &b, bool computeCarry)
+{
     uint64_t t[NBBLOCK];
 
-    // Make b positive
+    Load(t, a);
     if (b < 0) {
         b = -b;
-        USUBO(t[0], 0ULL, a[0]);
-        USUBC(t[1], 0ULL, a[1]);
-        USUBC(t[2], 0ULL, a[2]);
-        USUBC(t[3], 0ULL, a[3]);
-        USUB(t[4], 0ULL, a[4]);
-    } else {
-        Load(t, a);
+        Neg(t);
     }
 
     UMULLO(r[0], t[0], b);
@@ -223,41 +264,29 @@ __device__ void IMult(uint64_t *r, uint64_t *a, int64_t b)
     UMULLO(r[3], t[3], b);
     MADDC(r[3], t[2], b, r[3]);
     UMULLO(r[4], t[4], b);
-    MADD(r[4], t[3], b, r[4]);
 
+    if (computeCarry) {
+        uint64_t carry;
+        MADDC(r[4], t[3], b, r[4]);
+        MADDS(carry, t[4], b, 0ULL);
+        return carry;
+    }
+
+    MADD(r[4], t[3], b, r[4]);
+    return 0ULL;
+}
+
+} // namespace detail
+} // namespace gpumath
+
+__device__ void IMult(uint64_t *r, uint64_t *a, int64_t b)
+{
+    (void)gpumath::detail::IMultImpl(r, a, b, false);
 }
 
 __device__ uint64_t IMultC(uint64_t *r, uint64_t *a, int64_t b)
 {
-
-    uint64_t t[NBBLOCK];
-    uint64_t carry;
-
-    // Make b positive
-    if (b < 0) {
-        b = -b;
-        USUBO(t[0], 0ULL, a[0]);
-        USUBC(t[1], 0ULL, a[1]);
-        USUBC(t[2], 0ULL, a[2]);
-        USUBC(t[3], 0ULL, a[3]);
-        USUB(t[4], 0ULL, a[4]);
-    } else {
-        Load(t, a);
-    }
-
-    UMULLO(r[0], t[0], b);
-    UMULLO(r[1], t[1], b);
-    MADDO(r[1], t[0], b, r[1]);
-    UMULLO(r[2], t[2], b);
-    MADDC(r[2], t[1], b, r[2]);
-    UMULLO(r[3], t[3], b);
-    MADDC(r[3], t[2], b, r[3]);
-    UMULLO(r[4], t[4], b);
-    MADDC(r[4], t[3], b, r[4]);
-    MADDS(carry, t[4], b, 0ULL);
-
-    return carry;
-
+    return gpumath::detail::IMultImpl(r, a, b, true);
 }
 
 // ---------------------------------------------------------------------------------------
@@ -289,10 +318,10 @@ __device__ void ModNeg256(uint64_t *r, uint64_t *a)
     USUBC(t[1], 0ULL, a[1]);
     USUBC(t[2], 0ULL, a[2]);
     USUBC(t[3], 0ULL, a[3]);
-    UADDO(r[0], t[0], 0xFFFFFFFEFFFFFC2FULL);
-    UADDC(r[1], t[1], 0xFFFFFFFFFFFFFFFFULL);
-    UADDC(r[2], t[2], 0xFFFFFFFFFFFFFFFFULL);
-    UADD(r[3], t[3], 0xFFFFFFFFFFFFFFFFULL);
+    UADDO(r[0], t[0], gpumath::kSecp256k1Modulus[0]);
+    UADDC(r[1], t[1], gpumath::kSecp256k1Modulus[1]);
+    UADDC(r[2], t[2], gpumath::kSecp256k1Modulus[2]);
+    UADD(r[3], t[3], gpumath::kSecp256k1Modulus[3]);
 
 }
 
@@ -306,10 +335,10 @@ __device__ void ModNeg256(uint64_t *r)
     USUBC(t[1], 0ULL, r[1]);
     USUBC(t[2], 0ULL, r[2]);
     USUBC(t[3], 0ULL, r[3]);
-    UADDO(r[0], t[0], 0xFFFFFFFEFFFFFC2FULL);
-    UADDC(r[1], t[1], 0xFFFFFFFFFFFFFFFFULL);
-    UADDC(r[2], t[2], 0xFFFFFFFFFFFFFFFFULL);
-    UADD(r[3], t[3], 0xFFFFFFFFFFFFFFFFULL);
+    UADDO(r[0], t[0], gpumath::kSecp256k1Modulus[0]);
+    UADDC(r[1], t[1], gpumath::kSecp256k1Modulus[1]);
+    UADDC(r[2], t[2], gpumath::kSecp256k1Modulus[2]);
+    UADD(r[3], t[3], gpumath::kSecp256k1Modulus[3]);
 
 }
 
@@ -325,10 +354,10 @@ __device__ void ModSub256(uint64_t *r, uint64_t *a, uint64_t *b)
     USUBC(r[2], a[2], b[2]);
     USUBC(r[3], a[3], b[3]);
     USUB(t, 0ULL, 0ULL);
-    T[0] = 0xFFFFFFFEFFFFFC2FULL & t;
-    T[1] = 0xFFFFFFFFFFFFFFFFULL & t;
-    T[2] = 0xFFFFFFFFFFFFFFFFULL & t;
-    T[3] = 0xFFFFFFFFFFFFFFFFULL & t;
+    T[0] = gpumath::kSecp256k1Modulus[0] & t;
+    T[1] = gpumath::kSecp256k1Modulus[1] & t;
+    T[2] = gpumath::kSecp256k1Modulus[2] & t;
+    T[3] = gpumath::kSecp256k1Modulus[3] & t;
     UADDO1(r[0], T[0]);
     UADDC1(r[1], T[1]);
     UADDC1(r[2], T[2]);
@@ -348,10 +377,10 @@ __device__ void ModSub256(uint64_t *r, uint64_t *b)
     USUBC(r[2], r[2], b[2]);
     USUBC(r[3], r[3], b[3]);
     USUB(t, 0ULL, 0ULL);
-    T[0] = 0xFFFFFFFEFFFFFC2FULL & t;
-    T[1] = 0xFFFFFFFFFFFFFFFFULL & t;
-    T[2] = 0xFFFFFFFFFFFFFFFFULL & t;
-    T[3] = 0xFFFFFFFFFFFFFFFFULL & t;
+    T[0] = gpumath::kSecp256k1Modulus[0] & t;
+    T[1] = gpumath::kSecp256k1Modulus[1] & t;
+    T[2] = gpumath::kSecp256k1Modulus[2] & t;
+    T[3] = gpumath::kSecp256k1Modulus[3] & t;
     UADDO1(r[0], T[0]);
     UADDC1(r[1], T[1]);
     UADDC1(r[2], T[2]);
@@ -363,14 +392,7 @@ __device__ void ModSub256(uint64_t *r, uint64_t *b)
 
 __device__ __forceinline__ uint32_t ctz(uint64_t x)
 {
-    uint32_t n;
-    asm("{\n\t"
-        " .reg .u64 tmp;\n\t"
-        " brev.b64 tmp, %1;\n\t"
-        " clz.b64 %0, tmp;\n\t"
-        "}"
-        : "=r"(n) : "l"(x));
-    return n;
+    return x ? cuda::std::countr_zero(x) : 64u;
 }
 
 // ---------------------------------------------------------------------------------------
