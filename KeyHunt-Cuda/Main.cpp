@@ -2,6 +2,7 @@
 #include "KeyHunt.h"
 #include "Base58.h"
 #include "CmdParse.h"
+#include "EmailNotifier.h"
 #ifdef WITHGPU
 #include "GPU/GPUEngine.h"
 #endif
@@ -21,6 +22,34 @@
 
 using namespace std;
 bool should_exit = false;
+#ifdef WIN64
+static bool externalStopRequested = false;
+#else
+static volatile sig_atomic_t externalStopRequested = 0;
+#endif
+
+namespace {
+
+std::string buildShutdownSummary()
+{
+#ifdef WIN64
+        const bool interrupted = externalStopRequested;
+#else
+        const bool interrupted = externalStopRequested != 0;
+#endif
+
+        if (interrupted) {
+                return "KeyHunt stopped due to an external interruption.";
+        }
+
+        if (should_exit) {
+                return "KeyHunt stopped after reaching the configured termination condition.";
+        }
+
+        return "KeyHunt finished execution normally.";
+}
+
+} // namespace
 
 // ----------------------------------------------------------------------------
 void usage()
@@ -182,20 +211,23 @@ bool parseRange(const std::string& s, Int& start, Int& end)
 #ifdef WIN64
 BOOL WINAPI CtrlHandler(DWORD fdwCtrlType)
 {
-	switch (fdwCtrlType) {
-	case CTRL_C_EVENT:
-		//printf("\n\nCtrl-C event\n\n");
-		should_exit = true;
-		return TRUE;
+        switch (fdwCtrlType) {
+        case CTRL_C_EVENT:
+                //printf("\n\nCtrl-C event\n\n");
+                should_exit = true;
+                externalStopRequested = true;
+                return TRUE;
 
-	default:
-		return TRUE;
-	}
+        default:
+                return TRUE;
+        }
 }
 #else
 void CtrlHandler(int signum) {
-	printf("\n\nBYE\n");
-	exit(signum);
+        (void)signum;
+        printf("\n\nStopping...\n");
+        should_exit = true;
+        externalStopRequested = 1;
 }
 #endif
 
@@ -692,6 +724,7 @@ int main(int argc, char** argv)
                 }
                 v->Search(nbCPUThread, gpuId, gridSize, should_exit);
                 delete v;
+                email::NotifyShutdown(buildShutdownSummary());
                 printf("\n\nBYE\n");
                 return 0;
         }
@@ -720,6 +753,7 @@ int main(int argc, char** argv)
         }
         v->Search(nbCPUThread, gpuId, gridSize, should_exit);
         delete v;
+        email::NotifyShutdown(buildShutdownSummary());
         return 0;
 #endif
 }

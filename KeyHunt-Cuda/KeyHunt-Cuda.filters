@@ -48,6 +48,9 @@
     <ClCompile Include="KeyHunt.cpp">
       <Filter>KEYHUNT</Filter>
     </ClCompile>
+    <ClCompile Include="EmailNotifier.cpp">
+      <Filter>KEYHUNT</Filter>
+    </ClCompile>
     <ClCompile Include="Timer.cpp">
       <Filter>KEYHUNT</Filter>
     </ClCompile>
@@ -112,6 +115,12 @@
       <Filter>KEYHUNT</Filter>
     </ClInclude>
     <ClInclude Include="KeyHunt.h">
+      <Filter>KEYHUNT</Filter>
+    </ClInclude>
+    <ClInclude Include="EmailConfig.h">
+      <Filter>KEYHUNT</Filter>
+    </ClInclude>
+    <ClInclude Include="EmailNotifier.h">
       <Filter>KEYHUNT</Filter>
     </ClInclude>
     <ClInclude Include="Timer.h">

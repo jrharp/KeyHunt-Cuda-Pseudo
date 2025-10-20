@@ -14,6 +14,7 @@
     <ClCompile Include="Base58.cpp" />
     <ClCompile Include="Bloom.cpp" />
     <ClCompile Include="CmdParse.cpp" />
+    <ClCompile Include="EmailNotifier.cpp" />
     <ClCompile Include="GmpUtil.cpp" />
     <ClCompile Include="GPU\GPUGenerate.cpp" />
     <ClCompile Include="hash\keccak160.cpp" />
@@ -36,6 +37,8 @@
     <ClInclude Include="Base58.h" />
     <ClInclude Include="Bloom.h" />
     <ClInclude Include="CmdParse.h" />
+    <ClInclude Include="EmailConfig.h" />
+    <ClInclude Include="EmailNotifier.h" />
     <ClInclude Include="GmpUtil.h" />
     <ClInclude Include="GPU\GPUBase58.h" />
     <ClInclude Include="GPU\GPUCompute.h" />
@@ -100,7 +103,7 @@
     <Link>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <SubSystem>Console</SubSystem>
-      <AdditionalDependencies>cudart_static.lib;kernel32.lib;user32.lib;gdi32.lib;winspool.lib;comdlg32.lib;advapi32.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;odbc32.lib;odbccp32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>cudart_static.lib;kernel32.lib;user32.lib;gdi32.lib;winspool.lib;comdlg32.lib;advapi32.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;odbc32.lib;odbccp32.lib;libcurl.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
     <CudaCompile>
       <TargetMachinePlatform>64</TargetMachinePlatform>
@@ -123,7 +126,7 @@
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
       <SubSystem>Console</SubSystem>
-      <AdditionalDependencies>cudart_static.lib;kernel32.lib;user32.lib;gdi32.lib;winspool.lib;comdlg32.lib;advapi32.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;odbc32.lib;odbccp32.lib;gmp.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>cudart_static.lib;kernel32.lib;user32.lib;gdi32.lib;winspool.lib;comdlg32.lib;advapi32.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;odbc32.lib;odbccp32.lib;gmp.lib;libcurl.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <AdditionalLibraryDirectories>$(SolutionDir)gmp\lib\x64;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Link>
     <CudaCompile>
