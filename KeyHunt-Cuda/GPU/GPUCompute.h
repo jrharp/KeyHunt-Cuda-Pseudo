@@ -25,6 +25,11 @@
 namespace cg = cooperative_groups;
 
 struct GeneratorTableView {
+        enum class MemorySpace : uint8_t {
+                kGlobal,
+                kShared,
+        };
+
         static constexpr int kLimbCount = 4;
         static constexpr int kPointCount = GRP_SIZE / 2 + 1;
 
@@ -53,6 +58,7 @@ __device__ inline GeneratorTableView PrefetchGeneratorTables(ThreadBlock block,
         uint64_t (*sharedGx)[GeneratorTableView::kLimbCount],
         uint64_t (*sharedGy)[GeneratorTableView::kLimbCount])
 {
+#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 800)
         constexpr size_t copyBytes = static_cast<size_t>(GeneratorTableView::kPointCount)
                 * static_cast<size_t>(GeneratorTableView::kLimbCount) * sizeof(uint64_t);
 
