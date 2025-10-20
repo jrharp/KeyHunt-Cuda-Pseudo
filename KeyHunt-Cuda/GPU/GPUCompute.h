@@ -30,6 +30,7 @@ struct GeneratorTableView {
 
         const uint64_t* __restrict__ gx = nullptr;
         const uint64_t* __restrict__ gy = nullptr;
+        bool usesSharedMemory = false;
 
         __device__ __forceinline__ const uint64_t* GxPtr(int index) const
         {
@@ -39,6 +40,11 @@ struct GeneratorTableView {
         __device__ __forceinline__ const uint64_t* GyPtr(int index) const
         {
                 return gy + (index * kLimbCount);
+        }
+
+        __device__ __forceinline__ bool IsSharedMemory() const
+        {
+                return usesSharedMemory;
         }
 };
 
@@ -57,6 +63,15 @@ __device__ inline GeneratorTableView PrefetchGeneratorTables(ThreadBlock block,
         GeneratorTableView view{};
         view.gx = &sharedGx[0][0];
         view.gy = &sharedGy[0][0];
+        view.usesSharedMemory = true;
+        return view;
+}
+
+__device__ __forceinline__ GeneratorTableView GlobalGeneratorTables()
+{
+        GeneratorTableView view{};
+        view.gx = Gx;
+        view.gy = Gy;
         return view;
 }
 
@@ -74,12 +89,23 @@ __device__ uint64_t* Gy = nullptr;
 
 // ---------------------------------------------------------------------------------------
 
+__device__ __forceinline__ uint64_t LoadGeneratorLimb(const uint64_t* __restrict__ src, int limb,
+        bool fromShared)
+{
+#if __CUDA_ARCH__ >= 350
+        if (!fromShared) {
+                return __ldg(src + limb);
+        }
+#endif
+        return src[limb];
+}
+
 __device__ __forceinline__ void LoadGeneratorPoint(uint64_t* __restrict__ out,
-        const uint64_t* __restrict__ src)
+        const uint64_t* __restrict__ src, bool fromShared = false)
 {
 #pragma unroll
         for (int limb = 0; limb < 4; ++limb) {
-                out[limb] = GPU_LDG(src + limb);
+                out[limb] = LoadGeneratorLimb(src, limb, fromShared);
         }
 }
 
@@ -540,6 +566,7 @@ __device__ void ComputeKeysSEARCH_MODE_MA(uint32_t mode, uint64_t* startx, uint6
 
         const uint64_t* __restrict__ tableGx = tables.gx;
         const uint64_t* __restrict__ tableGy = tables.gy;
+        const bool tablesInShared = tables.IsSharedMemory();
 
         LoadGeneratorPoint(twoGx, _2Gnx);
         LoadGeneratorPoint(twoGy, _2Gny);
@@ -555,11 +582,11 @@ __device__ void ComputeKeysSEARCH_MODE_MA(uint32_t mode, uint64_t* startx, uint6
 	uint32_t i;
         for (i = 0; i < HSIZE; i++) {
                 uint64_t gxVal[4];
-                LoadGeneratorPoint(gxVal, tableGx + 4 * i);
+                LoadGeneratorPoint(gxVal, tableGx + 4 * i, tablesInShared);
                 ModSub256(dx[i], gxVal, sx);
         }
         uint64_t centerGx[4];
-        LoadGeneratorPoint(centerGx, tableGx + 4 * i);
+        LoadGeneratorPoint(centerGx, tableGx + 4 * i, tablesInShared);
         ModSub256(dx[i], centerGx, sx);   // For the first point
         ModSub256(dx[i + 1], twoGx, sx); // For the next center point
 
@@ -581,8 +608,8 @@ __device__ void ComputeKeysSEARCH_MODE_MA(uint32_t mode, uint64_t* startx, uint6
                 Load256(py, sy);
                 uint64_t gxVal[4];
                 uint64_t gyVal[4];
-                LoadGeneratorPoint(gxVal, tableGx + 4 * i);
-                LoadGeneratorPoint(gyVal, tableGy + 4 * i);
+                LoadGeneratorPoint(gxVal, tableGx + 4 * i, tablesInShared);
+                LoadGeneratorPoint(gyVal, tableGy + 4 * i, tablesInShared);
                 ModSub256(dy, gyVal, py);
 
                 _ModMult(_s, dy, dx[i]);                 //  s = (p2.y-p1.y)*inverse(p2.x-p1.x)
@@ -620,8 +647,8 @@ __device__ void ComputeKeysSEARCH_MODE_MA(uint32_t mode, uint64_t* startx, uint6
         Load256(py, sy);
         uint64_t boundaryGx[4];
         uint64_t boundaryGy[4];
-        LoadGeneratorPoint(boundaryGx, tableGx + 4 * i);
-        LoadGeneratorPoint(boundaryGy, tableGy + 4 * i);
+        LoadGeneratorPoint(boundaryGx, tableGx + 4 * i, tablesInShared);
+        LoadGeneratorPoint(boundaryGy, tableGy + 4 * i, tablesInShared);
         ModNeg256(dy, boundaryGy);
         ModSub256(dy, py);
 
@@ -703,6 +730,7 @@ __device__ void ComputeKeysSEARCH_MODE_SA(uint32_t mode, uint64_t* startx, uint6
 
         const uint64_t* __restrict__ tableGx = tables.gx;
         const uint64_t* __restrict__ tableGy = tables.gy;
+        const bool tablesInShared = tables.IsSharedMemory();
 
         LoadGeneratorPoint(twoGx, _2Gnx);
         LoadGeneratorPoint(twoGy, _2Gny);
@@ -718,11 +746,11 @@ __device__ void ComputeKeysSEARCH_MODE_SA(uint32_t mode, uint64_t* startx, uint6
 	uint32_t i;
         for (i = 0; i < HSIZE; i++) {
                 uint64_t gxVal[4];
-                LoadGeneratorPoint(gxVal, tableGx + 4 * i);
+                LoadGeneratorPoint(gxVal, tableGx + 4 * i, tablesInShared);
                 ModSub256(dx[i], gxVal, sx);
         }
         uint64_t centerGx[4];
-        LoadGeneratorPoint(centerGx, tableGx + 4 * i);
+        LoadGeneratorPoint(centerGx, tableGx + 4 * i, tablesInShared);
         ModSub256(dx[i], centerGx, sx);   // For the first point
         ModSub256(dx[i + 1], twoGx, sx); // For the next center point
 
@@ -744,8 +772,8 @@ __device__ void ComputeKeysSEARCH_MODE_SA(uint32_t mode, uint64_t* startx, uint6
                 Load256(py, sy);
                 uint64_t gxVal[4];
                 uint64_t gyVal[4];
-                LoadGeneratorPoint(gxVal, tableGx + 4 * i);
-                LoadGeneratorPoint(gyVal, tableGy + 4 * i);
+                LoadGeneratorPoint(gxVal, tableGx + 4 * i, tablesInShared);
+                LoadGeneratorPoint(gyVal, tableGy + 4 * i, tablesInShared);
                 ModSub256(dy, gyVal, py);
 
                 _ModMult(_s, dy, dx[i]);             //  s = (p2.y-p1.y)*inverse(p2.x-p1.x)
@@ -783,8 +811,8 @@ __device__ void ComputeKeysSEARCH_MODE_SA(uint32_t mode, uint64_t* startx, uint6
         Load256(py, sy);
         uint64_t boundaryGx[4];
         uint64_t boundaryGy[4];
-        LoadGeneratorPoint(boundaryGx, tableGx + 4 * i);
-        LoadGeneratorPoint(boundaryGy, tableGy + 4 * i);
+        LoadGeneratorPoint(boundaryGx, tableGx + 4 * i, tablesInShared);
+        LoadGeneratorPoint(boundaryGy, tableGy + 4 * i, tablesInShared);
         ModNeg256(dy, boundaryGy);
         ModSub256(dy, py);
 
@@ -849,6 +877,7 @@ __device__ void ComputeKeysSEARCH_MODE_MX(uint32_t mode, uint64_t* startx, uint6
 
         const uint64_t* __restrict__ tableGx = tables.gx;
         const uint64_t* __restrict__ tableGy = tables.gy;
+        const bool tablesInShared = tables.IsSharedMemory();
 
         LoadGeneratorPoint(twoGx, _2Gnx);
         LoadGeneratorPoint(twoGy, _2Gny);
@@ -864,11 +893,11 @@ __device__ void ComputeKeysSEARCH_MODE_MX(uint32_t mode, uint64_t* startx, uint6
 	uint32_t i;
         for (i = 0; i < HSIZE; i++) {
                 uint64_t gxVal[4];
-                LoadGeneratorPoint(gxVal, tableGx + 4 * i);
+                LoadGeneratorPoint(gxVal, tableGx + 4 * i, tablesInShared);
                 ModSub256(dx[i], gxVal, sx);
         }
         uint64_t centerGx[4];
-        LoadGeneratorPoint(centerGx, tableGx + 4 * i);
+        LoadGeneratorPoint(centerGx, tableGx + 4 * i, tablesInShared);
         ModSub256(dx[i], centerGx, sx);   // For the first point
         ModSub256(dx[i + 1], twoGx, sx); // For the next center point
 
@@ -890,8 +919,8 @@ __device__ void ComputeKeysSEARCH_MODE_MX(uint32_t mode, uint64_t* startx, uint6
                 Load256(py, sy);
                 uint64_t gxVal[4];
                 uint64_t gyVal[4];
-                LoadGeneratorPoint(gxVal, tableGx + 4 * i);
-                LoadGeneratorPoint(gyVal, tableGy + 4 * i);
+                LoadGeneratorPoint(gxVal, tableGx + 4 * i, tablesInShared);
+                LoadGeneratorPoint(gyVal, tableGy + 4 * i, tablesInShared);
                 ModSub256(dy, gyVal, py);
 
                 _ModMult(_s, dy, dx[i]);                 //  s = (p2.y-p1.y)*inverse(p2.x-p1.x)
@@ -929,8 +958,8 @@ __device__ void ComputeKeysSEARCH_MODE_MX(uint32_t mode, uint64_t* startx, uint6
         Load256(py, sy);
         uint64_t boundaryGx[4];
         uint64_t boundaryGy[4];
-        LoadGeneratorPoint(boundaryGx, tableGx + 4 * i);
-        LoadGeneratorPoint(boundaryGy, tableGy + 4 * i);
+        LoadGeneratorPoint(boundaryGx, tableGx + 4 * i, tablesInShared);
+        LoadGeneratorPoint(boundaryGy, tableGy + 4 * i, tablesInShared);
         ModNeg256(dy, boundaryGy);
         ModSub256(dy, py);
 
@@ -992,6 +1021,7 @@ __device__ void ComputeKeysSEARCH_MODE_SX(uint32_t mode, uint64_t* startx, uint6
 
         const uint64_t* __restrict__ tableGx = tables.gx;
         const uint64_t* __restrict__ tableGy = tables.gy;
+        const bool tablesInShared = tables.IsSharedMemory();
 
         LoadGeneratorPoint(twoGx, _2Gnx);
         LoadGeneratorPoint(twoGy, _2Gny);
@@ -1007,11 +1037,11 @@ __device__ void ComputeKeysSEARCH_MODE_SX(uint32_t mode, uint64_t* startx, uint6
 	uint32_t i;
         for (i = 0; i < HSIZE; i++) {
                 uint64_t gxVal[4];
-                LoadGeneratorPoint(gxVal, tableGx + 4 * i);
+                LoadGeneratorPoint(gxVal, tableGx + 4 * i, tablesInShared);
                 ModSub256(dx[i], gxVal, sx);
         }
         uint64_t centerGx[4];
-        LoadGeneratorPoint(centerGx, tableGx + 4 * i);
+        LoadGeneratorPoint(centerGx, tableGx + 4 * i, tablesInShared);
         ModSub256(dx[i], centerGx, sx);      // For the first point
         ModSub256(dx[i + 1], twoGx, sx);       // For the next center point
 
@@ -1033,8 +1063,8 @@ __device__ void ComputeKeysSEARCH_MODE_SX(uint32_t mode, uint64_t* startx, uint6
                 Load256(py, sy);
                 uint64_t gxVal[4];
                 uint64_t gyVal[4];
-                LoadGeneratorPoint(gxVal, tableGx + 4 * i);
-                LoadGeneratorPoint(gyVal, tableGy + 4 * i);
+                LoadGeneratorPoint(gxVal, tableGx + 4 * i, tablesInShared);
+                LoadGeneratorPoint(gyVal, tableGy + 4 * i, tablesInShared);
                 ModSub256(dy, gyVal, py);
 
                 _ModMult(_s, dy, dx[i]);           //  s = (p2.y-p1.y)*inverse(p2.x-p1.x)
@@ -1072,8 +1102,8 @@ __device__ void ComputeKeysSEARCH_MODE_SX(uint32_t mode, uint64_t* startx, uint6
         Load256(py, sy);
         uint64_t boundaryGx[4];
         uint64_t boundaryGy[4];
-        LoadGeneratorPoint(boundaryGx, tableGx + 4 * i);
-        LoadGeneratorPoint(boundaryGy, tableGy + 4 * i);
+        LoadGeneratorPoint(boundaryGx, tableGx + 4 * i, tablesInShared);
+        LoadGeneratorPoint(boundaryGy, tableGy + 4 * i, tablesInShared);
         ModNeg256(dy, boundaryGy);
         ModSub256(dy, py);
 
@@ -1202,6 +1232,7 @@ __device__ void ComputeKeysSEARCH_ETH_MODE_MA(uint64_t* startx, uint64_t* starty
 
         const uint64_t* __restrict__ tableGx = tables.gx;
         const uint64_t* __restrict__ tableGy = tables.gy;
+        const bool tablesInShared = tables.IsSharedMemory();
 
         LoadGeneratorPoint(twoGx, _2Gnx);
         LoadGeneratorPoint(twoGy, _2Gny);
@@ -1217,11 +1248,11 @@ __device__ void ComputeKeysSEARCH_ETH_MODE_MA(uint64_t* startx, uint64_t* starty
 	uint32_t i;
         for (i = 0; i < HSIZE; i++) {
                 uint64_t gxVal[4];
-                LoadGeneratorPoint(gxVal, tableGx + 4 * i);
+                LoadGeneratorPoint(gxVal, tableGx + 4 * i, tablesInShared);
                 ModSub256(dx[i], gxVal, sx);
         }
         uint64_t centerGx[4];
-        LoadGeneratorPoint(centerGx, tableGx + 4 * i);
+        LoadGeneratorPoint(centerGx, tableGx + 4 * i, tablesInShared);
         ModSub256(dx[i], centerGx, sx);   // For the first point
         ModSub256(dx[i + 1], twoGx, sx); // For the next center point
 
@@ -1243,8 +1274,8 @@ __device__ void ComputeKeysSEARCH_ETH_MODE_MA(uint64_t* startx, uint64_t* starty
                 Load256(py, sy);
                 uint64_t gxVal[4];
                 uint64_t gyVal[4];
-                LoadGeneratorPoint(gxVal, tableGx + 4 * i);
-                LoadGeneratorPoint(gyVal, tableGy + 4 * i);
+                LoadGeneratorPoint(gxVal, tableGx + 4 * i, tablesInShared);
+                LoadGeneratorPoint(gyVal, tableGy + 4 * i, tablesInShared);
                 ModSub256(dy, gyVal, py);
 
                 _ModMult(_s, dy, dx[i]);                 //  s = (p2.y-p1.y)*inverse(p2.x-p1.x)
@@ -1282,8 +1313,8 @@ __device__ void ComputeKeysSEARCH_ETH_MODE_MA(uint64_t* startx, uint64_t* starty
         Load256(py, sy);
         uint64_t boundaryGx[4];
         uint64_t boundaryGy[4];
-        LoadGeneratorPoint(boundaryGx, tableGx + 4 * i);
-        LoadGeneratorPoint(boundaryGy, tableGy + 4 * i);
+        LoadGeneratorPoint(boundaryGx, tableGx + 4 * i, tablesInShared);
+        LoadGeneratorPoint(boundaryGy, tableGy + 4 * i, tablesInShared);
         ModNeg256(dy, boundaryGy);
         ModSub256(dy, py);
 
@@ -1400,6 +1431,7 @@ __device__ void ComputeKeysSEARCH_ETH_MODE_SA(uint64_t* startx, uint64_t* starty
 
         const uint64_t* __restrict__ tableGx = tables.gx;
         const uint64_t* __restrict__ tableGy = tables.gy;
+        const bool tablesInShared = tables.IsSharedMemory();
 
         LoadGeneratorPoint(twoGx, _2Gnx);
         LoadGeneratorPoint(twoGy, _2Gny);
@@ -1415,11 +1447,11 @@ __device__ void ComputeKeysSEARCH_ETH_MODE_SA(uint64_t* startx, uint64_t* starty
 	uint32_t i;
         for (i = 0; i < HSIZE; i++) {
                 uint64_t gxVal[4];
-                LoadGeneratorPoint(gxVal, tableGx + 4 * i);
+                LoadGeneratorPoint(gxVal, tableGx + 4 * i, tablesInShared);
                 ModSub256(dx[i], gxVal, sx);
         }
         uint64_t centerGx[4];
-        LoadGeneratorPoint(centerGx, tableGx + 4 * i);
+        LoadGeneratorPoint(centerGx, tableGx + 4 * i, tablesInShared);
         ModSub256(dx[i], centerGx, sx);   // For the first point
         ModSub256(dx[i + 1], twoGx, sx); // For the next center point
 
@@ -1441,8 +1473,8 @@ __device__ void ComputeKeysSEARCH_ETH_MODE_SA(uint64_t* startx, uint64_t* starty
                 Load256(py, sy);
                 uint64_t gxVal[4];
                 uint64_t gyVal[4];
-                LoadGeneratorPoint(gxVal, tableGx + 4 * i);
-                LoadGeneratorPoint(gyVal, tableGy + 4 * i);
+                LoadGeneratorPoint(gxVal, tableGx + 4 * i, tablesInShared);
+                LoadGeneratorPoint(gyVal, tableGy + 4 * i, tablesInShared);
                 ModSub256(dy, gyVal, py);
 
                 _ModMult(_s, dy, dx[i]);             //  s = (p2.y-p1.y)*inverse(p2.x-p1.x)
@@ -1480,8 +1512,8 @@ __device__ void ComputeKeysSEARCH_ETH_MODE_SA(uint64_t* startx, uint64_t* starty
         Load256(py, sy);
         uint64_t boundaryGx[4];
         uint64_t boundaryGy[4];
-        LoadGeneratorPoint(boundaryGx, tableGx + 4 * i);
-        LoadGeneratorPoint(boundaryGy, tableGy + 4 * i);
+        LoadGeneratorPoint(boundaryGx, tableGx + 4 * i, tablesInShared);
+        LoadGeneratorPoint(boundaryGy, tableGy + 4 * i, tablesInShared);
         ModNeg256(dy, boundaryGy);
         ModSub256(dy, py);
 
