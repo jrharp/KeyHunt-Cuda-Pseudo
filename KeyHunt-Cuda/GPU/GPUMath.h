@@ -1,5 +1,5 @@
 /*
-* This file is part of the VanitySearch distribution (https://github.com/JeanLucPons/VanitySearch).
+ * This file is part of the VanitySearch distribution (https://github.com/JeanLucPons/VanitySearch).
 * Copyright (c) 2019 Jean Luc PONS.
 *
 * This program is free software: you can redistribute it and/or modify
@@ -19,6 +19,7 @@
 // 256(+64) bits integer CUDA libray for SECPK1
 // ---------------------------------------------------------------------------------
 
+#pragma once
 
 #include <cuda/std/bit>
 
