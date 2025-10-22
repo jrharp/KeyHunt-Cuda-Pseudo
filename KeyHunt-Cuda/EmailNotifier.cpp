@@ -7,6 +7,7 @@
 #include <cstring>
 #include <curl/curl.h>
 #include <mutex>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -155,6 +156,34 @@ void NotifyShutdown(const std::string& summary)
         std::string errorMessage;
         if (!sendEmail(subject.str(), body.str(), errorMessage)) {
                 logError("Email notification failed (shutdown): ", errorMessage);
+        }
+}
+
+void NotifyHourlyUpdate(double elapsedSeconds, const std::optional<uint64_t>& lastCompletedBlock)
+{
+        std::ostringstream subject;
+        subject << "KeyHunt hourly update";
+
+        uint64_t totalSeconds = static_cast<uint64_t>(elapsedSeconds);
+        const uint64_t hours = totalSeconds / 3600ULL;
+        totalSeconds %= 3600ULL;
+        const uint64_t minutes = totalSeconds / 60ULL;
+        const uint64_t seconds = totalSeconds % 60ULL;
+
+        std::ostringstream body;
+        body << "KeyHunt is still running." << "\n\n";
+        body << "Elapsed runtime: " << hours << "h " << minutes << "m " << seconds << "s" << "\n";
+        if (lastCompletedBlock.has_value()) {
+                body << "Last completed block: " << lastCompletedBlock.value() << "\n";
+        }
+        else {
+                body << "Last completed block: (not available)" << "\n";
+                body << "Pseudo-random traversal is not active or no blocks have finished yet." << "\n";
+        }
+
+        std::string errorMessage;
+        if (!sendEmail(subject.str(), body.str(), errorMessage)) {
+                logError("Email notification failed (hourly update): ", errorMessage);
         }
 }
 

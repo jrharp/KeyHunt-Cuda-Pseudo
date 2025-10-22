@@ -1,5 +1,6 @@
 #pragma once
 
+#include <optional>
 #include <string>
 
 namespace email {
@@ -13,6 +14,9 @@ void NotifyKeyFound(const std::string& address,
 
 // Sends a notification indicating the search stopped.
 void NotifyShutdown(const std::string& summary);
+
+// Sends a periodic status update indicating the application is still running.
+void NotifyHourlyUpdate(double elapsedSeconds, const std::optional<uint64_t>& lastCompletedBlock);
 
 } // namespace email
 
