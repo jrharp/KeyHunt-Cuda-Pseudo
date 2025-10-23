@@ -13,7 +13,6 @@
 #include <stdexcept>
 #include <cassert>
 #include <algorithm>
-#include <limits>
 #include <inttypes.h>
 #ifndef WIN64
 #include <signal.h>
@@ -138,8 +137,7 @@ std::string buildStartupSummary(const std::string& release,
                 const std::string& xpoint,
                 const std::string& outputFile,
                 const std::string& rangeStartHex,
-                const std::string& rangeEndHex,
-                const std::string& shardLabel)
+                const std::string& rangeEndHex)
 {
         std::ostringstream summary;
         summary << "KeyHunt-Cuda v" << release << " has started." << "\n\n";
@@ -190,7 +188,6 @@ std::string buildStartupSummary(const std::string& release,
         }
         summary << "Range start   : " << rangeStartHex << "\n";
         summary << "Range end     : " << rangeEndHex << "\n";
-        summary << "Shard         : " << (shardLabel.empty() ? "(not partitioned)" : shardLabel) << "\n";
         return summary.str();
 }
 
@@ -226,17 +223,15 @@ void usage()
 	printf("                                               ETH: available mode :-\n");
 	printf("                                                   ADDRESS, ADDRESSES\n");
 	printf("-l, --list                               : List cuda enabled devices\n");
-        printf("--range KEYSPACE                         : Specify the range:\n");
-        printf("                                               START:END\n");
-        printf("                                               START:+COUNT\n");
-        printf("                                               START\n");
-        printf("                                               :END\n");
-        printf("                                               :+COUNT\n");
-        printf("                                               Where START, END, COUNT are in hex format\n");
-        printf("--shard-total COUNT                      : Split the keyspace into COUNT contiguous shards\n");
-        printf("--shard-index INDEX                      : Process shard INDEX (0-based) from the split\n");
-        printf("-r, --rkey Rkey                          : Random key interval in MegaKeys, default is disabled\n");
-        printf("-v, --version                            : Show version\n");
+	printf("--range KEYSPACE                         : Specify the range:\n");
+	printf("                                               START:END\n");
+	printf("                                               START:+COUNT\n");
+	printf("                                               START\n");
+	printf("                                               :END\n");
+	printf("                                               :+COUNT\n");
+	printf("                                               Where START, END, COUNT are in hex format\n");
+	printf("-r, --rkey Rkey                          : Random key interval in MegaKeys, default is disabled\n");
+	printf("-v, --version                            : Show version\n");
 }
 
 // ----------------------------------------------------------------------------
@@ -409,18 +404,12 @@ int main(int argc, char** argv)
 
 	bool tSpecified = false;
 	bool useSSE = true;
-        uint32_t maxFound = 1024 * 64;
+	uint32_t maxFound = 1024 * 64;
 
-        uint64_t rKey = 0;
+	uint64_t rKey = 0;
 
-        uint32_t shardCount = 1;
-        uint32_t shardIndex = 0;
-        bool shardCountSpecified = false;
-        bool shardIndexSpecified = false;
-        std::string shardSummary;
-
-        Int rangeStart;
-        Int rangeEnd;
+	Int rangeStart;
+	Int rangeEnd;
 	rangeStart.SetInt32(0);
 	rangeEnd.SetInt32(0);
 
@@ -445,13 +434,11 @@ int main(int argc, char** argv)
         parser.add("-t", "--thread", true);
 	parser.add("-i", "--in", true);
 	parser.add("-o", "--out", true);
-        parser.add("-m", "--mode", true);
-        parser.add("", "--coin", true);
-        parser.add("", "--range", true);
-        parser.add("", "--shard-total", true);
-        parser.add("", "--shard-index", true);
-        parser.add("-r", "--rkey", true);
-        parser.add("-v", "--version", false);
+	parser.add("-m", "--mode", true);
+	parser.add("", "--coin", true);
+	parser.add("", "--range", true);
+	parser.add("-r", "--rkey", true);
+	parser.add("-v", "--version", false);
 
 	if (argc == 1) {
 		usage();
@@ -464,29 +451,12 @@ int main(int argc, char** argv)
 		printf("Error: %s\n", err.c_str());
 		usage();
 		exit(-1);
-        }
-        std::vector<OptArg> args = parser.getArgs();
+	}
+	std::vector<OptArg> args = parser.getArgs();
 
-        auto parseShardParameter = [](const std::string& text, const char* optionName) -> uint32_t {
-                try {
-                        size_t idx = 0;
-                        unsigned long value = std::stoul(text, &idx, 10);
-                        if (idx != text.size()) {
-                                throw std::string(std::string(optionName) + " expects a non-negative integer value");
-                        }
-                        if (value > std::numeric_limits<uint32_t>::max()) {
-                                throw std::string(std::string(optionName) + " value is too large");
-                        }
-                        return static_cast<uint32_t>(value);
-                }
-                catch (const std::exception&) {
-                        throw std::string(std::string(optionName) + " expects a non-negative integer value");
-                }
-        };
-
-        for (unsigned int i = 0; i < args.size(); i++) {
-                OptArg optArg = args[i];
-                std::string opt = args[i].option;
+	for (unsigned int i = 0; i < args.size(); i++) {
+		OptArg optArg = args[i];
+		std::string opt = args[i].option;
 
 		try {
 			if (optArg.equals("-h", "--help")) {
@@ -562,21 +532,13 @@ int main(int argc, char** argv)
 			else if (optArg.equals("", "--coin")) {
 				coinType = parseCoinType(optArg.arg);
 			}
-                        else if (optArg.equals("", "--range")) {
-                                std::string range = optArg.arg;
-                                parseRange(range, rangeStart, rangeEnd);
-                        }
-                        else if (optArg.equals("", "--shard-total")) {
-                                shardCount = parseShardParameter(optArg.arg, "--shard-total");
-                                shardCountSpecified = true;
-                        }
-                        else if (optArg.equals("", "--shard-index")) {
-                                shardIndex = parseShardParameter(optArg.arg, "--shard-index");
-                                shardIndexSpecified = true;
-                        }
-                        else if (optArg.equals("-r", "--rkey")) {
-                                rKey = std::stoull(optArg.arg);
-                        }
+			else if (optArg.equals("", "--range")) {
+				std::string range = optArg.arg;
+				parseRange(range, rangeStart, rangeEnd);
+			}
+			else if (optArg.equals("-r", "--rkey")) {
+				rKey = std::stoull(optArg.arg);
+			}
 			else if (optArg.equals("-v", "--version")) {
 				printf("KeyHunt-Cuda v" RELEASE "\n");
 				return 0;
@@ -747,85 +709,17 @@ int main(int argc, char** argv)
                         gridSize.push_back(128);
                 }
         }
-        if (gridSize.size() != gpuId.size() * 2) {
-                printf("Error: %s\n", "Invalid gridSize or gpuId argument, must have coherent size\n");
-                usage();
-                return -1;
-        }
+	if (gridSize.size() != gpuId.size() * 2) {
+		printf("Error: %s\n", "Invalid gridSize or gpuId argument, must have coherent size\n");
+		usage();
+		return -1;
+	}
 
-        if (shardIndexSpecified && !shardCountSpecified) {
-                printf("Error: %s\n", "--shard-index requires --shard-total to be specified\n");
-                usage();
-                return -1;
-        }
-        if (shardCount == 0) {
-                printf("Error: %s\n", "--shard-total must be at least 1\n");
-                usage();
-                return -1;
-        }
-        if (shardIndex >= shardCount) {
-                printf("Error: %s\n", "--shard-index must be less than --shard-total\n");
-                usage();
-                return -1;
-        }
-
-        if (rangeStart.GetBitLength() <= 0) {
-                printf("Error: %s\n", "Invalid start range, provide start range at least, end range would be: start range + 0xFFFFFFFFFFFFULL\n");
-                usage();
-                return -1;
-        }
-
-        if (shardCount > 1) {
-                Int totalSpan(&rangeEnd);
-                totalSpan.Sub(&rangeStart);
-
-                Int shardCountInt;
-                shardCountInt.SetInt32(shardCount);
-                Int remainder;
-                Int shardSize(&totalSpan);
-                shardSize.Div(&shardCountInt, &remainder);
-
-                const uint32_t remainderCount = remainder.GetInt32();
-                const bool shardGetsExtra = (remainderCount > 0) && (shardIndex < remainderCount);
-                if (shardSize.IsZero() && !shardGetsExtra) {
-                        printf("Error: shard %u/%u does not cover any keys. Reduce the shard count or expand the range.\n",
-                                shardIndex, shardCount);
-                        return -1;
-                }
-
-                Int shardIndexInt;
-                shardIndexInt.SetInt32(shardIndex);
-                Int offset(&shardSize);
-                offset.Mult(&shardIndexInt);
-
-                if (remainderCount != 0) {
-                        uint32_t extraForPrevious = std::min(shardIndex, remainderCount);
-                        if (extraForPrevious != 0) {
-                                Int extraInt;
-                                extraInt.SetInt32(extraForPrevious);
-                                offset.Add(&extraInt);
-                        }
-                }
-
-                Int shardStart(&rangeStart);
-                shardStart.Add(&offset);
-
-                Int shardSpan(&shardSize);
-                if (shardGetsExtra) {
-                        Int one;
-                        one.SetInt32(1);
-                        shardSpan.Add(&one);
-                }
-
-                Int shardEnd(&shardStart);
-                shardEnd.Add(&shardSpan);
-
-                rangeStart.Set(&shardStart);
-                rangeEnd.Set(&shardEnd);
-
-                shardSummary = std::to_string(static_cast<uint64_t>(shardIndex) + 1u) + "/" +
-                        std::to_string(static_cast<uint64_t>(shardCount));
-        }
+	if (rangeStart.GetBitLength() <= 0) {
+		printf("Error: %s\n", "Invalid start range, provide start range at least, end range would be: start range + 0xFFFFFFFFFFFFULL\n");
+		usage();
+		return -1;
+	}
 #ifdef WITHGPU
 	if (gpuEnable && nbCPUThread > 0) {
 		printf("Warning: CPU threads are disabled when GPU acceleration is active. Ignoring CPU thread setting.\n");
@@ -863,11 +757,8 @@ int main(int argc, char** argv)
 	else {
 		deviceLabel = "NONE";
 	}
-        printf("DEVICE       : %s\n", deviceLabel);
-        if (!shardSummary.empty()) {
-                printf("SHARD       : %s\n", shardSummary.c_str());
-        }
-        printf("CPU THREAD   : %d\n", nbCPUThread);
+	printf("DEVICE       : %s\n", deviceLabel);
+	printf("CPU THREAD   : %d\n", nbCPUThread);
 	if (gpuEnable) {
 		printf("GPU IDS      : ");
 		for (int i = 0; i < gpuId.size(); i++) {
@@ -949,8 +840,7 @@ int main(int argc, char** argv)
                 xpoint,
                 outputFile,
                 rangeStart.GetBase16(),
-                rangeEnd.GetBase16(),
-                shardSummary));
+                rangeEnd.GetBase16()));
 
 
         auto computeGpuStepMultiplier = [](const std::vector<int>& gridSizeValues) {

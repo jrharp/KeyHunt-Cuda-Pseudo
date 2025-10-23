@@ -113,8 +113,6 @@ Where TARGETS is one address/xpont, or multiple hashes/xpoints file
                                                :END
                                                :+COUNT
                                                Where START, END, COUNT are in hex format
---shard-total COUNT                      : Split the keyspace into COUNT contiguous shards
---shard-index INDEX                      : Process shard INDEX (0-based) from the split
 -r, --rkey Rkey                          : Random key interval in MegaKeys, default is disabled
 -v, --version                            : Show version
 
