@@ -18,6 +18,7 @@
 #include <limits>
 #include <cstdio>
 #include <filesystem>
+#include <optional>
 #include <sstream>
 #ifndef WIN64
 #include <pthread.h>
@@ -525,6 +526,18 @@ void KeyHunt::notifyPseudoRandomBlockComplete(uint64_t sequentialIndex)
         if (nextPersist != std::numeric_limits<uint64_t>::max()) {
                 persistPseudoRandomState(nextPersist);
         }
+}
+
+std::optional<uint64_t> KeyHunt::getLastCompletedBlock() const
+{
+        if (!pseudoRandomEnabled)
+                return std::nullopt;
+
+        std::lock_guard<std::mutex> guard(pseudoState.progressMutex);
+        if (pseudoState.lowestUnpersisted == 0)
+                return std::nullopt;
+
+        return pseudoState.lowestUnpersisted - 1;
 }
 
 void KeyHunt::startPseudoRandomGpuPrefetch(int targetQueueSize)
@@ -2020,14 +2033,16 @@ void KeyHunt::Search(int nbThread, std::vector<int> gpuId, std::vector<int> grid
 	}
 
 	// Reset timer
-	Timer::Init();
-	t0 = Timer::get_tick();
-	startTime = t0;
-	Int p100;
-	Int ICount;
-	p100.SetInt32(100);
-	double completedPerc = 0;
-	uint64_t rKeyCount = 0;
+        Timer::Init();
+        t0 = Timer::get_tick();
+        startTime = t0;
+        const double hourlyUpdateInterval = 3600.0;
+        double lastStatusEmailTick = startTime;
+        Int p100;
+        Int ICount;
+        p100.SetInt32(100);
+        double completedPerc = 0;
+        uint64_t rKeyCount = 0;
 	while (isAlive(params)) {
 
 		int delay = 2000;
@@ -2047,9 +2062,9 @@ void KeyHunt::Search(int nbThread, std::vector<int> gpuId, std::vector<int> grid
 			//completedPerc = std::stoi(ICount.GetBase10());
 		}
 
-		t1 = Timer::get_tick();
-		keyRate = (double)(count - lastCount) / (t1 - t0);
-		gpuKeyRate = (double)(gpuCount - lastGPUCount) / (t1 - t0);
+                t1 = Timer::get_tick();
+                keyRate = (double)(count - lastCount) / (t1 - t0);
+                gpuKeyRate = (double)(gpuCount - lastGPUCount) / (t1 - t0);
 		lastkeyRate[filterPos % FILTER_SIZE] = keyRate;
 		lastGpukeyRate[filterPos % FILTER_SIZE] = gpuKeyRate;
 		filterPos++;
@@ -2065,18 +2080,22 @@ void KeyHunt::Search(int nbThread, std::vector<int> gpuId, std::vector<int> grid
 		avgKeyRate /= (double)(nbSample);
 		avgGpuKeyRate /= (double)(nbSample);
 
-		if (isAlive(params)) {
-			memset(timeStr, '\0', 256);
-			printf("\r[%s] [CPU+GPU: %.2f Mk/s] [GPU: %.2f Mk/s] [C: %lf %%] [R: %" PRIu64 "] [T: %s (%d bit)] [F: %d]  ",
-				toTimeStr(t1, timeStr),
-				avgKeyRate / 1000000.0,
-				avgGpuKeyRate / 1000000.0,
-				completedPerc,
-				rKeyCount,
-				formatThousands(count).c_str(),
-				completedBits,
-				nbFoundKey);
-		}
+                if (isAlive(params)) {
+                        memset(timeStr, '\0', 256);
+                        printf("\r[%s] [CPU+GPU: %.2f Mk/s] [GPU: %.2f Mk/s] [C: %lf %%] [R: %" PRIu64 "] [T: %s (%d bit)] [F: %d]  ",
+                                toTimeStr(t1, timeStr),
+                                avgKeyRate / 1000000.0,
+                                avgGpuKeyRate / 1000000.0,
+                                completedPerc,
+                                rKeyCount,
+                                formatThousands(count).c_str(),
+                                completedBits,
+                                nbFoundKey);
+                        if ((t1 - lastStatusEmailTick) >= hourlyUpdateInterval) {
+                                email::NotifyHourlyUpdate(t1 - startTime, getLastCompletedBlock());
+                                lastStatusEmailTick = t1;
+                        }
+                }
 		if (rKey > 0) {
 			if ((count - lastrKey) > (1000000 * rKey)) {
 				// rKey request

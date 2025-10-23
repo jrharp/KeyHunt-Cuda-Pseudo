@@ -6,6 +6,7 @@
 #include <deque>
 #include <limits>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 #include <unordered_set>
@@ -103,10 +104,11 @@ private:
 	int CheckBloomBinary(const uint8_t* _xx, uint32_t K_LENGTH);
 	bool MatchHash(uint32_t* _h);
 	bool MatchXPoint(uint32_t* _h);
-	std::string formatThousands(uint64_t x);
-	char* toTimeStr(int sec, char* timeStr);
+        std::string formatThousands(uint64_t x);
+        char* toTimeStr(int sec, char* timeStr);
+        std::optional<uint64_t> getLastCompletedBlock() const;
 
-	Secp256K1* secp;
+        Secp256K1* secp;
 	Bloom* bloom;
 
 	uint64_t counters[256];
