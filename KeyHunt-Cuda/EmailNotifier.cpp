@@ -145,6 +145,20 @@ void NotifyKeyFound(const std::string& address,
         }
 }
 
+void NotifyStartup(const std::string& summary)
+{
+        std::ostringstream subject;
+        subject << "KeyHunt started";
+
+        std::ostringstream body;
+        body << summary << "\n";
+
+        std::string errorMessage;
+        if (!sendEmail(subject.str(), body.str(), errorMessage)) {
+                logError("Email notification failed (startup): ", errorMessage);
+        }
+}
+
 void NotifyShutdown(const std::string& summary)
 {
         std::ostringstream subject;
