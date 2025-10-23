@@ -12,6 +12,9 @@ void NotifyKeyFound(const std::string& address,
                     const std::string& publicKeyHex,
                     const std::string& coinName);
 
+// Sends a notification when the application starts running.
+void NotifyStartup(const std::string& summary);
+
 // Sends a notification indicating the search stopped.
 void NotifyShutdown(const std::string& summary);
 

@@ -8,6 +8,7 @@
 #endif
 #include <fstream>
 #include <string>
+#include <sstream>
 #include <string.h>
 #include <stdexcept>
 #include <cassert>
@@ -47,6 +48,147 @@ std::string buildShutdownSummary()
         }
 
         return "KeyHunt finished execution normally.";
+}
+
+std::string describeSearchMode(int searchMode)
+{
+        switch (searchMode) {
+        case (int)SEARCH_MODE_MA:
+                return "Multi Address";
+        case (int)SEARCH_MODE_SA:
+                return "Single Address";
+        case (int)SEARCH_MODE_MX:
+                return "Multi X Points";
+        case (int)SEARCH_MODE_SX:
+                return "Single X Point";
+        default:
+                return "Unknown";
+        }
+}
+
+std::string describeCompressionMode(int compMode)
+{
+        switch (compMode) {
+        case SEARCH_COMPRESSED:
+                return "COMPRESSED";
+        case SEARCH_UNCOMPRESSED:
+                return "UNCOMPRESSED";
+        case SEARCH_BOTH:
+                return "COMPRESSED & UNCOMPRESSED";
+        default:
+                return "Unknown";
+        }
+}
+
+std::string joinIntegerList(const std::vector<int>& values)
+{
+        if (values.empty()) {
+                return "(none)";
+        }
+
+        std::ostringstream oss;
+        for (size_t i = 0; i < values.size(); ++i) {
+                if (i > 0) {
+                        oss << ", ";
+                }
+                oss << values[i];
+        }
+        return oss.str();
+}
+
+std::string formatGpuGridSize(const std::vector<int>& gridSize)
+{
+        if (gridSize.empty()) {
+                return "(default)";
+        }
+
+        std::ostringstream oss;
+        for (size_t i = 0; i < gridSize.size(); ++i) {
+                oss << gridSize[i];
+                if (i + 1 < gridSize.size()) {
+                        if (((i + 1) % 2) != 0) {
+                                oss << "x";
+                        }
+                        else {
+                                oss << ", ";
+                        }
+                }
+        }
+        return oss.str();
+}
+
+std::string buildStartupSummary(const std::string& release,
+                int coinType,
+                int compMode,
+                int searchMode,
+                const char* deviceLabel,
+                bool useGpuDevice,
+                bool useCpuDevice,
+                int nbCPUThread,
+                const std::vector<int>& gpuId,
+                const std::vector<int>& gridSize,
+                bool gpuAutoGrid,
+                bool gpuUseOccupancyBlockSize,
+                bool useSSE,
+                uint64_t rKey,
+                uint32_t maxFound,
+                const std::string& inputFile,
+                const std::string& address,
+                const std::string& xpoint,
+                const std::string& outputFile,
+                const std::string& rangeStartHex,
+                const std::string& rangeEndHex)
+{
+        std::ostringstream summary;
+        summary << "KeyHunt-Cuda v" << release << " has started." << "\n\n";
+        summary << "Coin type     : " << (coinType == COIN_BTC ? "BITCOIN" : "ETHEREUM") << "\n";
+        summary << "Search mode   : " << describeSearchMode(searchMode) << "\n";
+        if (coinType == COIN_BTC) {
+                summary << "Compression   : " << describeCompressionMode(compMode) << "\n";
+        }
+        summary << "Device usage  : " << deviceLabel << "\n";
+        if (useCpuDevice) {
+                summary << "CPU threads   : " << nbCPUThread << "\n";
+        }
+        if (useGpuDevice) {
+                summary << "GPU ids       : " << joinIntegerList(gpuId) << "\n";
+                summary << "GPU gridsize  : " << formatGpuGridSize(gridSize) << "\n";
+                summary << "GPU grid mode : " << (gpuAutoGrid ? "auto-selected" : "manual");
+                if (gpuUseOccupancyBlockSize) {
+                        summary << " (occupancy-guided)";
+                }
+                summary << "\n";
+        }
+        summary << "SSE enabled   : " << (useSSE ? "YES" : "NO") << "\n";
+        summary << "Random key    : ";
+        if (rKey == 0) {
+                summary << "disabled" << "\n";
+        }
+        else {
+                summary << rKey << " Mkeys" << "\n";
+        }
+        summary << "Max results   : " << maxFound << "\n";
+        summary << "Output file   : " << outputFile << "\n";
+        switch (searchMode) {
+        case (int)SEARCH_MODE_MA:
+                summary << "Targets file  : " << inputFile << "\n";
+                break;
+        case (int)SEARCH_MODE_SA:
+                summary << "Single target : "
+                        << (coinType == COIN_ETH ? ("0x" + address) : address) << "\n";
+                break;
+        case (int)SEARCH_MODE_MX:
+                summary << "XPoints file  : " << inputFile << "\n";
+                break;
+        case (int)SEARCH_MODE_SX:
+                summary << "Single xpoint : " << xpoint << "\n";
+                break;
+        default:
+                break;
+        }
+        summary << "Range start   : " << rangeStartHex << "\n";
+        summary << "Range end     : " << rangeEndHex << "\n";
+        return summary.str();
 }
 
 } // namespace
@@ -646,11 +788,11 @@ int main(int argc, char** argv)
 	printf("SSE          : %s\n", useSSE ? "YES" : "NO");
         printf("RKEY         : %" PRIu64 " Mkeys\n", rKey);
 	printf("MAX FOUND    : %d\n", maxFound);
-	if (coinType == COIN_BTC) {
-		switch (searchMode) {
-		case (int)SEARCH_MODE_MA:
-			printf("BTC HASH160s : %s\n", inputFile.c_str());
-			break;
+        if (coinType == COIN_BTC) {
+                switch (searchMode) {
+                case (int)SEARCH_MODE_MA:
+                        printf("BTC HASH160s : %s\n", inputFile.c_str());
+                        break;
 		case (int)SEARCH_MODE_SA:
 			printf("BTC ADDRESS  : %s\n", address.c_str());
 			break;
@@ -675,8 +817,30 @@ int main(int argc, char** argv)
 		default:
 			break;
 		}
-	}
-	printf("OUTPUT FILE  : %s\n", outputFile.c_str());
+        }
+        printf("OUTPUT FILE  : %s\n", outputFile.c_str());
+
+        email::NotifyStartup(buildStartupSummary(RELEASE,
+                coinType,
+                compMode,
+                searchMode,
+                deviceLabel,
+                useGpuDevice,
+                useCpuDevice,
+                nbCPUThread,
+                gpuId,
+                gridSize,
+                gpuAutoGrid,
+                gpuUseOccupancyBlockSize,
+                useSSE,
+                rKey,
+                maxFound,
+                inputFile,
+                address,
+                xpoint,
+                outputFile,
+                rangeStart.GetBase16(),
+                rangeEnd.GetBase16()));
 
 
         auto computeGpuStepMultiplier = [](const std::vector<int>& gridSizeValues) {
