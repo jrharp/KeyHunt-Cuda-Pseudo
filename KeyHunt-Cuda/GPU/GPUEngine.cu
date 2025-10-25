@@ -1006,8 +1006,17 @@ GPUEngine::GPUEngine(Secp256K1* secp, int nbThreadGroup, int nbThreadPerGroup, i
 
         const size_t keyBufferSize = static_cast<size_t>(nbThread) * 32u * 2u;
         AllocateDeviceBuffer(reinterpret_cast<void**>(&inputKey), keyBufferSize);
-        CUDA_CHECK(cudaHostAlloc(reinterpret_cast<void**>(&inputKeyPinned), keyBufferSize,
-                cudaHostAllocWriteCombined | cudaHostAllocMapped));
+        for (auto& buffer : inputKeyPinned) {
+                CUDA_CHECK(cudaHostAlloc(reinterpret_cast<void**>(&buffer), keyBufferSize,
+                        cudaHostAllocWriteCombined | cudaHostAllocMapped));
+        }
+        for (auto& event : inputKeyCopyEvents) {
+                CUDA_CHECK(cudaEventCreateWithFlags(&event, cudaEventDisableTiming));
+        }
+        for (auto& recorded : inputKeyCopyEventRecorded) {
+                recorded = false;
+        }
+        nextInputKeyBuffer = 0;
 
         AllocateDeviceBuffer(reinterpret_cast<void**>(&outputBuffer), outputSize);
         CUDA_CHECK(cudaHostAlloc(reinterpret_cast<void**>(&outputBufferPinned), outputSize,
@@ -1184,8 +1193,17 @@ GPUEngine::GPUEngine(Secp256K1* secp, int nbThreadGroup, int nbThreadPerGroup, i
         // Allocate memory
         const size_t keyBufferSize = static_cast<size_t>(nbThread) * 32u * 2u;
         AllocateDeviceBuffer(reinterpret_cast<void**>(&inputKey), keyBufferSize);
-        CUDA_CHECK(cudaHostAlloc(reinterpret_cast<void**>(&inputKeyPinned), keyBufferSize,
-                cudaHostAllocWriteCombined | cudaHostAllocMapped));
+        for (auto& buffer : inputKeyPinned) {
+                CUDA_CHECK(cudaHostAlloc(reinterpret_cast<void**>(&buffer), keyBufferSize,
+                        cudaHostAllocWriteCombined | cudaHostAllocMapped));
+        }
+        for (auto& event : inputKeyCopyEvents) {
+                CUDA_CHECK(cudaEventCreateWithFlags(&event, cudaEventDisableTiming));
+        }
+        for (auto& recorded : inputKeyCopyEventRecorded) {
+                recorded = false;
+        }
+        nextInputKeyBuffer = 0;
 
         AllocateDeviceBuffer(reinterpret_cast<void**>(&outputBuffer), outputSize);
         CUDA_CHECK(cudaHostAlloc(reinterpret_cast<void**>(&outputBufferPinned), outputSize,
@@ -1531,6 +1549,20 @@ GPUEngine::~GPUEngine()
                 FreeDeviceBuffer(reinterpret_cast<void**>(&outputBuffer));
         }
 
+        for (auto& event : inputKeyCopyEvents) {
+                if (event != nullptr) {
+                        CUDA_CHECK(cudaEventDestroy(event));
+                        event = nullptr;
+                }
+        }
+
+        for (auto& hostBuffer : inputKeyPinned) {
+                if (hostBuffer != nullptr) {
+                        CUDA_CHECK(cudaFreeHost(hostBuffer));
+                        hostBuffer = nullptr;
+                }
+        }
+
         if (__2Gnx != nullptr) {
                 FreeDeviceBuffer(reinterpret_cast<void**>(&__2Gnx));
         }
@@ -1545,11 +1577,6 @@ GPUEngine::~GPUEngine()
 
         if (_Gy != nullptr) {
                 FreeDeviceBuffer(reinterpret_cast<void**>(&_Gy));
-        }
-
-        if (rKey && inputKeyPinned != nullptr) {
-                CUDA_CHECK(cudaFreeHost(inputKeyPinned));
-                inputKeyPinned = nullptr;
         }
 
 #if CUDART_VERSION >= 11020
@@ -1820,34 +1847,44 @@ bool GPUEngine::SetKeys(Point* p, int activeThreadCountOverride)
         const int safeSourceCount = std::max(sourceCount, 1);
         const int maxSourceIndex = safeSourceCount - 1;
 
+        const int bufferIndex = nextInputKeyBuffer;
+        if (bufferIndex < 0 || bufferIndex >= static_cast<int>(inputKeyPinned.size())) {
+                return false;
+        }
+        uint64_t* keyBuffer = inputKeyPinned[bufferIndex];
+        if (keyBuffer == nullptr) {
+                return false;
+        }
+
+        if (inputKeyCopyEventRecorded[bufferIndex]) {
+                CUDA_CHECK(cudaEventSynchronize(inputKeyCopyEvents[bufferIndex]));
+                inputKeyCopyEventRecorded[bufferIndex] = false;
+        }
+
         for (int i = 0; i < activeThreadCount; i += nbThreadPerGroup) {
                 for (int j = 0; j < nbThreadPerGroup && (i + j) < activeThreadCount; j++) {
                         const int logicalIndex = i + j;
                         const int sourceIndex = logicalIndex <= maxSourceIndex ? logicalIndex : maxSourceIndex;
 
-                        inputKeyPinned[8 * i + j + 0 * nbThreadPerGroup] = p[sourceIndex].x.bits64[0];
-                        inputKeyPinned[8 * i + j + 1 * nbThreadPerGroup] = p[sourceIndex].x.bits64[1];
-                        inputKeyPinned[8 * i + j + 2 * nbThreadPerGroup] = p[sourceIndex].x.bits64[2];
-                        inputKeyPinned[8 * i + j + 3 * nbThreadPerGroup] = p[sourceIndex].x.bits64[3];
+                        keyBuffer[8 * i + j + 0 * nbThreadPerGroup] = p[sourceIndex].x.bits64[0];
+                        keyBuffer[8 * i + j + 1 * nbThreadPerGroup] = p[sourceIndex].x.bits64[1];
+                        keyBuffer[8 * i + j + 2 * nbThreadPerGroup] = p[sourceIndex].x.bits64[2];
+                        keyBuffer[8 * i + j + 3 * nbThreadPerGroup] = p[sourceIndex].x.bits64[3];
 
-                        inputKeyPinned[8 * i + j + 4 * nbThreadPerGroup] = p[sourceIndex].y.bits64[0];
-                        inputKeyPinned[8 * i + j + 5 * nbThreadPerGroup] = p[sourceIndex].y.bits64[1];
-                        inputKeyPinned[8 * i + j + 6 * nbThreadPerGroup] = p[sourceIndex].y.bits64[2];
-                        inputKeyPinned[8 * i + j + 7 * nbThreadPerGroup] = p[sourceIndex].y.bits64[3];
+                        keyBuffer[8 * i + j + 4 * nbThreadPerGroup] = p[sourceIndex].y.bits64[0];
+                        keyBuffer[8 * i + j + 5 * nbThreadPerGroup] = p[sourceIndex].y.bits64[1];
+                        keyBuffer[8 * i + j + 6 * nbThreadPerGroup] = p[sourceIndex].y.bits64[2];
+                        keyBuffer[8 * i + j + 7 * nbThreadPerGroup] = p[sourceIndex].y.bits64[3];
 
                 }
         }
 
         // Fill device memory
         const size_t keyBufferSize = static_cast<size_t>(activeThreadCount) * 32u * 2u;
-        CUDA_CHECK(cudaMemcpyAsync(inputKey, inputKeyPinned, keyBufferSize, cudaMemcpyHostToDevice, stream_));
-        waitForStream(true);
-
-        if (!rKey) {
-                // We do not need the input pinned memory anymore
-                CUDA_CHECK(cudaFreeHost(inputKeyPinned));
-                inputKeyPinned = nullptr;
-	}
+        CUDA_CHECK(cudaMemcpyAsync(inputKey, keyBuffer, keyBufferSize, cudaMemcpyHostToDevice, stream_));
+        CUDA_CHECK(cudaEventRecord(inputKeyCopyEvents[bufferIndex], stream_));
+        inputKeyCopyEventRecorded[bufferIndex] = true;
+        nextInputKeyBuffer = (bufferIndex + 1) % static_cast<int>(inputKeyPinned.size());
 
 	switch (searchMode) {
 	case (int)SEARCH_MODE_MA:

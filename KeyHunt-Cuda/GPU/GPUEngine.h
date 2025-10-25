@@ -19,6 +19,7 @@
 #define GPUENGINEH
 
 #include <cuda_runtime_api.h>
+#include <array>
 #include <string>
 #include <vector>
 #include "../SECP256k1.h"
@@ -136,7 +137,11 @@ private:
         uint32_t bloomIsPowerOfTwo_ = 0;
 
         uint64_t* inputKey = nullptr;
-        uint64_t* inputKeyPinned = nullptr;
+        static constexpr int kInputKeyBufferCount = 2;
+        std::array<uint64_t*, kInputKeyBufferCount> inputKeyPinned{};
+        std::array<cudaEvent_t, kInputKeyBufferCount> inputKeyCopyEvents{};
+        std::array<bool, kInputKeyBufferCount> inputKeyCopyEventRecorded{};
+        int nextInputKeyBuffer = 0;
 
         uint32_t* outputBuffer = nullptr;
         uint32_t* outputBufferPinned = nullptr;
