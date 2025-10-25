@@ -283,6 +283,64 @@ int RecommendOccupancyBlockSize(int deviceId)
 
 #define CUDA_CHECK(call) ::CheckCuda((call), #call, __FILE__, __LINE__)
 
+namespace {
+
+struct DeviceCapabilityInfo
+{
+        int warpSize = 0;
+        int maxThreadsPerMultiprocessor = 0;
+        int maxBlocksPerMultiprocessor = 0;
+        int memoryPoolsSupported = 0;
+        int cooperativeLaunch = 0;
+        int cooperativeMultiDeviceLaunch = 0;
+        int clusterLaunch = 0;
+        int memSyncDomainCount = 1;
+};
+
+int GetAttributeOrDefault(cudaDeviceAttr attr, int deviceId, int defaultValue = 0)
+{
+        int value = defaultValue;
+        const cudaError_t status = cudaDeviceGetAttribute(&value, attr, deviceId);
+        if (status == cudaSuccess) {
+                return value;
+        }
+        if (status == cudaErrorInvalidValue
+#if defined(cudaErrorNotSupported)
+            || status == cudaErrorNotSupported
+#endif
+        ) {
+                // Clear any sticky error state before returning the default.
+                cudaGetLastError();
+                return defaultValue;
+        }
+        CUDA_CHECK(status);
+        return value;
+}
+
+DeviceCapabilityInfo QueryDeviceCapabilityInfo(int deviceId)
+{
+        DeviceCapabilityInfo info;
+        CUDA_CHECK(cudaDeviceGetAttribute(&info.warpSize, cudaDevAttrWarpSize, deviceId));
+        CUDA_CHECK(cudaDeviceGetAttribute(&info.maxThreadsPerMultiprocessor, cudaDevAttrMaxThreadsPerMultiProcessor, deviceId));
+        info.maxBlocksPerMultiprocessor = GetAttributeOrDefault(cudaDevAttrMaxBlocksPerMultiprocessor, deviceId);
+        info.memoryPoolsSupported = GetAttributeOrDefault(cudaDevAttrMemoryPoolsSupported, deviceId);
+#ifdef cudaDevAttrCooperativeLaunch
+        info.cooperativeLaunch = GetAttributeOrDefault(cudaDevAttrCooperativeLaunch, deviceId);
+#endif
+#ifdef cudaDevAttrCooperativeMultiDeviceLaunch
+        info.cooperativeMultiDeviceLaunch = GetAttributeOrDefault(cudaDevAttrCooperativeMultiDeviceLaunch, deviceId);
+#endif
+#ifdef cudaDevAttrClusterLaunch
+        info.clusterLaunch = GetAttributeOrDefault(cudaDevAttrClusterLaunch, deviceId);
+#endif
+#ifdef cudaDevAttrMemSyncDomainCount
+        info.memSyncDomainCount = GetAttributeOrDefault(cudaDevAttrMemSyncDomainCount, deviceId, 1);
+#endif
+        return info;
+}
+
+} // namespace
+
 int RecommendOccupancyBlockSizeForDevice(int deviceId)
 {
         return RecommendOccupancyBlockSize(deviceId);
@@ -394,60 +452,6 @@ constexpr std::array<SmToCores, 21> kSmToCores = { {
         {0x90, 128}, // Hopper Generation (SM 9.0)
         {0xC0, 128}, // Blackwell Generation (SM 12.0)
 } };
-
-struct DeviceCapabilityInfo
-{
-        int warpSize = 0;
-        int maxThreadsPerMultiprocessor = 0;
-        int maxBlocksPerMultiprocessor = 0;
-        int memoryPoolsSupported = 0;
-        int cooperativeLaunch = 0;
-        int cooperativeMultiDeviceLaunch = 0;
-        int clusterLaunch = 0;
-        int memSyncDomainCount = 1;
-};
-
-int GetAttributeOrDefault(cudaDeviceAttr attr, int deviceId, int defaultValue = 0)
-{
-        int value = defaultValue;
-        const cudaError_t status = cudaDeviceGetAttribute(&value, attr, deviceId);
-        if (status == cudaSuccess) {
-                return value;
-        }
-        if (status == cudaErrorInvalidValue
-#if defined(cudaErrorNotSupported)
-            || status == cudaErrorNotSupported
-#endif
-        ) {
-                // Clear any sticky error state before returning the default.
-                cudaGetLastError();
-                return defaultValue;
-        }
-        CUDA_CHECK(status);
-        return value;
-}
-
-DeviceCapabilityInfo QueryDeviceCapabilityInfo(int deviceId)
-{
-        DeviceCapabilityInfo info;
-        CUDA_CHECK(cudaDeviceGetAttribute(&info.warpSize, cudaDevAttrWarpSize, deviceId));
-        CUDA_CHECK(cudaDeviceGetAttribute(&info.maxThreadsPerMultiprocessor, cudaDevAttrMaxThreadsPerMultiProcessor, deviceId));
-        info.maxBlocksPerMultiprocessor = GetAttributeOrDefault(cudaDevAttrMaxBlocksPerMultiprocessor, deviceId);
-        info.memoryPoolsSupported = GetAttributeOrDefault(cudaDevAttrMemoryPoolsSupported, deviceId);
-#ifdef cudaDevAttrCooperativeLaunch
-        info.cooperativeLaunch = GetAttributeOrDefault(cudaDevAttrCooperativeLaunch, deviceId);
-#endif
-#ifdef cudaDevAttrCooperativeMultiDeviceLaunch
-        info.cooperativeMultiDeviceLaunch = GetAttributeOrDefault(cudaDevAttrCooperativeMultiDeviceLaunch, deviceId);
-#endif
-#ifdef cudaDevAttrClusterLaunch
-        info.clusterLaunch = GetAttributeOrDefault(cudaDevAttrClusterLaunch, deviceId);
-#endif
-#ifdef cudaDevAttrMemSyncDomainCount
-        info.memSyncDomainCount = GetAttributeOrDefault(cudaDevAttrMemSyncDomainCount, deviceId, 1);
-#endif
-        return info;
-}
 
 struct AsyncAllocatorConfig
 {
