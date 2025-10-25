@@ -2112,15 +2112,18 @@ void KeyHunt::Search(int nbThread, std::vector<int> gpuId, std::vector<int> grid
 	uint64_t gpuCount = 0;
 	uint64_t lastGPUCount = 0;
 
-        double keyRate = 0.0;
-        double gpuKeyRate = 0.0;
-        double smoothedKeyRate = 0.0;
-        double smoothedGpuKeyRate = 0.0;
-        double lastKeyProgressTick = 0.0;
-        double lastGpuProgressTick = 0.0;
-        bool haveSmoothedKeyRate = false;
-        bool haveSmoothedGpuKeyRate = false;
-        char timeStr[256];
+	// Key rate smoothing filter
+#define FILTER_SIZE 8
+	double lastkeyRate[FILTER_SIZE];
+	double lastGpukeyRate[FILTER_SIZE];
+	uint32_t filterPos = 0;
+
+	double keyRate = 0.0;
+	double gpuKeyRate = 0.0;
+	char timeStr[256];
+
+        memset(lastkeyRate, 0, sizeof(lastkeyRate));
+        memset(lastGpukeyRate, 0, sizeof(lastGpukeyRate));
 
 	// Wait that all threads have started
 	while (!hasStarted(params)) {
