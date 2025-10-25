@@ -111,7 +111,7 @@ private:
         Secp256K1* secp;
 	Bloom* bloom;
 
-	uint64_t counters[256];
+        std::atomic<uint64_t> counters[256];
 	double startTime;
 
 	int compMode;

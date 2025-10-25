@@ -1378,7 +1378,7 @@ void KeyHunt::FindKeyCPU(TH_PARAM * ph)
 	int thId = ph->threadId;
 	Int tRangeStart = ph->rangeStart;
 	Int tRangeEnd = ph->rangeEnd;
-	counters[thId] = 0;
+        counters[thId].store(0, std::memory_order_relaxed);
 
 	// CPU Thread
         IntGroup* grp = new IntGroup(cpuGroupSize / 2 + 1);
@@ -1634,7 +1634,7 @@ void KeyHunt::FindKeyCPU(TH_PARAM * ph)
                 else {
                         notifyPseudoRandomBlockComplete(pseudoSequentialIndex);
                 }
-                counters[thId] += cpuGroupSize; // Point
+                counters[thId].fetch_add(static_cast<uint64_t>(cpuGroupSize), std::memory_order_relaxed); // Point
         }
 	ph->isRunning = false;
 
@@ -1787,7 +1787,7 @@ void KeyHunt::FindKeyGPU(TH_PARAM * ph)
         std::vector<ITEM> found;
         printf("GPU          : %s\n\n", g->deviceName.c_str());
 
-        counters[thId] = 0;
+        counters[thId].store(0, std::memory_order_relaxed);
 
         const bool usePseudoRandomGpu = pseudoRandomEnabled;
         if (usePseudoRandomGpu) {
@@ -1909,13 +1909,13 @@ void KeyHunt::FindKeyGPU(TH_PARAM * ph)
                                                 notifyPseudoRandomBlockComplete(resultSequential[i]);
                                         }
                                 }
-                                counters[thId] += stepSize * static_cast<uint64_t>(resultAssignedBlocks);
+                                counters[thId].fetch_add(stepSize * static_cast<uint64_t>(resultAssignedBlocks), std::memory_order_relaxed);
                         }
                         else {
                                 for (int i = 0; i < nbThread; i++) {
                                         resultKeys[i].Add(stepSize);
                                 }
-                                counters[thId] += stepSize * static_cast<uint64_t>(nbThread); // Point
+                                counters[thId].fetch_add(stepSize * static_cast<uint64_t>(nbThread), std::memory_order_relaxed); // Point
                         }
                 }
 
@@ -1995,9 +1995,9 @@ bool KeyHunt::hasStarted(TH_PARAM * p)
 uint64_t KeyHunt::getGPUCount()
 {
 
-	uint64_t count = 0;
-	for (int i = 0; i < nbGPUThread; i++)
-		count += counters[0x80L + i];
+        uint64_t count = 0;
+        for (int i = 0; i < nbGPUThread; i++)
+                count += counters[0x80L + i].load(std::memory_order_relaxed);
 	return count;
 
 }
@@ -2007,9 +2007,9 @@ uint64_t KeyHunt::getGPUCount()
 uint64_t KeyHunt::getCPUCount()
 {
 
-	uint64_t count = 0;
-	for (int i = 0; i < nbCPUThread; i++)
-		count += counters[i];
+        uint64_t count = 0;
+        for (int i = 0; i < nbCPUThread; i++)
+                count += counters[i].load(std::memory_order_relaxed);
 	return count;
 
 }
@@ -2049,7 +2049,9 @@ void KeyHunt::Search(int nbThread, std::vector<int> gpuId, std::vector<int> grid
 	// setup ranges
 	SetupRanges(nbCPUThread + nbGPUThread);
 
-	memset(counters, 0, sizeof(counters));
+        for (auto& counter : counters) {
+                counter.store(0, std::memory_order_relaxed);
+        }
 
 	if (!useGpu)
 		printf("\n");
@@ -2110,18 +2112,15 @@ void KeyHunt::Search(int nbThread, std::vector<int> gpuId, std::vector<int> grid
 	uint64_t gpuCount = 0;
 	uint64_t lastGPUCount = 0;
 
-	// Key rate smoothing filter
-#define FILTER_SIZE 8
-	double lastkeyRate[FILTER_SIZE];
-	double lastGpukeyRate[FILTER_SIZE];
-	uint32_t filterPos = 0;
-
-	double keyRate = 0.0;
-	double gpuKeyRate = 0.0;
-	char timeStr[256];
-
-	memset(lastkeyRate, 0, sizeof(lastkeyRate));
-	memset(lastGpukeyRate, 0, sizeof(lastkeyRate));
+        double keyRate = 0.0;
+        double gpuKeyRate = 0.0;
+        double smoothedKeyRate = 0.0;
+        double smoothedGpuKeyRate = 0.0;
+        double lastKeyProgressTick = 0.0;
+        double lastGpuProgressTick = 0.0;
+        bool haveSmoothedKeyRate = false;
+        bool haveSmoothedGpuKeyRate = false;
+        char timeStr[256];
 
 	// Wait that all threads have started
 	while (!hasStarted(params)) {
@@ -2132,7 +2131,11 @@ void KeyHunt::Search(int nbThread, std::vector<int> gpuId, std::vector<int> grid
         Timer::Init();
         t0 = Timer::get_tick();
         startTime = t0;
+        lastKeyProgressTick = startTime;
+        lastGpuProgressTick = startTime;
         const double hourlyUpdateInterval = 3600.0;
+        const double smoothingAlpha = 0.25;
+        const double idleDecaySeconds = 12.0;
         double lastStatusEmailTick = startTime;
         Int p100;
         Int ICount;
@@ -2159,29 +2162,74 @@ void KeyHunt::Search(int nbThread, std::vector<int> gpuId, std::vector<int> grid
 		}
 
                 t1 = Timer::get_tick();
-                keyRate = (double)(count - lastCount) / (t1 - t0);
-                gpuKeyRate = (double)(gpuCount - lastGPUCount) / (t1 - t0);
-		lastkeyRate[filterPos % FILTER_SIZE] = keyRate;
-		lastGpukeyRate[filterPos % FILTER_SIZE] = gpuKeyRate;
-		filterPos++;
+                const double elapsed = (t1 - t0);
+                if (elapsed <= 0.0) {
+                        t0 = t1;
+                        continue;
+                }
 
-		// KeyRate smoothing
-		double avgKeyRate = 0.0;
-		double avgGpuKeyRate = 0.0;
-		uint32_t nbSample;
-		for (nbSample = 0; (nbSample < FILTER_SIZE) && (nbSample < filterPos); nbSample++) {
-			avgKeyRate += lastkeyRate[nbSample];
-			avgGpuKeyRate += lastGpukeyRate[nbSample];
-		}
-		avgKeyRate /= (double)(nbSample);
-		avgGpuKeyRate /= (double)(nbSample);
+                keyRate = (double)(count - lastCount) / elapsed;
+                gpuKeyRate = (double)(gpuCount - lastGPUCount) / elapsed;
+
+                const bool keyProgress = (count > lastCount);
+                const bool gpuProgress = (gpuCount > lastGPUCount);
+
+                if (keyProgress) {
+                        if (!haveSmoothedKeyRate) {
+                                smoothedKeyRate = keyRate;
+                                haveSmoothedKeyRate = true;
+                        }
+                        else {
+                                smoothedKeyRate = smoothingAlpha * keyRate + (1.0 - smoothingAlpha) * smoothedKeyRate;
+                        }
+                        lastKeyProgressTick = t1;
+                }
+                else if (haveSmoothedKeyRate) {
+                        const double decay = std::exp(-elapsed / idleDecaySeconds);
+                        smoothedKeyRate *= decay;
+                }
+
+                if (gpuProgress) {
+                        if (!haveSmoothedGpuKeyRate) {
+                                smoothedGpuKeyRate = gpuKeyRate;
+                                haveSmoothedGpuKeyRate = true;
+                        }
+                        else {
+                                smoothedGpuKeyRate = smoothingAlpha * gpuKeyRate + (1.0 - smoothingAlpha) * smoothedGpuKeyRate;
+                        }
+                        lastGpuProgressTick = t1;
+                }
+                else if (haveSmoothedGpuKeyRate) {
+                        const double decay = std::exp(-elapsed / idleDecaySeconds);
+                        smoothedGpuKeyRate *= decay;
+                }
+
+                if (haveSmoothedKeyRate) {
+                        keyRate = smoothedKeyRate;
+                }
+
+                if (haveSmoothedGpuKeyRate) {
+                        gpuKeyRate = smoothedGpuKeyRate;
+                }
+
+                if (!keyProgress && haveSmoothedKeyRate && keyRate < 1.0 && (t1 - lastKeyProgressTick) > (idleDecaySeconds * 4.0)) {
+                        haveSmoothedKeyRate = false;
+                        keyRate = (count > 0 && (t1 - startTime) > 0.0) ? (double)count / (t1 - startTime) : 0.0;
+                        smoothedKeyRate = keyRate;
+                }
+
+                if (!gpuProgress && haveSmoothedGpuKeyRate && gpuKeyRate < 1.0 && (t1 - lastGpuProgressTick) > (idleDecaySeconds * 4.0)) {
+                        haveSmoothedGpuKeyRate = false;
+                        gpuKeyRate = (gpuCount > 0 && (t1 - startTime) > 0.0) ? (double)gpuCount / (t1 - startTime) : 0.0;
+                        smoothedGpuKeyRate = gpuKeyRate;
+                }
 
                 if (isAlive(params)) {
                         memset(timeStr, '\0', 256);
                         printf("\r[%s] [CPU+GPU: %.2f Mk/s] [GPU: %.2f Mk/s] [C: %lf %%] [R: %" PRIu64 "] [T: %s (%d bit)] [F: %d]  ",
                                 toTimeStr(t1, timeStr),
-                                avgKeyRate / 1000000.0,
-                                avgGpuKeyRate / 1000000.0,
+                                keyRate / 1000000.0,
+                                gpuKeyRate / 1000000.0,
                                 completedPerc,
                                 rKeyCount,
                                 formatThousands(count).c_str(),
