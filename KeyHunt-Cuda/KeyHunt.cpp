@@ -33,7 +33,8 @@ Point _2Gn;
 
 KeyHunt::KeyHunt(const std::string& inputFile, int compMode, int searchMode, int coinType, bool useGpu,
         const std::string& outputFile, bool useSSE, uint32_t maxFound, uint64_t rKey,
-        const std::string& rangeStart, const std::string& rangeEnd, bool& should_exit, int gpuStepMultiplier)
+        const std::string& rangeStart, const std::string& rangeEnd, bool& should_exit, int gpuStepMultiplier,
+        std::optional<uint64_t> pseudoRandomStartBlock)
 {
         this->compMode = compMode;
         this->useGpu = useGpu;
@@ -52,6 +53,7 @@ KeyHunt::KeyHunt(const std::string& inputFile, int compMode, int searchMode, int
         this->rangeDiff2.Sub(&this->rangeStart);
         this->lastrKey = 0;
         this->gpuStepMultiplierRequested = std::max(1, gpuStepMultiplier);
+        this->pseudoRandomResumeOverride = pseudoRandomStartBlock;
 
         secp = new Secp256K1();
         secp->Init();
@@ -142,7 +144,8 @@ KeyHunt::KeyHunt(const std::string& inputFile, int compMode, int searchMode, int
 
 KeyHunt::KeyHunt(const std::vector<unsigned char>& hashORxpoint, int compMode, int searchMode, int coinType,
         bool useGpu, const std::string& outputFile, bool useSSE, uint32_t maxFound, uint64_t rKey,
-        const std::string& rangeStart, const std::string& rangeEnd, bool& should_exit, int gpuStepMultiplier)
+        const std::string& rangeStart, const std::string& rangeEnd, bool& should_exit, int gpuStepMultiplier,
+        std::optional<uint64_t> pseudoRandomStartBlock)
 {
         this->compMode = compMode;
         this->useGpu = useGpu;
@@ -160,6 +163,7 @@ KeyHunt::KeyHunt(const std::vector<unsigned char>& hashORxpoint, int compMode, i
         this->rangeDiff2.Sub(&this->rangeStart);
         this->targetCounter = 1;
         this->gpuStepMultiplierRequested = std::max(1, gpuStepMultiplier);
+        this->pseudoRandomResumeOverride = pseudoRandomStartBlock;
 
         secp = new Secp256K1();
         secp->Init();
@@ -834,14 +838,43 @@ void KeyHunt::initializePseudoRandomState()
         pseudoState.stateFile = fileName;
 
         uint64_t resumeIndex = 0;
+        std::optional<uint64_t> persistedResumeIndex;
         if (loadPseudoRandomState(resumeIndex)) {
-                const uint64_t persistedResumeIndex = resumeIndex;
-                if (pseudoState.totalBlocks != 0 && resumeIndex >= pseudoState.totalBlocks)
-                        resumeIndex %= pseudoState.totalBlocks;
-                pseudoState.nextCounter.store(resumeIndex);
-                pseudoState.lastPersisted = resumeIndex;
-                pseudoState.lowestUnpersisted = resumeIndex;
-                printf("Pseudo-random traversal resume index: %" PRIu64 "\n", resumeIndex);
+                persistedResumeIndex = resumeIndex;
+        }
+
+        std::optional<uint64_t> effectiveStartIndex;
+        if (pseudoRandomResumeOverride.has_value()) {
+                effectiveStartIndex = pseudoRandomResumeOverride;
+        }
+        else if (persistedResumeIndex.has_value()) {
+                effectiveStartIndex = persistedResumeIndex;
+        }
+
+        std::optional<uint64_t> normalizedOverrideIndex;
+        if (effectiveStartIndex.has_value()) {
+                uint64_t normalizedIndex = *effectiveStartIndex;
+                if (pseudoState.totalBlocks != 0 && normalizedIndex >= pseudoState.totalBlocks)
+                        normalizedIndex %= pseudoState.totalBlocks;
+
+                pseudoState.nextCounter.store(normalizedIndex);
+                pseudoState.lastPersisted = normalizedIndex;
+                pseudoState.lowestUnpersisted = normalizedIndex;
+
+                if (pseudoRandomResumeOverride.has_value()) {
+                        if (persistedResumeIndex.has_value()) {
+                                printf("Pseudo-random traversal start index overridden: using block %" PRIu64 " instead of persisted block %" PRIu64 ".\n",
+                                        normalizedIndex, *persistedResumeIndex);
+                        }
+                        else {
+                                printf("Pseudo-random traversal start index set to block %" PRIu64 " from command-line.\n",
+                                        normalizedIndex);
+                        }
+                        normalizedOverrideIndex = normalizedIndex;
+                }
+                else {
+                        printf("Pseudo-random traversal resume index: %" PRIu64 "\n", normalizedIndex);
+                }
 
                 uint64_t percentBlocks = pseudoState.totalBlocks;
                 if (pseudoState.persistedTotalBlocksValid && pseudoState.persistedTotalBlocks != 0)
@@ -850,7 +883,7 @@ void KeyHunt::initializePseudoRandomState()
                 bool percentAvailable = percentBlocks != 0;
                 long double percentValue = 0.0L;
                 if (percentAvailable) {
-                        percentValue = (static_cast<long double>(persistedResumeIndex) / static_cast<long double>(percentBlocks)) * 100.0L;
+                        percentValue = (static_cast<long double>(normalizedIndex) / static_cast<long double>(percentBlocks)) * 100.0L;
                         if (percentValue > 100.0L)
                                 percentValue = 100.0L;
                 }
@@ -868,7 +901,7 @@ void KeyHunt::initializePseudoRandomState()
                 }
 
                 if (blockKeyForAddresses != 0) {
-                        Int resumeInt(persistedResumeIndex);
+                        Int resumeInt(normalizedIndex);
                         Int blockSizeInt(blockKeyForAddresses);
                         Int totalAddresses;
                         totalAddresses.Mult(&resumeInt, &blockSizeInt);
@@ -904,6 +937,11 @@ void KeyHunt::initializePseudoRandomState()
                 pseudoState.totalBlocks, pseudoState.blockKeyCount, pseudoState.stateFile.c_str());
         if (rKey > 0) {
                 printf("Note: random base key refresh is disabled while pseudo-random traversal is active.\n");
+        }
+
+        if (pseudoRandomResumeOverride.has_value() && normalizedOverrideIndex.has_value()) {
+                pseudoState.lastPersisted = std::numeric_limits<uint64_t>::max();
+                persistPseudoRandomState(*normalizedOverrideIndex);
         }
 }
 
