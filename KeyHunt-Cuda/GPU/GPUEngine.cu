@@ -295,7 +295,7 @@ struct SmToCores {
         int cores;
 };
 
-constexpr std::array<SmToCores, 20> kSmToCores = { {
+constexpr std::array<SmToCores, 21> kSmToCores = { {
         {0x20, 32},  // Fermi Generation (SM 2.0) GF100 class
         {0x21, 48},  // Fermi Generation (SM 2.1) GF10x class
         {0x30, 192}, // Kepler Generation (SM 3.0) GK10x class
@@ -316,6 +316,7 @@ constexpr std::array<SmToCores, 20> kSmToCores = { {
         {0x87, 128}, // Ampere Generation (SM 8.7) GA10B class
         {0x89, 128}, // Ada Generation   (SM 8.9)
         {0x90, 128}, // Hopper Generation (SM 9.0)
+        {0xC0, 128}, // Blackwell Generation (SM 12.0)
 } };
 
 struct DeviceCapabilityInfo
