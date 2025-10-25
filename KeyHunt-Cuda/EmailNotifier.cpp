@@ -6,7 +6,6 @@
 #include <cstdio>
 #include <cstring>
 #include <curl/curl.h>
-#include <exception>
 #include <mutex>
 #include <sstream>
 #include <string>
@@ -66,24 +65,11 @@ bool sendEmail(const std::string& subject, const std::string& body, std::string&
 
         std::ostringstream payloadStream;
         payloadStream << "Subject: " << subject << "\r\n";
-        const auto adminRecipients = GetAdminRecipients();
-        if (adminRecipients.empty()) {
-                errorMessage = "No email recipients configured (KEYHUNT_SMTP_RECIPIENTS in config or environment)";
-                return false;
-        }
-
-        std::string senderEmail;
-        try {
-                senderEmail = GetSenderEmail();
-        } catch (const std::exception& ex) {
-                errorMessage = ex.what();
-                return false;
-        }
-        payloadStream << "From: " << senderEmail << "\r\n";
+        payloadStream << "From: " << SENDER_EMAIL << "\r\n";
         payloadStream << "To: ";
-        for (size_t i = 0; i < adminRecipients.size(); ++i) {
-                payloadStream << adminRecipients[i];
-                if (i + 1 < adminRecipients.size()) {
+        for (size_t i = 0; i < ADMIN_EMAIL.size(); ++i) {
+                payloadStream << ADMIN_EMAIL[i];
+                if (i + 1 < ADMIN_EMAIL.size()) {
                         payloadStream << ", ";
                 }
         }
@@ -95,29 +81,17 @@ bool sendEmail(const std::string& subject, const std::string& body, std::string&
         UploadStatus upload{payloadStream.str(), 0};
 
         struct curl_slist* recipients = nullptr;
-        for (const auto& recipient : adminRecipients) {
+        for (const auto& recipient : ADMIN_EMAIL) {
                 recipients = curl_slist_append(recipients, recipient.c_str());
         }
 
-        std::string smtpUrl = "smtp://" + GetSmtpServer() + ":" + std::to_string(GetSmtpPort());
+        std::string smtpUrl = "smtp://" + SMTP_SERVER + ":" + std::to_string(SMTP_PORT);
 
-        std::string smtpUsername;
-        std::string smtpPassword;
-        try {
-                smtpUsername = GetSmtpUsername();
-                smtpPassword = GetSmtpPassword();
-        } catch (const std::exception& ex) {
-                errorMessage = ex.what();
-                curl_slist_free_all(recipients);
-                curl_easy_cleanup(curl);
-                return false;
-        }
-
-        curl_easy_setopt(curl, CURLOPT_USERNAME, smtpUsername.c_str());
-        curl_easy_setopt(curl, CURLOPT_PASSWORD, smtpPassword.c_str());
+        curl_easy_setopt(curl, CURLOPT_USERNAME, SMTP_USERNAME.c_str());
+        curl_easy_setopt(curl, CURLOPT_PASSWORD, SMTP_PASSWORD.c_str());
         curl_easy_setopt(curl, CURLOPT_URL, smtpUrl.c_str());
         curl_easy_setopt(curl, CURLOPT_USE_SSL, static_cast<long>(CURLUSESSL_ALL));
-        curl_easy_setopt(curl, CURLOPT_MAIL_FROM, senderEmail.c_str());
+        curl_easy_setopt(curl, CURLOPT_MAIL_FROM, SENDER_EMAIL.c_str());
         curl_easy_setopt(curl, CURLOPT_MAIL_RCPT, recipients);
         curl_easy_setopt(curl, CURLOPT_READFUNCTION, payloadSource);
         curl_easy_setopt(curl, CURLOPT_READDATA, &upload);

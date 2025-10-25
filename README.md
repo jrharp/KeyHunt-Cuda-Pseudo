@@ -7,28 +7,6 @@ Renamed from VanitySearch to KeyHunt (inspired from [keyhunt](https://github.com
 
 A lot of gratitude to all the developers whose codes has been used here.
 
-# SMTP email configuration
-
-KeyHunt-Cuda can send email notifications for key events. SMTP credentials are loaded from either environment variables or a configuration file. Set the `KEYHUNT_SMTP_CONF` environment variable to point at your config file (defaults to `keyhunt_email.conf` in the working directory). Any environment variables present take precedence over values in the file.
-
-Sample `keyhunt_email.conf`:
-
-```
-# SMTP server connection details
-KEYHUNT_SMTP_SERVER = smtp.gmail.com
-KEYHUNT_SMTP_PORT = 587
-
-# Credentials
-KEYHUNT_SMTP_USERNAME = you@example.com
-KEYHUNT_SMTP_PASSWORD = app-specific-password
-
-# Optional sender override (defaults to username) and comma-separated recipients
-KEYHUNT_SMTP_SENDER = KeyHunt Alerts <alerts@example.com>
-KEYHUNT_SMTP_RECIPIENTS = admin@example.com, ops@example.com
-```
-
-Lines starting with `#` are treated as comments, and surrounding whitespace is ignored.
-
 # Features
 - For Bitcoin use ```--coin BTC``` and for Ethereum use ```--coin ETH```
 - Single address(rmd160 hash) for BTC or ETH address searching with mode ```-m ADDREES```
