@@ -549,13 +549,37 @@ void KeyHunt::startPseudoRandomGpuPrefetch(int targetQueueSize)
         if (!pseudoRandomEnabled || targetQueueSize <= 0)
                 return;
 
-        stopPseudoRandomGpuPrefetch();
-
         const size_t minimumCapacity = std::max<int>(CPU_GRP_SIZE, 1);
+        const size_t requestedLimit = std::max<size_t>(static_cast<size_t>(targetQueueSize) * 2u, minimumCapacity);
+
+        std::unique_lock<std::mutex> controlLock(pseudoGpuControlMutex);
+
+        if (pseudoGpuActiveClients > 0) {
+                if (requestedLimit > pseudoGpuRequestedQueueLimit) {
+                        pseudoGpuRequestedQueueLimit = requestedLimit;
+                        bool notify = false;
+                        {
+                                std::lock_guard<std::mutex> lock(pseudoGpuMutex);
+                                if (requestedLimit > pseudoGpuQueueLimit) {
+                                        pseudoGpuQueueLimit = requestedLimit;
+                                        notify = true;
+                                }
+                        }
+                        if (notify) {
+                                pseudoGpuCv.notify_all();
+                        }
+                }
+                pseudoGpuActiveClients++;
+                return;
+        }
+
+        pseudoGpuActiveClients = 1;
+        pseudoGpuRequestedQueueLimit = requestedLimit;
+
         {
                 std::lock_guard<std::mutex> lock(pseudoGpuMutex);
                 pseudoGpuQueue.clear();
-                pseudoGpuQueueLimit = std::max<size_t>(static_cast<size_t>(targetQueueSize) * 2u, minimumCapacity);
+                pseudoGpuQueueLimit = requestedLimit;
                 pseudoGpuStop.store(false, std::memory_order_relaxed);
         }
 
@@ -564,14 +588,48 @@ void KeyHunt::startPseudoRandomGpuPrefetch(int targetQueueSize)
                 workerCount = 2;
         workerCount = std::min<unsigned int>(workerCount, 8u);
         pseudoGpuActiveWorkers.store(static_cast<int>(workerCount));
+        pseudoGpuWorkers.clear();
         pseudoGpuWorkers.reserve(workerCount);
-        for (unsigned int i = 0; i < workerCount; ++i) {
-                pseudoGpuWorkers.emplace_back(&KeyHunt::pseudoRandomGpuWorker, this);
+
+        try {
+                for (unsigned int i = 0; i < workerCount; ++i) {
+                        pseudoGpuWorkers.emplace_back(&KeyHunt::pseudoRandomGpuWorker, this);
+                }
+        }
+        catch (...) {
+                pseudoGpuStop.store(true, std::memory_order_relaxed);
+                pseudoGpuCv.notify_all();
+                for (auto& worker : pseudoGpuWorkers) {
+                        if (worker.joinable()) {
+                                worker.join();
+                        }
+                }
+                pseudoGpuWorkers.clear();
+                pseudoGpuActiveWorkers.store(0);
+                pseudoGpuActiveClients = 0;
+                pseudoGpuRequestedQueueLimit = 0;
+                {
+                        std::lock_guard<std::mutex> lock(pseudoGpuMutex);
+                        pseudoGpuQueue.clear();
+                        pseudoGpuQueueLimit = 0;
+                        pseudoGpuStop.store(false, std::memory_order_relaxed);
+                }
+                throw;
         }
 }
 
 void KeyHunt::stopPseudoRandomGpuPrefetch()
 {
+        std::unique_lock<std::mutex> controlLock(pseudoGpuControlMutex);
+        if (pseudoGpuActiveClients == 0)
+                return;
+
+        pseudoGpuActiveClients--;
+        if (pseudoGpuActiveClients > 0)
+                return;
+
+        pseudoGpuRequestedQueueLimit = 0;
+
         pseudoGpuStop.store(true, std::memory_order_relaxed);
         pseudoGpuCv.notify_all();
 
