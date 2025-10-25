@@ -114,9 +114,13 @@ Where TARGETS is one address/xpont, or multiple hashes/xpoints file
                                                :+COUNT
                                                Where START, END, COUNT are in hex format
 -r, --rkey Rkey                          : Random key interval in MegaKeys, default is disabled
+--start-block BLOCK                      : Override the pseudo-random starting block index
 -v, --version                            : Show version
 
 ```
+
+Use `--start-block` when running pseudo-random single-address scans to specify the block index that should be processed first.
+If a `.state` file is present, the command-line value replaces the stored progress and the new starting block is written back to disk immediately.
 
 
 CPU mode:

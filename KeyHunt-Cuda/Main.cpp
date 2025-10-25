@@ -13,6 +13,7 @@
 #include <stdexcept>
 #include <cassert>
 #include <algorithm>
+#include <optional>
 #include <inttypes.h>
 #ifndef WIN64
 #include <signal.h>
@@ -223,15 +224,16 @@ void usage()
 	printf("                                               ETH: available mode :-\n");
 	printf("                                                   ADDRESS, ADDRESSES\n");
 	printf("-l, --list                               : List cuda enabled devices\n");
-	printf("--range KEYSPACE                         : Specify the range:\n");
-	printf("                                               START:END\n");
-	printf("                                               START:+COUNT\n");
-	printf("                                               START\n");
-	printf("                                               :END\n");
-	printf("                                               :+COUNT\n");
-	printf("                                               Where START, END, COUNT are in hex format\n");
-	printf("-r, --rkey Rkey                          : Random key interval in MegaKeys, default is disabled\n");
-	printf("-v, --version                            : Show version\n");
+        printf("--range KEYSPACE                         : Specify the range:\n");
+        printf("                                               START:END\n");
+        printf("                                               START:+COUNT\n");
+        printf("                                               START\n");
+        printf("                                               :END\n");
+        printf("                                               :+COUNT\n");
+        printf("                                               Where START, END, COUNT are in hex format\n");
+        printf("-r, --rkey Rkey                          : Random key interval in MegaKeys, default is disabled\n");
+        printf("--start-block BLOCK                      : Override the pseudo-random starting block index\n");
+        printf("-v, --version                            : Show version\n");
 }
 
 // ----------------------------------------------------------------------------
@@ -398,6 +400,7 @@ int main(int argc, char** argv)
 	string inputFile = "";	// for both multiple hash160s and x points
 	string address = "";	// for single address mode
 	string xpoint = "";		// for single x point mode
+	std::optional<uint64_t> pseudoRandomStartBlock;
 
 	std::vector<unsigned char> hashORxpoint;
 	bool singleAddress = false;
@@ -437,8 +440,9 @@ int main(int argc, char** argv)
 	parser.add("-m", "--mode", true);
 	parser.add("", "--coin", true);
 	parser.add("", "--range", true);
-	parser.add("-r", "--rkey", true);
-	parser.add("-v", "--version", false);
+        parser.add("-r", "--rkey", true);
+        parser.add("-v", "--version", false);
+        parser.add("", "--start-block", true);
 
 	if (argc == 1) {
 		usage();
@@ -532,17 +536,35 @@ int main(int argc, char** argv)
 			else if (optArg.equals("", "--coin")) {
 				coinType = parseCoinType(optArg.arg);
 			}
-			else if (optArg.equals("", "--range")) {
-				std::string range = optArg.arg;
-				parseRange(range, rangeStart, rangeEnd);
-			}
-			else if (optArg.equals("-r", "--rkey")) {
-				rKey = std::stoull(optArg.arg);
-			}
-			else if (optArg.equals("-v", "--version")) {
-				printf("KeyHunt-Cuda v" RELEASE "\n");
-				return 0;
-			}
+                        else if (optArg.equals("", "--range")) {
+                                std::string range = optArg.arg;
+                                parseRange(range, rangeStart, rangeEnd);
+                        }
+                        else if (optArg.equals("-r", "--rkey")) {
+                                rKey = std::stoull(optArg.arg);
+                        }
+                        else if (optArg.equals("", "--start-block")) {
+                                size_t processed = 0;
+                                uint64_t startBlock = 0;
+                                try {
+                                        startBlock = std::stoull(optArg.arg, &processed, 0);
+                                }
+                                catch (const std::exception&) {
+                                        printf("Invalid --start-block argument, positive number expected\n");
+                                        usage();
+                                        return -1;
+                                }
+                                if (processed != optArg.arg.size()) {
+                                        printf("Invalid --start-block argument, positive number expected\n");
+                                        usage();
+                                        return -1;
+                                }
+                                pseudoRandomStartBlock = startBlock;
+                        }
+                        else if (optArg.equals("-v", "--version")) {
+                                printf("KeyHunt-Cuda v" RELEASE "\n");
+                                return 0;
+                        }
 		}
 		catch (std::string err) {
 			printf("Error: %s\n", err.c_str());
@@ -874,12 +896,14 @@ int main(int argc, char** argv)
                 case (int)SEARCH_MODE_MA:
                 case (int)SEARCH_MODE_MX:
                         v = new KeyHunt(inputFile, compMode, searchMode, coinType, gpuEnable, outputFile, useSSE,
-                                maxFound, rKey, rangeStart.GetBase16(), rangeEnd.GetBase16(), should_exit, gpuStepMultiplier);
+                                maxFound, rKey, rangeStart.GetBase16(), rangeEnd.GetBase16(), should_exit, gpuStepMultiplier,
+                                pseudoRandomStartBlock);
                         break;
                 case (int)SEARCH_MODE_SA:
                 case (int)SEARCH_MODE_SX:
                         v = new KeyHunt(hashORxpoint, compMode, searchMode, coinType, gpuEnable, outputFile, useSSE,
-                                maxFound, rKey, rangeStart.GetBase16(), rangeEnd.GetBase16(), should_exit, gpuStepMultiplier);
+                                maxFound, rKey, rangeStart.GetBase16(), rangeEnd.GetBase16(), should_exit, gpuStepMultiplier,
+                                pseudoRandomStartBlock);
                         break;
                 default:
                         printf("\n\nNothing to do, exiting\n");
@@ -903,12 +927,14 @@ int main(int argc, char** argv)
         case (int)SEARCH_MODE_MA:
         case (int)SEARCH_MODE_MX:
                 v = new KeyHunt(inputFile, compMode, searchMode, coinType, gpuEnable, outputFile, useSSE,
-                        maxFound, rKey, rangeStart.GetBase16(), rangeEnd.GetBase16(), should_exit, gpuStepMultiplier);
+                        maxFound, rKey, rangeStart.GetBase16(), rangeEnd.GetBase16(), should_exit, gpuStepMultiplier,
+                        pseudoRandomStartBlock);
                 break;
         case (int)SEARCH_MODE_SA:
         case (int)SEARCH_MODE_SX:
                 v = new KeyHunt(hashORxpoint, compMode, searchMode, coinType, gpuEnable, outputFile, useSSE,
-                        maxFound, rKey, rangeStart.GetBase16(), rangeEnd.GetBase16(), should_exit, gpuStepMultiplier);
+                        maxFound, rKey, rangeStart.GetBase16(), rangeEnd.GetBase16(), should_exit, gpuStepMultiplier,
+                        pseudoRandomStartBlock);
                 break;
         default:
                 printf("\n\nNothing to do, exiting\n");

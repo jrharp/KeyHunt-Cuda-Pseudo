@@ -46,12 +46,12 @@ public:
         KeyHunt(const std::string& inputFile, int compMode, int searchMode, int coinType, bool useGpu,
                 const std::string& outputFile, bool useSSE, uint32_t maxFound, uint64_t rKey,
                 const std::string& rangeStart, const std::string& rangeEnd, bool& should_exit,
-                int gpuStepMultiplier = 1);
+                int gpuStepMultiplier = 1, std::optional<uint64_t> pseudoRandomStartBlock = std::nullopt);
 
         KeyHunt(const std::vector<unsigned char>& hashORxpoint, int compMode, int searchMode, int coinType,
                 bool useGpu, const std::string& outputFile, bool useSSE, uint32_t maxFound, uint64_t rKey,
                 const std::string& rangeStart, const std::string& rangeEnd, bool& should_exit,
-                int gpuStepMultiplier = 1);
+                int gpuStepMultiplier = 1, std::optional<uint64_t> pseudoRandomStartBlock = std::nullopt);
 
 	~KeyHunt();
 
@@ -171,6 +171,7 @@ private:
         bool pseudoRandomEnabled = false;
         bool pseudoRandomCpuEnabled = false;
         PseudoRandomState pseudoState;
+        std::optional<uint64_t> pseudoRandomResumeOverride;
         Int initialRangeStart;
 
         struct PseudoRandomBlock {
