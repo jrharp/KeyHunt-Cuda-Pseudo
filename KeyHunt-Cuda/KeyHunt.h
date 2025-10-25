@@ -184,8 +184,11 @@ private:
         std::deque<PseudoRandomBlock> pseudoGpuQueue;
         std::mutex pseudoGpuMutex;
         std::condition_variable pseudoGpuCv;
+        std::mutex pseudoGpuControlMutex;
         std::atomic<int> pseudoGpuActiveWorkers{ 0 };
+        int pseudoGpuActiveClients = 0;
         size_t pseudoGpuQueueLimit = 0;
+        size_t pseudoGpuRequestedQueueLimit = 0;
         std::atomic<bool> pseudoGpuStop{ false };
 
 #ifdef WIN64
