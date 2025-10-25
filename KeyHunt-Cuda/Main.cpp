@@ -688,6 +688,7 @@ int main(int argc, char** argv)
 		}
 	}
 
+        bool occupancyGuided = false;
 #ifdef WITHGPU
         if (gpuUseOccupancyBlockSize) {
                 if (!gpuEnable) {
@@ -700,22 +701,43 @@ int main(int argc, char** argv)
                         printf("Warning: --gpu-autoblock overrides any --gpux values.\n");
                 }
 
+                gpuAutoGrid = true;
+        }
+
+        if (gpuEnable && gpuAutoGrid) {
                 gridSize.clear();
                 for (size_t i = 0; i < gpuId.size(); i++) {
                         const int deviceId = gpuId.at(i);
-                        int recommended = RecommendOccupancyBlockSizeForDevice(deviceId);
-                        if (recommended <= 0) {
-                                printf("Warning: Unable to determine occupancy-optimized block size for GPU %d, falling back to 128 threads per block.\n",
+                        const GpuLaunchConfig cfg = RecommendGpuLaunchConfigurationForDevice(deviceId);
+
+                        if (cfg.gridSize <= 0 || cfg.blockSize <= 0) {
+                                printf("Warning: Unable to auto-tune launch parameters for GPU %d, falling back to default 8x128 configuration.\n",
                                         deviceId);
-                                recommended = 128;
+                                gridSize.push_back(-1);
+                                gridSize.push_back(128);
+                                continue;
                         }
-                        else {
-                                printf("Info: GPU %d occupancy-guided threads per block: %d\n", deviceId, recommended);
+
+                        occupancyGuided = occupancyGuided || cfg.occupancyOptimized;
+
+                        int blocksPerSm = cfg.maxBlocksPerMultiprocessor;
+                        if (blocksPerSm <= 0 && cfg.streamingMultiprocessorCount > 0) {
+                                blocksPerSm = cfg.gridSize / std::max(cfg.streamingMultiprocessorCount, 1);
                         }
-                        gridSize.push_back(-1);
-                        gridSize.push_back(recommended);
+                        if (blocksPerSm <= 0) {
+                                blocksPerSm = 1;
+                        }
+
+                        printf("Info: GPU %d auto gridsize %dx%d (SMs %d, blocks/SM %d).\n",
+                                deviceId,
+                                cfg.gridSize,
+                                cfg.blockSize,
+                                cfg.streamingMultiprocessorCount,
+                                blocksPerSm);
+
+                        gridSize.push_back(cfg.gridSize);
+                        gridSize.push_back(cfg.blockSize);
                 }
-                gpuAutoGrid = true;
         }
 #else
         if (gpuUseOccupancyBlockSize) {
@@ -731,11 +753,13 @@ int main(int argc, char** argv)
                         gridSize.push_back(128);
                 }
         }
-	if (gridSize.size() != gpuId.size() * 2) {
-		printf("Error: %s\n", "Invalid gridSize or gpuId argument, must have coherent size\n");
-		usage();
-		return -1;
-	}
+
+        gpuUseOccupancyBlockSize = gpuUseOccupancyBlockSize || occupancyGuided;
+        if (gridSize.size() != gpuId.size() * 2) {
+                printf("Error: %s\n", "Invalid gridSize or gpuId argument, must have coherent size\n");
+                usage();
+                return -1;
+        }
 
 	if (rangeStart.GetBitLength() <= 0) {
 		printf("Error: %s\n", "Invalid start range, provide start range at least, end range would be: start range + 0xFFFFFFFFFFFFULL\n");

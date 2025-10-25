@@ -288,6 +288,82 @@ int RecommendOccupancyBlockSizeForDevice(int deviceId)
         return RecommendOccupancyBlockSize(deviceId);
 }
 
+GpuLaunchConfig RecommendGpuLaunchConfigurationForDevice(int deviceId)
+{
+        GpuLaunchConfig config;
+
+        if (deviceId < 0) {
+                return config;
+        }
+
+        cudaDeviceProp deviceProp{};
+        const cudaError_t status = cudaGetDeviceProperties(&deviceProp, deviceId);
+        if (status != cudaSuccess) {
+                CheckCuda(status, "cudaGetDeviceProperties", __FILE__, __LINE__);
+                return config;
+        }
+
+        const DeviceCapabilityInfo capability = QueryDeviceCapabilityInfo(deviceId);
+
+        config.streamingMultiprocessorCount = deviceProp.multiProcessorCount;
+        config.warpSize = capability.warpSize > 0 ? capability.warpSize : deviceProp.warpSize;
+        config.maxBlocksPerMultiprocessor = capability.maxBlocksPerMultiprocessor;
+
+        int blockSize = RecommendOccupancyBlockSize(deviceId);
+        if (blockSize > 0) {
+                config.occupancyOptimized = true;
+        }
+        else {
+                const int preferred = (deviceProp.maxThreadsPerBlock > 0) ? deviceProp.maxThreadsPerBlock : 0;
+                blockSize = preferred > 0 ? preferred : 128;
+        }
+
+        if (config.warpSize > 0) {
+                if (blockSize < config.warpSize) {
+                        blockSize = config.warpSize;
+                }
+                const int remainder = blockSize % config.warpSize;
+                if (remainder != 0) {
+                        blockSize += config.warpSize - remainder;
+                }
+                if (deviceProp.maxThreadsPerBlock > 0 && blockSize > deviceProp.maxThreadsPerBlock) {
+                        const int aligned = (deviceProp.maxThreadsPerBlock / config.warpSize) * config.warpSize;
+                        blockSize = aligned > 0 ? aligned : config.warpSize;
+                }
+        }
+        else if (deviceProp.maxThreadsPerBlock > 0 && blockSize > deviceProp.maxThreadsPerBlock) {
+                blockSize = deviceProp.maxThreadsPerBlock;
+        }
+
+        if (blockSize <= 0) {
+                blockSize = 128;
+        }
+
+        config.blockSize = blockSize;
+
+        int blocksPerSm = config.maxBlocksPerMultiprocessor;
+        if (blocksPerSm <= 0 && deviceProp.maxThreadsPerMultiProcessor > 0 && blockSize > 0) {
+                blocksPerSm = deviceProp.maxThreadsPerMultiProcessor / blockSize;
+        }
+        if (blocksPerSm <= 0) {
+                blocksPerSm = 8;
+        }
+
+        int gridSize = blocksPerSm * deviceProp.multiProcessorCount;
+        config.maxBlocksPerMultiprocessor = blocksPerSm;
+        if (gridSize <= 0) {
+                gridSize = deviceProp.multiProcessorCount > 0 ? deviceProp.multiProcessorCount * 8 : 8;
+        }
+
+        if (deviceProp.maxGridSize[0] > 0 && gridSize > deviceProp.maxGridSize[0]) {
+                gridSize = deviceProp.maxGridSize[0];
+        }
+
+        config.gridSize = gridSize;
+
+        return config;
+}
+
 namespace {
 
 struct SmToCores {

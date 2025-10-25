@@ -25,7 +25,18 @@
 #include "../SECP256k1.h"
 
 #ifdef __cplusplus
+struct GpuLaunchConfig
+{
+        int gridSize = -1;
+        int blockSize = 0;
+        int streamingMultiprocessorCount = 0;
+        int warpSize = 0;
+        int maxBlocksPerMultiprocessor = 0;
+        bool occupancyOptimized = false;
+};
+
 int RecommendOccupancyBlockSizeForDevice(int deviceId);
+GpuLaunchConfig RecommendGpuLaunchConfigurationForDevice(int deviceId);
 #endif
 
 #define SEARCH_COMPRESSED 0
