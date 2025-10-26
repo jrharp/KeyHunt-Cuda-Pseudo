@@ -997,6 +997,28 @@ bool GPUEngine::LaunchKeyKernel(const char* label, KernelFunc kernel, dim3 gridD
         return true;
 }
 
+namespace {
+
+struct LaunchDimensions {
+        dim3 grid;
+        dim3 block;
+};
+
+LaunchDimensions ComputeLaunchDimensions(int activeThreadCount, int nbThreadPerGroup)
+{
+        const unsigned int safeThreadCount = static_cast<unsigned int>(std::max(activeThreadCount, 1));
+        const unsigned int threadsPerBlock = static_cast<unsigned int>(
+                std::max(1, std::min(activeThreadCount, nbThreadPerGroup)));
+        const unsigned int blocks = (safeThreadCount + threadsPerBlock - 1U) / threadsPerBlock;
+
+        LaunchDimensions dims{};
+        dims.block = dim3(threadsPerBlock, 1U, 1U);
+        dims.grid = dim3(blocks > 0U ? blocks : 1U, 1U, 1U);
+        return dims;
+}
+
+} // namespace
+
 #if defined(CUDART_VERSION) && (CUDART_VERSION >= 12000)
 template <typename KernelFunc>
 dim3 GPUEngine::QueryClusterDimension(KernelFunc kernel, dim3 gridDim, dim3 blockDim)
@@ -2060,8 +2082,9 @@ bool GPUEngine::callKernelSEARCH_MODE_MA()
         // Reset nbFound
         CUDA_CHECK(cudaMemsetAsync(outputBuffer, 0, sizeof(uint32_t), stream_));
 
-        const dim3 gridDim(static_cast<unsigned>(activeThreadCount / nbThreadPerGroup));
-        const dim3 blockDim(static_cast<unsigned>(nbThreadPerGroup));
+        const LaunchDimensions launchDims = ComputeLaunchDimensions(activeThreadCount, nbThreadPerGroup);
+        const dim3 gridDim = launchDims.grid;
+        const dim3 blockDim = launchDims.block;
 
         // Call the kernel (Perform STEP_SIZE keys per thread)
         if (coinType == COIN_BTC) {
@@ -2112,8 +2135,9 @@ bool GPUEngine::callKernelSEARCH_MODE_MX()
         // Reset nbFound
         CUDA_CHECK(cudaMemsetAsync(outputBuffer, 0, sizeof(uint32_t), stream_));
 
-        const dim3 gridDim(static_cast<unsigned>(activeThreadCount / nbThreadPerGroup));
-        const dim3 blockDim(static_cast<unsigned>(nbThreadPerGroup));
+        const LaunchDimensions launchDims = ComputeLaunchDimensions(activeThreadCount, nbThreadPerGroup);
+        const dim3 gridDim = launchDims.grid;
+        const dim3 blockDim = launchDims.block;
 
         // Call the kernel (Perform STEP_SIZE keys per thread)
         if (compMode == SEARCH_COMPRESSED) {
@@ -2155,8 +2179,9 @@ bool GPUEngine::callKernelSEARCH_MODE_SA()
         // Reset nbFound
         CUDA_CHECK(cudaMemsetAsync(outputBuffer, 0, sizeof(uint32_t), stream_));
 
-        const dim3 gridDim(static_cast<unsigned>(activeThreadCount / nbThreadPerGroup));
-        const dim3 blockDim(static_cast<unsigned>(nbThreadPerGroup));
+        const LaunchDimensions launchDims = ComputeLaunchDimensions(activeThreadCount, nbThreadPerGroup);
+        const dim3 gridDim = launchDims.grid;
+        const dim3 blockDim = launchDims.block;
 
         // Call the kernel (Perform STEP_SIZE keys per thread)
         if (coinType == COIN_BTC) {
@@ -2204,8 +2229,9 @@ bool GPUEngine::callKernelSEARCH_MODE_SX()
 
         CUDA_CHECK(cudaMemsetAsync(outputBuffer, 0, sizeof(uint32_t), stream_));
 
-        const dim3 gridDim(static_cast<unsigned>(activeThreadCount / nbThreadPerGroup));
-        const dim3 blockDim(static_cast<unsigned>(nbThreadPerGroup));
+        const LaunchDimensions launchDims = ComputeLaunchDimensions(activeThreadCount, nbThreadPerGroup);
+        const dim3 gridDim = launchDims.grid;
+        const dim3 blockDim = launchDims.block;
 
         // Call the kernel (Perform STEP_SIZE keys per thread)
         if (compMode == SEARCH_COMPRESSED) {
