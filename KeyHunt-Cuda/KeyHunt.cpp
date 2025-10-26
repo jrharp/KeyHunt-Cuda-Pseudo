@@ -2159,11 +2159,15 @@ void KeyHunt::Search(int nbThread, std::vector<int> gpuId, std::vector<int> grid
 		}
 
                 t1 = Timer::get_tick();
-                keyRate = (double)(count - lastCount) / (t1 - t0);
-                gpuKeyRate = (double)(gpuCount - lastGPUCount) / (t1 - t0);
-		lastkeyRate[filterPos % FILTER_SIZE] = keyRate;
-		lastGpukeyRate[filterPos % FILTER_SIZE] = gpuKeyRate;
-		filterPos++;
+                double elapsed = t1 - t0;
+                if (elapsed <= 0.0) {
+                        elapsed = 1.0;
+                }
+                keyRate = (double)(count - lastCount) / elapsed;
+                gpuKeyRate = (double)(gpuCount - lastGPUCount) / elapsed;
+                lastkeyRate[filterPos % FILTER_SIZE] = keyRate;
+                lastGpukeyRate[filterPos % FILTER_SIZE] = gpuKeyRate;
+                filterPos++;
 
 		// KeyRate smoothing
 		double avgKeyRate = 0.0;
@@ -2192,18 +2196,18 @@ void KeyHunt::Search(int nbThread, std::vector<int> gpuId, std::vector<int> grid
                                 lastStatusEmailTick = t1;
                         }
                 }
-		if (rKey > 0) {
-			if ((count - lastrKey) > (1000000 * rKey)) {
-				// rKey request
-				rKeyRequest(params);
-				lastrKey = count;
-				rKeyCount++;
-			}
-		}
+                if (rKey > 0) {
+                        if ((count - lastrKey) > (1000000 * rKey)) {
+                                // rKey request
+                                rKeyRequest(params);
+                                lastrKey = count;
+                                rKeyCount++;
+                        }
+                }
 
-		lastCount = count;
-		lastGPUCount = gpuCount;
-		t0 = t1;
+                lastCount = count;
+                lastGPUCount = gpuCount;
+                t0 = t1;
 		if (should_exit || nbFoundKey >= targetCounter || completedPerc > 100.5)
 			endOfSearch = true;
 	}
