@@ -1081,11 +1081,20 @@ GPUEngine::GPUEngine(Secp256K1* secp, int nbThreadGroup, int nbThreadPerGroup, i
 #endif
 #endif
         streamCreated_ = true;
+        CUDA_CHECK(cudaStreamCreateWithFlags(&copyStream_, cudaStreamNonBlocking));
+#if defined(ENABLE_NVTX)
+#if GPUENGINE_HAS_NVTX_CUDA_STREAM
+        nvtxNameCudaStreamA(copyStream_, "GPUEngine Copy Stream");
+#endif
+#endif
+        copyStreamCreated_ = true;
         CUDA_CHECK(cudaEventCreateWithFlags(&syncEvent_, cudaEventDisableTiming));
         eventCreated_ = true;
 
         const size_t keyBufferSize = static_cast<size_t>(nbThread) * 32u * 2u;
-        AllocateDeviceBuffer(reinterpret_cast<void**>(&inputKey), keyBufferSize);
+        for (auto& deviceBuffer : inputKeyDevice) {
+                AllocateDeviceBuffer(reinterpret_cast<void**>(&deviceBuffer), keyBufferSize);
+        }
         for (auto& buffer : inputKeyPinned) {
                 CUDA_CHECK(cudaHostAlloc(reinterpret_cast<void**>(&buffer), keyBufferSize,
                         cudaHostAllocWriteCombined | cudaHostAllocMapped));
@@ -1096,7 +1105,17 @@ GPUEngine::GPUEngine(Secp256K1* secp, int nbThreadGroup, int nbThreadPerGroup, i
         for (auto& recorded : inputKeyCopyEventRecorded) {
                 recorded = false;
         }
+        for (auto& event : inputKeyDeviceReadyEvents) {
+                CUDA_CHECK(cudaEventCreateWithFlags(&event, cudaEventDisableTiming));
+        }
+        for (auto& recorded : inputKeyDeviceReadyRecorded) {
+                recorded = false;
+        }
         nextInputKeyBuffer = 0;
+        nextInputKeyDeviceIndex = 0;
+        activeInputKeyDeviceIndex = -1;
+        stagedInputKeyDeviceIndex = -1;
+        pendingKeyLaunch_ = false;
 
         AllocateDeviceBuffer(reinterpret_cast<void**>(&outputBuffer), outputSize);
         CUDA_CHECK(cudaHostAlloc(reinterpret_cast<void**>(&outputBufferPinned), outputSize,
@@ -1267,12 +1286,21 @@ GPUEngine::GPUEngine(Secp256K1* secp, int nbThreadGroup, int nbThreadPerGroup, i
 #endif
 #endif
         streamCreated_ = true;
+        CUDA_CHECK(cudaStreamCreateWithFlags(&copyStream_, cudaStreamNonBlocking));
+#if defined(ENABLE_NVTX)
+#if GPUENGINE_HAS_NVTX_CUDA_STREAM
+        nvtxNameCudaStreamA(copyStream_, "GPUEngine Copy Stream");
+#endif
+#endif
+        copyStreamCreated_ = true;
         CUDA_CHECK(cudaEventCreateWithFlags(&syncEvent_, cudaEventDisableTiming));
         eventCreated_ = true;
 
         // Allocate memory
         const size_t keyBufferSize = static_cast<size_t>(nbThread) * 32u * 2u;
-        AllocateDeviceBuffer(reinterpret_cast<void**>(&inputKey), keyBufferSize);
+        for (auto& deviceBuffer : inputKeyDevice) {
+                AllocateDeviceBuffer(reinterpret_cast<void**>(&deviceBuffer), keyBufferSize);
+        }
         for (auto& buffer : inputKeyPinned) {
                 CUDA_CHECK(cudaHostAlloc(reinterpret_cast<void**>(&buffer), keyBufferSize,
                         cudaHostAllocWriteCombined | cudaHostAllocMapped));
@@ -1283,7 +1311,17 @@ GPUEngine::GPUEngine(Secp256K1* secp, int nbThreadGroup, int nbThreadPerGroup, i
         for (auto& recorded : inputKeyCopyEventRecorded) {
                 recorded = false;
         }
+        for (auto& event : inputKeyDeviceReadyEvents) {
+                CUDA_CHECK(cudaEventCreateWithFlags(&event, cudaEventDisableTiming));
+        }
+        for (auto& recorded : inputKeyDeviceReadyRecorded) {
+                recorded = false;
+        }
         nextInputKeyBuffer = 0;
+        nextInputKeyDeviceIndex = 0;
+        activeInputKeyDeviceIndex = -1;
+        stagedInputKeyDeviceIndex = -1;
+        pendingKeyLaunch_ = false;
 
         AllocateDeviceBuffer(reinterpret_cast<void**>(&outputBuffer), outputSize);
         CUDA_CHECK(cudaHostAlloc(reinterpret_cast<void**>(&outputBufferPinned), outputSize,
@@ -1410,6 +1448,9 @@ void GPUEngine::SynchronizeStreamIfNeeded()
 {
         if (streamCreated_ && stream_ != nullptr) {
                 CUDA_CHECK(cudaStreamSynchronize(stream_));
+        }
+        if (copyStreamCreated_ && copyStream_ != nullptr) {
+                CUDA_CHECK(cudaStreamSynchronize(copyStream_));
         }
 }
 
@@ -1598,8 +1639,10 @@ GPUEngine::~GPUEngine()
 {
         SynchronizeStreamIfNeeded();
 
-        if (inputKey != nullptr) {
-                FreeDeviceBuffer(reinterpret_cast<void**>(&inputKey));
+        for (auto& deviceBuffer : inputKeyDevice) {
+                if (deviceBuffer != nullptr) {
+                        FreeDeviceBuffer(reinterpret_cast<void**>(&deviceBuffer));
+                }
         }
 
         if (inputBloomLookUp != nullptr) {
@@ -1630,6 +1673,13 @@ GPUEngine::~GPUEngine()
         }
 
         for (auto& event : inputKeyCopyEvents) {
+                if (event != nullptr) {
+                        CUDA_CHECK(cudaEventDestroy(event));
+                        event = nullptr;
+                }
+        }
+
+        for (auto& event : inputKeyDeviceReadyEvents) {
                 if (event != nullptr) {
                         CUDA_CHECK(cudaEventDestroy(event));
                         event = nullptr;
@@ -1677,6 +1727,12 @@ GPUEngine::~GPUEngine()
                 eventCreated_ = false;
         }
 
+        if (copyStreamCreated_) {
+                CUDA_CHECK(cudaStreamDestroy(copyStream_));
+                copyStream_ = nullptr;
+                copyStreamCreated_ = false;
+        }
+
         if (streamCreated_) {
                 CUDA_CHECK(cudaStreamDestroy(stream_));
                 stream_ = nullptr;
@@ -1708,6 +1764,11 @@ bool GPUEngine::callKernelSEARCH_MODE_MA()
                 return false;
         }
 
+        uint64_t* activeInputKey = GetActiveInputKeyBuffer();
+        if (activeInputKey == nullptr) {
+                return false;
+        }
+
         // Reset nbFound
         CUDA_CHECK(cudaMemsetAsync(outputBuffer, 0, sizeof(uint32_t), stream_));
 
@@ -1719,18 +1780,18 @@ bool GPUEngine::callKernelSEARCH_MODE_MA()
                 if (compMode == SEARCH_COMPRESSED) {
                         LaunchKeyKernel("compute_keys_comp_mode_ma", compute_keys_comp_mode_ma, gridDim, blockDim,
                                 compMode, inputBloomLookUp, BLOOM_BITS, BLOOM_HASHES, bloomFastModReciprocal_,
-                                bloomMask_, bloomIsPowerOfTwo_, inputKey, maxFound, outputBuffer, stepMultiplier);
+                                bloomMask_, bloomIsPowerOfTwo_, activeInputKey, maxFound, outputBuffer, stepMultiplier);
                 }
                 else {
                         LaunchKeyKernel("compute_keys_mode_ma", compute_keys_mode_ma, gridDim, blockDim,
                                 compMode, inputBloomLookUp, BLOOM_BITS, BLOOM_HASHES, bloomFastModReciprocal_,
-                                bloomMask_, bloomIsPowerOfTwo_, inputKey, maxFound, outputBuffer, stepMultiplier);
+                                bloomMask_, bloomIsPowerOfTwo_, activeInputKey, maxFound, outputBuffer, stepMultiplier);
                 }
         }
         else {
                 LaunchKeyKernel("compute_keys_mode_eth_ma", compute_keys_mode_eth_ma, gridDim, blockDim,
                         inputBloomLookUp, BLOOM_BITS, BLOOM_HASHES, bloomFastModReciprocal_,
-                        bloomMask_, bloomIsPowerOfTwo_, inputKey, maxFound, outputBuffer, stepMultiplier);
+                        bloomMask_, bloomIsPowerOfTwo_, activeInputKey, maxFound, outputBuffer, stepMultiplier);
         }
 
         CUDA_CHECK(cudaPeekAtLastError());
@@ -1755,6 +1816,11 @@ bool GPUEngine::callKernelSEARCH_MODE_MX()
                 return false;
         }
 
+        uint64_t* activeInputKey = GetActiveInputKeyBuffer();
+        if (activeInputKey == nullptr) {
+                return false;
+        }
+
         // Reset nbFound
         CUDA_CHECK(cudaMemsetAsync(outputBuffer, 0, sizeof(uint32_t), stream_));
 
@@ -1765,7 +1831,7 @@ bool GPUEngine::callKernelSEARCH_MODE_MX()
         if (compMode == SEARCH_COMPRESSED) {
                 LaunchKeyKernel("compute_keys_comp_mode_mx", compute_keys_comp_mode_mx, gridDim, blockDim,
                         compMode, inputBloomLookUp, BLOOM_BITS, BLOOM_HASHES, bloomFastModReciprocal_,
-                        bloomMask_, bloomIsPowerOfTwo_, inputKey, maxFound, outputBuffer, stepMultiplier);
+                        bloomMask_, bloomIsPowerOfTwo_, activeInputKey, maxFound, outputBuffer, stepMultiplier);
         }
         else {
                 printf("GPUEngine: PubKeys search doesn't support uncompressed\n");
@@ -1793,6 +1859,11 @@ bool GPUEngine::callKernelSEARCH_MODE_SA()
                 return false;
         }
 
+        uint64_t* activeInputKey = GetActiveInputKeyBuffer();
+        if (activeInputKey == nullptr) {
+                return false;
+        }
+
         // Reset nbFound
         CUDA_CHECK(cudaMemsetAsync(outputBuffer, 0, sizeof(uint32_t), stream_));
 
@@ -1803,16 +1874,16 @@ bool GPUEngine::callKernelSEARCH_MODE_SA()
         if (coinType == COIN_BTC) {
                 if (compMode == SEARCH_COMPRESSED) {
                         LaunchKeyKernel("compute_keys_comp_mode_sa", compute_keys_comp_mode_sa, gridDim, blockDim,
-                                compMode, inputHashORxpoint, inputKey, maxFound, outputBuffer, stepMultiplier);
+                                compMode, inputHashORxpoint, activeInputKey, maxFound, outputBuffer, stepMultiplier);
                 }
                 else {
                         LaunchKeyKernel("compute_keys_mode_sa", compute_keys_mode_sa, gridDim, blockDim,
-                                compMode, inputHashORxpoint, inputKey, maxFound, outputBuffer, stepMultiplier);
+                                compMode, inputHashORxpoint, activeInputKey, maxFound, outputBuffer, stepMultiplier);
                 }
         }
         else {
                 LaunchKeyKernel("compute_keys_mode_eth_sa", compute_keys_mode_eth_sa, gridDim, blockDim,
-                        inputHashORxpoint, inputKey, maxFound, outputBuffer, stepMultiplier);
+                        inputHashORxpoint, activeInputKey, maxFound, outputBuffer, stepMultiplier);
         }
 
         CUDA_CHECK(cudaPeekAtLastError());
@@ -1838,6 +1909,11 @@ bool GPUEngine::callKernelSEARCH_MODE_SX()
                 return false;
         }
 
+        uint64_t* activeInputKey = GetActiveInputKeyBuffer();
+        if (activeInputKey == nullptr) {
+                return false;
+        }
+
         CUDA_CHECK(cudaMemsetAsync(outputBuffer, 0, sizeof(uint32_t), stream_));
 
         const dim3 gridDim(static_cast<unsigned>(activeThreadCount / nbThreadPerGroup));
@@ -1846,7 +1922,7 @@ bool GPUEngine::callKernelSEARCH_MODE_SX()
         // Call the kernel (Perform STEP_SIZE keys per thread)
         if (compMode == SEARCH_COMPRESSED) {
                 LaunchKeyKernel("compute_keys_comp_mode_sx", compute_keys_comp_mode_sx, gridDim, blockDim,
-                        compMode, inputHashORxpoint, inputKey, maxFound, outputBuffer, stepMultiplier);
+                        compMode, inputHashORxpoint, activeInputKey, maxFound, outputBuffer, stepMultiplier);
         }
         else {
                 printf("GPUEngine: PubKeys search doesn't support uncompressed\n");
@@ -1876,12 +1952,21 @@ void GPUEngine::waitForStream(bool spinWait)
 
 // ----------------------------------------------------------------------------
 
-bool GPUEngine::SetKeys(Point* p, int activeThreadCountOverride)
+bool GPUEngine::SetKeys(Point* p, int activeThreadCountOverride, bool launchKernel)
 {
         // Sets the starting keys for each thread
         // p must contains nbThread public keys
         if (!initialised) {
                 return false;
+        }
+
+        if (pendingKeyLaunch_) {
+                if (!launchKernel) {
+                        return false;
+                }
+                if (!LaunchPendingKeys()) {
+                        return false;
+                }
         }
 
         int requestedThreadCount = activeThreadCountOverride;
@@ -1961,28 +2046,101 @@ bool GPUEngine::SetKeys(Point* p, int activeThreadCountOverride)
 
         // Fill device memory
         const size_t keyBufferSize = static_cast<size_t>(activeThreadCount) * 32u * 2u;
-        CUDA_CHECK(cudaMemcpyAsync(inputKey, keyBuffer, keyBufferSize, cudaMemcpyHostToDevice, stream_));
-        CUDA_CHECK(cudaEventRecord(inputKeyCopyEvents[bufferIndex], stream_));
-        inputKeyCopyEventRecorded[bufferIndex] = true;
-        nextInputKeyBuffer = (bufferIndex + 1) % static_cast<int>(inputKeyPinned.size());
+        const int deviceIndex = nextInputKeyDeviceIndex;
+        if (deviceIndex < 0 || deviceIndex >= static_cast<int>(inputKeyDevice.size())) {
+                return false;
+        }
+        uint64_t* deviceBuffer = inputKeyDevice[deviceIndex];
+        if (deviceBuffer == nullptr) {
+                return false;
+        }
 
-	switch (searchMode) {
-	case (int)SEARCH_MODE_MA:
-		return callKernelSEARCH_MODE_MA();
-		break;
-	case (int)SEARCH_MODE_SA:
-		return callKernelSEARCH_MODE_SA();
-		break;
-	case (int)SEARCH_MODE_MX:
-		return callKernelSEARCH_MODE_MX();
-		break;
-	case (int)SEARCH_MODE_SX:
-		return callKernelSEARCH_MODE_SX();
-		break;
-	default:
-		return false;
-		break;
-	}
+        cudaStream_t copyStream = copyStreamCreated_ ? copyStream_ : stream_;
+        CUDA_CHECK(cudaMemcpyAsync(deviceBuffer, keyBuffer, keyBufferSize, cudaMemcpyHostToDevice, copyStream));
+        CUDA_CHECK(cudaEventRecord(inputKeyCopyEvents[bufferIndex], copyStream));
+        inputKeyCopyEventRecorded[bufferIndex] = true;
+        CUDA_CHECK(cudaEventRecord(inputKeyDeviceReadyEvents[deviceIndex], copyStream));
+        inputKeyDeviceReadyRecorded[deviceIndex] = true;
+        nextInputKeyBuffer = (bufferIndex + 1) % static_cast<int>(inputKeyPinned.size());
+        stagedInputKeyDeviceIndex = deviceIndex;
+        nextInputKeyDeviceIndex = (deviceIndex + 1) % static_cast<int>(inputKeyDevice.size());
+        pendingKeyLaunch_ = true;
+
+        if (!launchKernel) {
+                return true;
+        }
+
+        return LaunchPendingKeys();
+}
+
+// ----------------------------------------------------------------------------
+
+bool GPUEngine::LaunchPendingKeys()
+{
+        if (!initialised) {
+                return false;
+        }
+
+        if (!pendingKeyLaunch_) {
+                return false;
+        }
+
+        if (!ActivateStagedInputKeyBuffer()) {
+                return false;
+        }
+
+        pendingKeyLaunch_ = false;
+        return LaunchKernelForCurrentMode();
+}
+
+// ----------------------------------------------------------------------------
+
+uint64_t* GPUEngine::GetActiveInputKeyBuffer() const
+{
+        if (activeInputKeyDeviceIndex < 0
+                || activeInputKeyDeviceIndex >= static_cast<int>(inputKeyDevice.size())) {
+                return nullptr;
+        }
+        return inputKeyDevice[static_cast<size_t>(activeInputKeyDeviceIndex)];
+}
+
+// ----------------------------------------------------------------------------
+
+bool GPUEngine::ActivateStagedInputKeyBuffer()
+{
+        if (stagedInputKeyDeviceIndex < 0
+                || stagedInputKeyDeviceIndex >= static_cast<int>(inputKeyDevice.size())) {
+                return false;
+        }
+
+        const int deviceIndex = stagedInputKeyDeviceIndex;
+        if (inputKeyDeviceReadyRecorded[deviceIndex]) {
+                CUDA_CHECK(cudaStreamWaitEvent(stream_, inputKeyDeviceReadyEvents[deviceIndex], 0));
+                inputKeyDeviceReadyRecorded[deviceIndex] = false;
+        }
+
+        activeInputKeyDeviceIndex = deviceIndex;
+        stagedInputKeyDeviceIndex = -1;
+        return true;
+}
+
+// ----------------------------------------------------------------------------
+
+bool GPUEngine::LaunchKernelForCurrentMode()
+{
+        switch (searchMode) {
+        case (int)SEARCH_MODE_MA:
+                return callKernelSEARCH_MODE_MA();
+        case (int)SEARCH_MODE_SA:
+                return callKernelSEARCH_MODE_SA();
+        case (int)SEARCH_MODE_MX:
+                return callKernelSEARCH_MODE_MX();
+        case (int)SEARCH_MODE_SX:
+                return callKernelSEARCH_MODE_SX();
+        default:
+                break;
+        }
+        return false;
 }
 
 // ----------------------------------------------------------------------------

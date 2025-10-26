@@ -85,7 +85,9 @@ public:
 
 	~GPUEngine();
 
-        bool SetKeys(Point* p, int activeThreadCount = -1);
+        bool SetKeys(Point* p, int activeThreadCount = -1, bool launchKernel = true);
+
+        bool LaunchPendingKeys();
 
         bool LaunchSEARCH_MODE_MA(std::vector<ITEM>& dataFound, bool spinWait = false, bool queueNextBatch = true);
         bool LaunchSEARCH_MODE_SA(std::vector<ITEM>& dataFound, bool spinWait = false, bool queueNextBatch = true);
@@ -147,12 +149,18 @@ private:
         uint32_t bloomMask_ = 0;
         uint32_t bloomIsPowerOfTwo_ = 0;
 
-        uint64_t* inputKey = nullptr;
         static constexpr int kInputKeyBufferCount = 2;
+        std::array<uint64_t*, kInputKeyBufferCount> inputKeyDevice{};
         std::array<uint64_t*, kInputKeyBufferCount> inputKeyPinned{};
         std::array<cudaEvent_t, kInputKeyBufferCount> inputKeyCopyEvents{};
         std::array<bool, kInputKeyBufferCount> inputKeyCopyEventRecorded{};
         int nextInputKeyBuffer = 0;
+        std::array<cudaEvent_t, kInputKeyBufferCount> inputKeyDeviceReadyEvents{};
+        std::array<bool, kInputKeyBufferCount> inputKeyDeviceReadyRecorded{};
+        int activeInputKeyDeviceIndex = -1;
+        int stagedInputKeyDeviceIndex = -1;
+        int nextInputKeyDeviceIndex = 0;
+        bool pendingKeyLaunch_ = false;
 
         uint32_t* outputBuffer = nullptr;
         uint32_t* outputBufferPinned = nullptr;
@@ -181,8 +189,10 @@ private:
         uint64_t TOTAL_COUNT = 0;
 
         cudaStream_t stream_ = nullptr;
+        cudaStream_t copyStream_ = nullptr;
         cudaEvent_t syncEvent_ = nullptr;
         bool streamCreated_ = false;
+        bool copyStreamCreated_ = false;
         bool eventCreated_ = false;
 
         bool useAsyncAlloc_ = false;
@@ -194,6 +204,9 @@ private:
         bool cooperativeLaunchSupported_ = false;
         bool cooperativeLaunchActive_ = false;
 
+        uint64_t* GetActiveInputKeyBuffer() const;
+        bool ActivateStagedInputKeyBuffer();
+        bool LaunchKernelForCurrentMode();
 };
 
 #endif // GPUENGINEH
