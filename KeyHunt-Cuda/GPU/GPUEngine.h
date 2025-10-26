@@ -204,9 +204,12 @@ private:
         bool cooperativeLaunchSupported_ = false;
         bool cooperativeLaunchActive_ = false;
 
+        bool generatorPrefetchEnabled_ = false;
+
         uint64_t* GetActiveInputKeyBuffer() const;
         bool ActivateStagedInputKeyBuffer();
         bool LaunchKernelForCurrentMode();
+        void DisableGeneratorPrefetch(const char* reason);
 };
 
 #endif // GPUENGINEH
