@@ -31,11 +31,13 @@ __device__ __constant__ uint64_t* _2Gnx = nullptr;
 __device__ __constant__ uint64_t* _2Gny = nullptr;
 __device__ __constant__ uint64_t* Gx = nullptr;
 __device__ __constant__ uint64_t* Gy = nullptr;
+__device__ __constant__ int gGeneratorPrefetchEnabled = 0;
 #else
 extern __device__ __constant__ uint64_t* _2Gnx;
 extern __device__ __constant__ uint64_t* _2Gny;
 extern __device__ __constant__ uint64_t* Gx;
 extern __device__ __constant__ uint64_t* Gy;
+extern __device__ __constant__ int gGeneratorPrefetchEnabled;
 #endif
 
 struct GeneratorTableView {
@@ -159,6 +161,11 @@ __device__ __forceinline__ GeneratorTableView GlobalGeneratorTables()
         view.twoGx = _2Gnx;
         view.twoGy = _2Gny;
         return view;
+}
+
+__device__ __forceinline__ bool GeneratorPrefetchEnabled()
+{
+        return gGeneratorPrefetchEnabled != 0;
 }
 
 #if __CUDA_ARCH__ >= 350
