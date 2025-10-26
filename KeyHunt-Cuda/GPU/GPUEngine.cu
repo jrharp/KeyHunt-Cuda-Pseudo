@@ -107,26 +107,11 @@ public:
 } // namespace
 #endif
 
-#if !defined(__has_include)
-#define __has_include(x) 0
-#endif
-
 #if defined(CUDART_VERSION) && (CUDART_VERSION >= 12000)
 #include <cooperative_groups.h>
 #include <cooperative_groups/memcpy_async.h>
-#if __has_include(<cooperative_groups/pipeline.h>)
 #include <cooperative_groups/pipeline.h>
-#define GPUENGINE_HAS_PIPELINE 1
-#else
-#define GPUENGINE_HAS_PIPELINE 0
-#endif
 namespace cg = cooperative_groups;
-#else
-#define GPUENGINE_HAS_PIPELINE 0
-#endif
-
-#ifndef GPUENGINE_HAS_PIPELINE
-#define GPUENGINE_HAS_PIPELINE 0
 #endif
 
 #if defined(_MSC_VER)
@@ -572,9 +557,9 @@ __device__ void RunKeyComputation(uint64_t* keys, int stepMultiplier, ComputeFun
         GeneratorTableView tables = GlobalGeneratorTables();
         uint64_t (*sharedGx)[GeneratorTableView::kLimbCount] = nullptr;
         uint64_t (*sharedGy)[GeneratorTableView::kLimbCount] = nullptr;
-        bool tablePipelineActive = false;
-#if GPUENGINE_HAS_PIPELINE && defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 800)
+#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 800)
         cg::pipeline<cg::thread_scope_thread_block> tablePipeline = cg::make_pipeline(block);
+        bool tablePipelineActive = false;
 #endif
         if constexpr (kPrefetchGeneratorTablesSupported) {
                 extern __shared__ uint64_t sharedGenerator[];
@@ -584,7 +569,7 @@ __device__ void RunKeyComputation(uint64_t* keys, int stepMultiplier, ComputeFun
                                 * static_cast<size_t>(GeneratorTableView::kLimbCount);
                 sharedGx = reinterpret_cast<uint64_t (*)[GeneratorTableView::kLimbCount]>(sharedGxFlat);
                 sharedGy = reinterpret_cast<uint64_t (*)[GeneratorTableView::kLimbCount]>(sharedGyFlat);
-#if GPUENGINE_HAS_PIPELINE && defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 800)
+#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 800)
                 tablePipelineActive = true;
                 tablePipeline.producer_acquire();
                 constexpr size_t copyBytes = static_cast<size_t>(GeneratorTableView::kPointCount)
@@ -600,7 +585,7 @@ __device__ void RunKeyComputation(uint64_t* keys, int stepMultiplier, ComputeFun
         __shared__ uint64_t sharedTwoGy[4];
         PrefetchDoubleGenerator(block, sharedTwoGx, sharedTwoGy);
         if constexpr (kPrefetchGeneratorTablesSupported) {
-#if GPUENGINE_HAS_PIPELINE && defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 800)
+#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 800)
                 if (tablePipelineActive) {
                         tablePipeline.consumer_wait();
                         tablePipeline.consumer_release();
