@@ -2151,12 +2151,12 @@ void KeyHunt::Search(int nbThread, std::vector<int> gpuId, std::vector<int> grid
 
         double keyRate = 0.0;
         double gpuKeyRate = 0.0;
-        double smoothedKeyRate = 0.0;
-        double smoothedGpuKeyRate = 0.0;
-        bool haveSmoothedKeyRate = false;
-        bool haveSmoothedGpuKeyRate = false;
-        double lastKeyProgressTick = 0.0;
-        double lastGpuProgressTick = 0.0;
+        this->smoothedKeyRate = 0.0;
+        this->smoothedGpuKeyRate = 0.0;
+        this->haveSmoothedKeyRate = false;
+        this->haveSmoothedGpuKeyRate = false;
+        this->lastKeyProgressTick = 0.0;
+        this->lastGpuProgressTick = 0.0;
         char timeStr[256];
 
 	// Wait that all threads have started
@@ -2168,8 +2168,8 @@ void KeyHunt::Search(int nbThread, std::vector<int> gpuId, std::vector<int> grid
         Timer::Init();
         t0 = Timer::get_tick();
         startTime = t0;
-        lastKeyProgressTick = startTime;
-        lastGpuProgressTick = startTime;
+        this->lastKeyProgressTick = startTime;
+        this->lastGpuProgressTick = startTime;
         const double hourlyUpdateInterval = 3600.0;
         const double smoothingAlpha = 0.25;
         const double idleDecaySeconds = 12.0;
@@ -2212,53 +2212,53 @@ void KeyHunt::Search(int nbThread, std::vector<int> gpuId, std::vector<int> grid
                 const bool gpuProgress = (gpuCount > lastGPUCount);
 
                 if (keyProgress) {
-                        if (!haveSmoothedKeyRate) {
-                                smoothedKeyRate = keyRate;
-                                haveSmoothedKeyRate = true;
+                        if (!this->haveSmoothedKeyRate) {
+                                this->smoothedKeyRate = keyRate;
+                                this->haveSmoothedKeyRate = true;
                         }
                         else {
-                                smoothedKeyRate = smoothingAlpha * keyRate + (1.0 - smoothingAlpha) * smoothedKeyRate;
+                                this->smoothedKeyRate = smoothingAlpha * keyRate + (1.0 - smoothingAlpha) * this->smoothedKeyRate;
                         }
-                        lastKeyProgressTick = t1;
+                        this->lastKeyProgressTick = t1;
                 }
-                else if (haveSmoothedKeyRate) {
+                else if (this->haveSmoothedKeyRate) {
                         const double decay = std::exp(-elapsed / idleDecaySeconds);
-                        smoothedKeyRate *= decay;
+                        this->smoothedKeyRate *= decay;
                 }
 
                 if (gpuProgress) {
-                        if (!haveSmoothedGpuKeyRate) {
-                                smoothedGpuKeyRate = gpuKeyRate;
-                                haveSmoothedGpuKeyRate = true;
+                        if (!this->haveSmoothedGpuKeyRate) {
+                                this->smoothedGpuKeyRate = gpuKeyRate;
+                                this->haveSmoothedGpuKeyRate = true;
                         }
                         else {
-                                smoothedGpuKeyRate = smoothingAlpha * gpuKeyRate + (1.0 - smoothingAlpha) * smoothedGpuKeyRate;
+                                this->smoothedGpuKeyRate = smoothingAlpha * gpuKeyRate + (1.0 - smoothingAlpha) * this->smoothedGpuKeyRate;
                         }
-                        lastGpuProgressTick = t1;
+                        this->lastGpuProgressTick = t1;
                 }
-                else if (haveSmoothedGpuKeyRate) {
+                else if (this->haveSmoothedGpuKeyRate) {
                         const double decay = std::exp(-elapsed / idleDecaySeconds);
-                        smoothedGpuKeyRate *= decay;
+                        this->smoothedGpuKeyRate *= decay;
                 }
 
-                if (haveSmoothedKeyRate) {
-                        keyRate = smoothedKeyRate;
+                if (this->haveSmoothedKeyRate) {
+                        keyRate = this->smoothedKeyRate;
                 }
 
-                if (haveSmoothedGpuKeyRate) {
-                        gpuKeyRate = smoothedGpuKeyRate;
+                if (this->haveSmoothedGpuKeyRate) {
+                        gpuKeyRate = this->smoothedGpuKeyRate;
                 }
 
-                if (!keyProgress && haveSmoothedKeyRate && keyRate < 1.0 && (t1 - lastKeyProgressTick) > (idleDecaySeconds * 4.0)) {
-                        haveSmoothedKeyRate = false;
+                if (!keyProgress && this->haveSmoothedKeyRate && keyRate < 1.0 && (t1 - this->lastKeyProgressTick) > (idleDecaySeconds * 4.0)) {
+                        this->haveSmoothedKeyRate = false;
                         keyRate = (count > 0 && (t1 - startTime) > 0.0) ? (double)count / (t1 - startTime) : 0.0;
-                        smoothedKeyRate = keyRate;
+                        this->smoothedKeyRate = keyRate;
                 }
 
-                if (!gpuProgress && haveSmoothedGpuKeyRate && gpuKeyRate < 1.0 && (t1 - lastGpuProgressTick) > (idleDecaySeconds * 4.0)) {
-                        haveSmoothedGpuKeyRate = false;
+                if (!gpuProgress && this->haveSmoothedGpuKeyRate && gpuKeyRate < 1.0 && (t1 - this->lastGpuProgressTick) > (idleDecaySeconds * 4.0)) {
+                        this->haveSmoothedGpuKeyRate = false;
                         gpuKeyRate = (gpuCount > 0 && (t1 - startTime) > 0.0) ? (double)gpuCount / (t1 - startTime) : 0.0;
-                        smoothedGpuKeyRate = gpuKeyRate;
+                        this->smoothedGpuKeyRate = gpuKeyRate;
                 }
 
                 if (isAlive(params)) {
