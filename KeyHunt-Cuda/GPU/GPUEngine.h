@@ -23,6 +23,7 @@
 #include <string>
 #include <vector>
 #include "../SECP256k1.h"
+#include "GPUDeviceParams.h"
 
 #ifdef __cplusplus
 struct GpuLaunchConfig
@@ -112,6 +113,8 @@ private:
         bool AllocateDeviceBuffer(void** ptr, size_t size);
         void FreeDeviceBuffer(void** ptr);
         void SynchronizeStreamIfNeeded();
+        void PopulateDeviceParams();
+        void UploadDeviceParamsIfNeeded();
 
         bool callKernelSEARCH_MODE_MA();
         bool callKernelSEARCH_MODE_SA();
@@ -193,6 +196,9 @@ private:
         bool clusterLaunchActive_ = false;
         bool cooperativeLaunchSupported_ = false;
         bool cooperativeLaunchActive_ = false;
+
+        DeviceKernelParams deviceParams_{};
+        bool deviceParamsDirty_ = false;
 
 };
 

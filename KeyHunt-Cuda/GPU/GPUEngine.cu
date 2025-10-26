@@ -128,33 +128,21 @@ namespace cg = cooperative_groups;
 #include "GPUBase58.h"
 #include "CudaCompat.h"
 
-__global__ void compute_keys_mode_ma(uint32_t mode, uint8_t* bloomLookUp, uint64_t BLOOM_BITS, uint8_t BLOOM_HASHES,
-        uint64_t bloomReciprocal, uint32_t bloomMask, uint32_t bloomIsPowerOfTwo, uint64_t* keys, uint32_t maxFound,
-        uint32_t* found, int stepMultiplier);
+__global__ void compute_keys_mode_ma();
 
-__global__ void compute_keys_comp_mode_ma(uint32_t mode, uint8_t* bloomLookUp, uint64_t BLOOM_BITS,
-        uint8_t BLOOM_HASHES, uint64_t bloomReciprocal, uint32_t bloomMask, uint32_t bloomIsPowerOfTwo,
-        uint64_t* keys, uint32_t maxFound, uint32_t* found, int stepMultiplier);
+__global__ void compute_keys_comp_mode_ma();
 
-__global__ void compute_keys_mode_sa(uint32_t mode, const uint32_t* __restrict__ hash160, uint64_t* keys,
-        uint32_t maxFound, uint32_t* found, int stepMultiplier);
+__global__ void compute_keys_mode_sa();
 
-__global__ void compute_keys_comp_mode_sa(uint32_t mode, const uint32_t* __restrict__ hash160, uint64_t* keys,
-        uint32_t maxFound, uint32_t* found, int stepMultiplier);
+__global__ void compute_keys_comp_mode_sa();
 
-__global__ void compute_keys_comp_mode_mx(uint32_t mode, uint8_t* bloomLookUp, uint64_t BLOOM_BITS,
-        uint8_t BLOOM_HASHES, uint64_t bloomReciprocal, uint32_t bloomMask, uint32_t bloomIsPowerOfTwo,
-        uint64_t* keys, uint32_t maxFound, uint32_t* found, int stepMultiplier);
+__global__ void compute_keys_comp_mode_mx();
 
-__global__ void compute_keys_comp_mode_sx(uint32_t mode, uint32_t* xpoint, uint64_t* keys, uint32_t maxFound,
-        uint32_t* found, int stepMultiplier);
+__global__ void compute_keys_comp_mode_sx();
 
-__global__ void compute_keys_mode_eth_ma(uint8_t* bloomLookUp, uint64_t BLOOM_BITS, uint8_t BLOOM_HASHES,
-        uint64_t bloomReciprocal, uint32_t bloomMask, uint32_t bloomIsPowerOfTwo, uint64_t* keys, uint32_t maxFound,
-        uint32_t* found, int stepMultiplier);
+__global__ void compute_keys_mode_eth_ma();
 
-__global__ void compute_keys_mode_eth_sa(const uint32_t* __restrict__ hash, uint64_t* keys, uint32_t maxFound,
-        uint32_t* found, int stepMultiplier);
+__global__ void compute_keys_mode_eth_sa();
 
 namespace {
 
@@ -584,180 +572,139 @@ __device__ void LoadToShared(T (&shared)[N], const T* __restrict__ source)
 
 struct ModeMaFunctor
 {
-        uint32_t mode;
-        uint8_t* bloomLookUp;
-        uint64_t BLOOM_BITS;
-        uint8_t BLOOM_HASHES;
-        uint64_t bloomReciprocal;
-        uint32_t bloomMask;
-        uint32_t bloomIsPowerOfTwo;
-        uint32_t maxFound;
-        uint32_t* found;
-
         __device__ void operator()(const GeneratorTableView& tables, uint64_t* xPtr, uint64_t* yPtr, uint32_t baseOffset) const
         {
-                ComputeKeysSEARCH_MODE_MA(mode, xPtr, yPtr, tables, bloomLookUp, BLOOM_BITS, BLOOM_HASHES,
-                        bloomReciprocal, bloomMask, bloomIsPowerOfTwo, maxFound, found, baseOffset);
+                const DeviceKernelParams& params = g_deviceParams;
+                ComputeKeysSEARCH_MODE_MA(params.mode, xPtr, yPtr, tables, params.bloomLookUp, params.bloomBits,
+                        params.bloomHashes, params.bloomReciprocal, params.bloomMask, params.bloomIsPowerOfTwo,
+                        params.maxFound, params.foundBuffer, baseOffset);
         }
 };
 
 struct ModeMxFunctor
 {
-        uint32_t mode;
-        uint8_t* bloomLookUp;
-        uint64_t BLOOM_BITS;
-        uint8_t BLOOM_HASHES;
-        uint64_t bloomReciprocal;
-        uint32_t bloomMask;
-        uint32_t bloomIsPowerOfTwo;
-        uint32_t maxFound;
-        uint32_t* found;
-
         __device__ void operator()(const GeneratorTableView& tables, uint64_t* xPtr, uint64_t* yPtr, uint32_t baseOffset) const
         {
-                ComputeKeysSEARCH_MODE_MX(mode, xPtr, yPtr, tables, bloomLookUp, BLOOM_BITS, BLOOM_HASHES,
-                        bloomReciprocal, bloomMask, bloomIsPowerOfTwo, maxFound, found, baseOffset);
+                const DeviceKernelParams& params = g_deviceParams;
+                ComputeKeysSEARCH_MODE_MX(params.mode, xPtr, yPtr, tables, params.bloomLookUp, params.bloomBits,
+                        params.bloomHashes, params.bloomReciprocal, params.bloomMask, params.bloomIsPowerOfTwo,
+                        params.maxFound, params.foundBuffer, baseOffset);
         }
 };
 
 struct ModeSaFunctor
 {
-        uint32_t mode;
         const uint32_t* hash160;
-        uint32_t maxFound;
-        uint32_t* found;
 
         __device__ void operator()(const GeneratorTableView& tables, uint64_t* xPtr, uint64_t* yPtr, uint32_t baseOffset) const
         {
-                ComputeKeysSEARCH_MODE_SA(mode, xPtr, yPtr, tables, hash160, maxFound, found, baseOffset);
+                const DeviceKernelParams& params = g_deviceParams;
+                ComputeKeysSEARCH_MODE_SA(params.mode, xPtr, yPtr, tables, hash160, params.maxFound,
+                        params.foundBuffer, baseOffset);
         }
 };
 
 struct ModeSxFunctor
 {
-        uint32_t mode;
         uint32_t* xpoint;
-        uint32_t maxFound;
-        uint32_t* found;
 
         __device__ void operator()(const GeneratorTableView& tables, uint64_t* xPtr, uint64_t* yPtr, uint32_t baseOffset) const
         {
-                ComputeKeysSEARCH_MODE_SX(mode, xPtr, yPtr, tables, xpoint, maxFound, found, baseOffset);
+                const DeviceKernelParams& params = g_deviceParams;
+                ComputeKeysSEARCH_MODE_SX(params.mode, xPtr, yPtr, tables, xpoint, params.maxFound,
+                        params.foundBuffer, baseOffset);
         }
 };
 
 struct ModeEthMaFunctor
 {
-        uint8_t* bloomLookUp;
-        uint64_t BLOOM_BITS;
-        uint8_t BLOOM_HASHES;
-        uint64_t bloomReciprocal;
-        uint32_t bloomMask;
-        uint32_t bloomIsPowerOfTwo;
-        uint32_t maxFound;
-        uint32_t* found;
-
         __device__ void operator()(const GeneratorTableView& tables, uint64_t* xPtr, uint64_t* yPtr, uint32_t baseOffset) const
         {
-                ComputeKeysSEARCH_ETH_MODE_MA(xPtr, yPtr, tables, bloomLookUp, BLOOM_BITS, BLOOM_HASHES,
-                        bloomReciprocal, bloomMask, bloomIsPowerOfTwo, maxFound, found, baseOffset);
+                const DeviceKernelParams& params = g_deviceParams;
+                ComputeKeysSEARCH_ETH_MODE_MA(xPtr, yPtr, tables, params.bloomLookUp, params.bloomBits,
+                        params.bloomHashes, params.bloomReciprocal, params.bloomMask, params.bloomIsPowerOfTwo,
+                        params.maxFound, params.foundBuffer, baseOffset);
         }
 };
 
 struct ModeEthSaFunctor
 {
         const uint32_t* hash;
-        uint32_t maxFound;
-        uint32_t* found;
 
         __device__ void operator()(const GeneratorTableView& tables, uint64_t* xPtr, uint64_t* yPtr, uint32_t baseOffset) const
         {
-                ComputeKeysSEARCH_ETH_MODE_SA(xPtr, yPtr, tables, hash, maxFound, found, baseOffset);
+                const DeviceKernelParams& params = g_deviceParams;
+                ComputeKeysSEARCH_ETH_MODE_SA(xPtr, yPtr, tables, hash, params.maxFound, params.foundBuffer, baseOffset);
         }
 };
 
 } // namespace
 
 // mode multiple addresses
-__global__ void compute_keys_mode_ma(uint32_t mode, uint8_t* bloomLookUp, uint64_t BLOOM_BITS, uint8_t BLOOM_HASHES,
-        uint64_t bloomReciprocal, uint32_t bloomMask, uint32_t bloomIsPowerOfTwo,
-        uint64_t* keys, uint32_t maxFound, uint32_t* found, int stepMultiplier)
+__global__ void compute_keys_mode_ma()
 {
-        RunKeyComputation(keys, stepMultiplier,
-                ModeMaFunctor{mode, bloomLookUp, BLOOM_BITS, BLOOM_HASHES, bloomReciprocal, bloomMask,
-                        bloomIsPowerOfTwo, maxFound, found});
+        const DeviceKernelParams params = g_deviceParams;
+        RunKeyComputation(params.keyBuffer, params.stepMultiplier, ModeMaFunctor{});
 }
 
-__global__ void compute_keys_comp_mode_ma(uint32_t mode, uint8_t* bloomLookUp, uint64_t BLOOM_BITS, uint8_t BLOOM_HASHES,
-        uint64_t bloomReciprocal, uint32_t bloomMask, uint32_t bloomIsPowerOfTwo,
-        uint64_t* keys, uint32_t maxFound, uint32_t* found, int stepMultiplier)
+__global__ void compute_keys_comp_mode_ma()
 {
-        RunKeyComputation(keys, stepMultiplier,
-                ModeMaFunctor{mode, bloomLookUp, BLOOM_BITS, BLOOM_HASHES, bloomReciprocal, bloomMask,
-                        bloomIsPowerOfTwo, maxFound, found});
+        const DeviceKernelParams params = g_deviceParams;
+        RunKeyComputation(params.keyBuffer, params.stepMultiplier, ModeMaFunctor{});
 }
 
 // mode single address
-__global__ void compute_keys_mode_sa(uint32_t mode, const uint32_t* __restrict__ hash160, uint64_t* keys, uint32_t maxFound, uint32_t* found,
-        int stepMultiplier)
+__global__ void compute_keys_mode_sa()
 {
+        const DeviceKernelParams params = g_deviceParams;
         __shared__ uint32_t sharedHash160[5];
-        LoadToShared(sharedHash160, hash160);
-        RunKeyComputation(keys, stepMultiplier,
-                ModeSaFunctor{mode, sharedHash160, maxFound, found});
+        LoadToShared(sharedHash160, static_cast<const uint32_t*>(params.hashOrXpoint));
+        RunKeyComputation(params.keyBuffer, params.stepMultiplier, ModeSaFunctor{sharedHash160});
 
 }
 
-__global__ void compute_keys_comp_mode_sa(uint32_t mode, const uint32_t* __restrict__ hash160, uint64_t* keys, uint32_t maxFound, uint32_t* found,
-        int stepMultiplier)
+__global__ void compute_keys_comp_mode_sa()
 {
+        const DeviceKernelParams params = g_deviceParams;
         __shared__ uint32_t sharedHash160[5];
-        LoadToShared(sharedHash160, hash160);
-        RunKeyComputation(keys, stepMultiplier,
-                ModeSaFunctor{mode, sharedHash160, maxFound, found});
+        LoadToShared(sharedHash160, static_cast<const uint32_t*>(params.hashOrXpoint));
+        RunKeyComputation(params.keyBuffer, params.stepMultiplier, ModeSaFunctor{sharedHash160});
 
 }
 
 // mode multiple x points
-__global__ void compute_keys_comp_mode_mx(uint32_t mode, uint8_t* bloomLookUp, uint64_t BLOOM_BITS, uint8_t BLOOM_HASHES,
-        uint64_t bloomReciprocal, uint32_t bloomMask, uint32_t bloomIsPowerOfTwo, uint64_t* keys,
-        uint32_t maxFound, uint32_t* found, int stepMultiplier)
+__global__ void compute_keys_comp_mode_mx()
 {
-        RunKeyComputation(keys, stepMultiplier,
-                ModeMxFunctor{mode, bloomLookUp, BLOOM_BITS, BLOOM_HASHES, bloomReciprocal, bloomMask,
-                        bloomIsPowerOfTwo, maxFound, found});
+        const DeviceKernelParams params = g_deviceParams;
+        RunKeyComputation(params.keyBuffer, params.stepMultiplier, ModeMxFunctor{});
 
 }
 
 // mode single x point
-__global__ void compute_keys_comp_mode_sx(uint32_t mode, uint32_t* xpoint, uint64_t* keys, uint32_t maxFound, uint32_t* found,
-        int stepMultiplier)
+__global__ void compute_keys_comp_mode_sx()
 {
-        RunKeyComputation(keys, stepMultiplier,
-                ModeSxFunctor{mode, xpoint, maxFound, found});
+        const DeviceKernelParams params = g_deviceParams;
+        RunKeyComputation(params.keyBuffer, params.stepMultiplier,
+                ModeSxFunctor{params.hashOrXpoint});
 
 }
 
 // ---------------------------------------------------------------------------------------
 // ethereum
 
-__global__ void compute_keys_mode_eth_ma(uint8_t* bloomLookUp, uint64_t BLOOM_BITS, uint8_t BLOOM_HASHES,
-        uint64_t bloomReciprocal, uint32_t bloomMask, uint32_t bloomIsPowerOfTwo, uint64_t* keys,
-        uint32_t maxFound, uint32_t* found, int stepMultiplier)
+__global__ void compute_keys_mode_eth_ma()
 {
-        RunKeyComputation(keys, stepMultiplier,
-                ModeEthMaFunctor{bloomLookUp, BLOOM_BITS, BLOOM_HASHES, bloomReciprocal, bloomMask,
-                        bloomIsPowerOfTwo, maxFound, found});
+        const DeviceKernelParams params = g_deviceParams;
+        RunKeyComputation(params.keyBuffer, params.stepMultiplier, ModeEthMaFunctor{});
 
 }
 
-__global__ void compute_keys_mode_eth_sa(const uint32_t* __restrict__ hash, uint64_t* keys, uint32_t maxFound, uint32_t* found,
-        int stepMultiplier)
+__global__ void compute_keys_mode_eth_sa()
 {
+        const DeviceKernelParams params = g_deviceParams;
         __shared__ uint32_t sharedHash[5];
-        LoadToShared(sharedHash, hash);
-        RunKeyComputation(keys, stepMultiplier,
-                ModeEthSaFunctor{sharedHash, maxFound, found});
+        LoadToShared(sharedHash, static_cast<const uint32_t*>(params.hashOrXpoint));
+        RunKeyComputation(params.keyBuffer, params.stepMultiplier, ModeEthSaFunctor{sharedHash});
 
 }
 
@@ -1121,6 +1068,8 @@ GPUEngine::GPUEngine(Secp256K1* secp, int nbThreadGroup, int nbThreadPerGroup, i
         CUDA_CHECK(cudaPeekAtLastError());
 
         compMode = SEARCH_COMPRESSED;
+        PopulateDeviceParams();
+        UploadDeviceParamsIfNeeded();
         initialised = true;
 
 }
@@ -1313,6 +1262,8 @@ GPUEngine::GPUEngine(Secp256K1* secp, int nbThreadGroup, int nbThreadPerGroup, i
         CUDA_CHECK(cudaPeekAtLastError());
 
         compMode = SEARCH_COMPRESSED;
+        PopulateDeviceParams();
+        UploadDeviceParamsIfNeeded();
         initialised = true;
 
 }
@@ -1411,6 +1362,40 @@ void GPUEngine::SynchronizeStreamIfNeeded()
         if (streamCreated_ && stream_ != nullptr) {
                 CUDA_CHECK(cudaStreamSynchronize(stream_));
         }
+}
+
+void GPUEngine::PopulateDeviceParams()
+{
+        deviceParams_.mode = compMode;
+        deviceParams_.maxFound = maxFound;
+        deviceParams_.stepMultiplier = stepMultiplier;
+        deviceParams_.bloomBits = BLOOM_BITS;
+        deviceParams_.bloomHashes = BLOOM_HASHES;
+        deviceParams_.bloomReciprocal = bloomFastModReciprocal_;
+        deviceParams_.bloomMask = bloomMask_;
+        deviceParams_.bloomIsPowerOfTwo = bloomIsPowerOfTwo_;
+        deviceParams_.bloomLookUp = inputBloomLookUp;
+        deviceParams_.hashOrXpoint = inputHashORxpoint;
+        deviceParams_.keyBuffer = inputKey;
+        deviceParams_.foundBuffer = outputBuffer;
+        deviceParamsDirty_ = true;
+}
+
+void GPUEngine::UploadDeviceParamsIfNeeded()
+{
+        if (!deviceParamsDirty_) {
+                return;
+        }
+        if (!streamCreated_ || stream_ == nullptr) {
+                return;
+        }
+        if (deviceParams_.keyBuffer == nullptr || deviceParams_.foundBuffer == nullptr) {
+                return;
+        }
+        CUDA_CHECK(cudaMemcpyToSymbolAsync(g_deviceParams, &deviceParams_, sizeof(deviceParams_), 0,
+                cudaMemcpyHostToDevice, stream_));
+        CUDA_CHECK(cudaStreamSynchronize(stream_));
+        deviceParamsDirty_ = false;
 }
 
 // ----------------------------------------------------------------------------
@@ -1708,6 +1693,8 @@ bool GPUEngine::callKernelSEARCH_MODE_MA()
                 return false;
         }
 
+        UploadDeviceParamsIfNeeded();
+
         // Reset nbFound
         CUDA_CHECK(cudaMemsetAsync(outputBuffer, 0, sizeof(uint32_t), stream_));
 
@@ -1717,20 +1704,14 @@ bool GPUEngine::callKernelSEARCH_MODE_MA()
         // Call the kernel (Perform STEP_SIZE keys per thread)
         if (coinType == COIN_BTC) {
                 if (compMode == SEARCH_COMPRESSED) {
-                        LaunchKeyKernel("compute_keys_comp_mode_ma", compute_keys_comp_mode_ma, gridDim, blockDim,
-                                compMode, inputBloomLookUp, BLOOM_BITS, BLOOM_HASHES, bloomFastModReciprocal_,
-                                bloomMask_, bloomIsPowerOfTwo_, inputKey, maxFound, outputBuffer, stepMultiplier);
+                        LaunchKeyKernel("compute_keys_comp_mode_ma", compute_keys_comp_mode_ma, gridDim, blockDim);
                 }
                 else {
-                        LaunchKeyKernel("compute_keys_mode_ma", compute_keys_mode_ma, gridDim, blockDim,
-                                compMode, inputBloomLookUp, BLOOM_BITS, BLOOM_HASHES, bloomFastModReciprocal_,
-                                bloomMask_, bloomIsPowerOfTwo_, inputKey, maxFound, outputBuffer, stepMultiplier);
+                        LaunchKeyKernel("compute_keys_mode_ma", compute_keys_mode_ma, gridDim, blockDim);
                 }
         }
         else {
-                LaunchKeyKernel("compute_keys_mode_eth_ma", compute_keys_mode_eth_ma, gridDim, blockDim,
-                        inputBloomLookUp, BLOOM_BITS, BLOOM_HASHES, bloomFastModReciprocal_,
-                        bloomMask_, bloomIsPowerOfTwo_, inputKey, maxFound, outputBuffer, stepMultiplier);
+                LaunchKeyKernel("compute_keys_mode_eth_ma", compute_keys_mode_eth_ma, gridDim, blockDim);
         }
 
         CUDA_CHECK(cudaPeekAtLastError());
@@ -1755,6 +1736,8 @@ bool GPUEngine::callKernelSEARCH_MODE_MX()
                 return false;
         }
 
+        UploadDeviceParamsIfNeeded();
+
         // Reset nbFound
         CUDA_CHECK(cudaMemsetAsync(outputBuffer, 0, sizeof(uint32_t), stream_));
 
@@ -1763,9 +1746,7 @@ bool GPUEngine::callKernelSEARCH_MODE_MX()
 
         // Call the kernel (Perform STEP_SIZE keys per thread)
         if (compMode == SEARCH_COMPRESSED) {
-                LaunchKeyKernel("compute_keys_comp_mode_mx", compute_keys_comp_mode_mx, gridDim, blockDim,
-                        compMode, inputBloomLookUp, BLOOM_BITS, BLOOM_HASHES, bloomFastModReciprocal_,
-                        bloomMask_, bloomIsPowerOfTwo_, inputKey, maxFound, outputBuffer, stepMultiplier);
+                LaunchKeyKernel("compute_keys_comp_mode_mx", compute_keys_comp_mode_mx, gridDim, blockDim);
         }
         else {
                 printf("GPUEngine: PubKeys search doesn't support uncompressed\n");
@@ -1793,6 +1774,8 @@ bool GPUEngine::callKernelSEARCH_MODE_SA()
                 return false;
         }
 
+        UploadDeviceParamsIfNeeded();
+
         // Reset nbFound
         CUDA_CHECK(cudaMemsetAsync(outputBuffer, 0, sizeof(uint32_t), stream_));
 
@@ -1802,17 +1785,14 @@ bool GPUEngine::callKernelSEARCH_MODE_SA()
         // Call the kernel (Perform STEP_SIZE keys per thread)
         if (coinType == COIN_BTC) {
                 if (compMode == SEARCH_COMPRESSED) {
-                        LaunchKeyKernel("compute_keys_comp_mode_sa", compute_keys_comp_mode_sa, gridDim, blockDim,
-                                compMode, inputHashORxpoint, inputKey, maxFound, outputBuffer, stepMultiplier);
+                        LaunchKeyKernel("compute_keys_comp_mode_sa", compute_keys_comp_mode_sa, gridDim, blockDim);
                 }
                 else {
-                        LaunchKeyKernel("compute_keys_mode_sa", compute_keys_mode_sa, gridDim, blockDim,
-                                compMode, inputHashORxpoint, inputKey, maxFound, outputBuffer, stepMultiplier);
+                        LaunchKeyKernel("compute_keys_mode_sa", compute_keys_mode_sa, gridDim, blockDim);
                 }
         }
         else {
-                LaunchKeyKernel("compute_keys_mode_eth_sa", compute_keys_mode_eth_sa, gridDim, blockDim,
-                        inputHashORxpoint, inputKey, maxFound, outputBuffer, stepMultiplier);
+                LaunchKeyKernel("compute_keys_mode_eth_sa", compute_keys_mode_eth_sa, gridDim, blockDim);
         }
 
         CUDA_CHECK(cudaPeekAtLastError());
@@ -1838,6 +1818,8 @@ bool GPUEngine::callKernelSEARCH_MODE_SX()
                 return false;
         }
 
+        UploadDeviceParamsIfNeeded();
+
         CUDA_CHECK(cudaMemsetAsync(outputBuffer, 0, sizeof(uint32_t), stream_));
 
         const dim3 gridDim(static_cast<unsigned>(activeThreadCount / nbThreadPerGroup));
@@ -1845,8 +1827,7 @@ bool GPUEngine::callKernelSEARCH_MODE_SX()
 
         // Call the kernel (Perform STEP_SIZE keys per thread)
         if (compMode == SEARCH_COMPRESSED) {
-                LaunchKeyKernel("compute_keys_comp_mode_sx", compute_keys_comp_mode_sx, gridDim, blockDim,
-                        compMode, inputHashORxpoint, inputKey, maxFound, outputBuffer, stepMultiplier);
+                LaunchKeyKernel("compute_keys_comp_mode_sx", compute_keys_comp_mode_sx, gridDim, blockDim);
         }
         else {
                 printf("GPUEngine: PubKeys search doesn't support uncompressed\n");
