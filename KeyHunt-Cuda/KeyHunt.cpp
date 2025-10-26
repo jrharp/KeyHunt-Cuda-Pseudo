@@ -1829,6 +1829,12 @@ void KeyHunt::FindKeyGPU(TH_PARAM * ph)
 
                 if (usePseudoRandomGpu) {
                         preparePseudoRandomBatch(nextBuffer, assignedBlocks, activeThreads);
+                        if (assignedBlocks > 0) {
+                                ok = g->SetKeys(pointBuffers[nextBuffer], activeThreads, false);
+                                if (!ok) {
+                                        break;
+                                }
+                        }
                 }
                 else {
                         if (ph->rKeyRequest) {
@@ -1932,7 +1938,7 @@ void KeyHunt::FindKeyGPU(TH_PARAM * ph)
                         break;
                 }
 
-                ok = g->SetKeys(pointBuffers[nextBuffer], activeThreads);
+                ok = g->LaunchPendingKeys();
                 if (!ok) {
                         break;
                 }
