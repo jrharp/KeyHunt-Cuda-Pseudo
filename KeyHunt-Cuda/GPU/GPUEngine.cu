@@ -1837,8 +1837,12 @@ bool GPUEngine::callKernelSEARCH_MODE_MA()
         // Reset nbFound
         CUDA_CHECK(cudaMemsetAsync(outputBuffer, 0, sizeof(uint32_t), stream_));
 
-        const dim3 gridDim(static_cast<unsigned>(activeThreadCount / nbThreadPerGroup));
-        const dim3 blockDim(static_cast<unsigned>(nbThreadPerGroup));
+        const unsigned int activeThreads = static_cast<unsigned int>(activeThreadCount);
+        const unsigned int blockThreads = std::min(
+                activeThreads, static_cast<unsigned int>(nbThreadPerGroup));
+        const unsigned int gridBlocks = (activeThreads + blockThreads - 1U) / blockThreads;
+        const dim3 gridDim(gridBlocks);
+        const dim3 blockDim(blockThreads);
 
         // Call the kernel (Perform STEP_SIZE keys per thread)
         if (coinType == COIN_BTC) {
@@ -1889,8 +1893,12 @@ bool GPUEngine::callKernelSEARCH_MODE_MX()
         // Reset nbFound
         CUDA_CHECK(cudaMemsetAsync(outputBuffer, 0, sizeof(uint32_t), stream_));
 
-        const dim3 gridDim(static_cast<unsigned>(activeThreadCount / nbThreadPerGroup));
-        const dim3 blockDim(static_cast<unsigned>(nbThreadPerGroup));
+        const unsigned int activeThreads = static_cast<unsigned int>(activeThreadCount);
+        const unsigned int blockThreads = std::min(
+                activeThreads, static_cast<unsigned int>(nbThreadPerGroup));
+        const unsigned int gridBlocks = (activeThreads + blockThreads - 1U) / blockThreads;
+        const dim3 gridDim(gridBlocks);
+        const dim3 blockDim(blockThreads);
 
         // Call the kernel (Perform STEP_SIZE keys per thread)
         if (compMode == SEARCH_COMPRESSED) {
@@ -1932,8 +1940,12 @@ bool GPUEngine::callKernelSEARCH_MODE_SA()
         // Reset nbFound
         CUDA_CHECK(cudaMemsetAsync(outputBuffer, 0, sizeof(uint32_t), stream_));
 
-        const dim3 gridDim(static_cast<unsigned>(activeThreadCount / nbThreadPerGroup));
-        const dim3 blockDim(static_cast<unsigned>(nbThreadPerGroup));
+        const unsigned int activeThreads = static_cast<unsigned int>(activeThreadCount);
+        const unsigned int blockThreads = std::min(
+                activeThreads, static_cast<unsigned int>(nbThreadPerGroup));
+        const unsigned int gridBlocks = (activeThreads + blockThreads - 1U) / blockThreads;
+        const dim3 gridDim(gridBlocks);
+        const dim3 blockDim(blockThreads);
 
         // Call the kernel (Perform STEP_SIZE keys per thread)
         if (coinType == COIN_BTC) {
@@ -1981,8 +1993,12 @@ bool GPUEngine::callKernelSEARCH_MODE_SX()
 
         CUDA_CHECK(cudaMemsetAsync(outputBuffer, 0, sizeof(uint32_t), stream_));
 
-        const dim3 gridDim(static_cast<unsigned>(activeThreadCount / nbThreadPerGroup));
-        const dim3 blockDim(static_cast<unsigned>(nbThreadPerGroup));
+        const unsigned int activeThreads = static_cast<unsigned int>(activeThreadCount);
+        const unsigned int blockThreads = std::min(
+                activeThreads, static_cast<unsigned int>(nbThreadPerGroup));
+        const unsigned int gridBlocks = (activeThreads + blockThreads - 1U) / blockThreads;
+        const dim3 gridDim(gridBlocks);
+        const dim3 blockDim(blockThreads);
 
         // Call the kernel (Perform STEP_SIZE keys per thread)
         if (compMode == SEARCH_COMPRESSED) {
