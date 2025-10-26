@@ -37,8 +37,8 @@ for ccap in 86 89 90 120; do
   echo "=========================================="
 
   # Clean and build
-  make clean CCAP="${ccap}" CUDA_TARGET="x86_64-linux"
-  make gpu=1 CCAP="${ccap}" CUDA_TARGET="x86_64-linux" all
+  make clean CCAP="${ccap}"
+  make gpu=1 CCAP="${ccap}" all
 
   # Move to build/ (adjust if your artifacts appear elsewhere)
   cd build/ || {
