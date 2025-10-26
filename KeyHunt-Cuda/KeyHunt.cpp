@@ -1850,6 +1850,7 @@ void KeyHunt::FindKeyGPU(TH_PARAM * ph)
 
                 int assignedBlocks = 0;
                 int activeThreads = nbThread;
+                bool stagedNextBatch = false;
 
                 if (usePseudoRandomGpu && ph->rKeyRequest) {
                         ph->rKeyRequest = false;
@@ -1862,6 +1863,7 @@ void KeyHunt::FindKeyGPU(TH_PARAM * ph)
                                 if (!ok) {
                                         break;
                                 }
+                                stagedNextBatch = true;
                         }
                 }
                 else {
@@ -1874,68 +1876,99 @@ void KeyHunt::FindKeyGPU(TH_PARAM * ph)
                                 ok = g->SetKeysSoA(pointSoABuffers[currentBuffer].data());
                                 ph->rKeyRequest = false;
                         }
+                        stagedNextBatch = false;
                 }
 
                 const bool queueNextBatch = !usePseudoRandomGpu;
+                bool launchPendingAttempted = false;
+                bool launchPendingOk = true;
 
                 // Call kernel
                 switch (searchMode) {
                 case (int)SEARCH_MODE_MA:
                         ok = g->LaunchSEARCH_MODE_MA(found, false, queueNextBatch);
-                        for (int i = 0; i < (int)found.size() && !endOfSearch; i++) {
-                                ITEM it = found[i];
-                                if (coinType == COIN_BTC) {
-                                        std::string addr = secp->GetAddress(it.mode, it.hash);
-                                        if (checkPrivKey(addr, resultKeys[it.thId], it.incr, it.mode)) {
-                                                nbFoundKey++;
+                        if (ok && stagedNextBatch) {
+                                launchPendingAttempted = true;
+                                launchPendingOk = g->LaunchPendingKeys();
+                        }
+                        if (ok) {
+                                for (int i = 0; i < (int)found.size() && !endOfSearch; i++) {
+                                        ITEM it = found[i];
+                                        if (coinType == COIN_BTC) {
+                                                std::string addr = secp->GetAddress(it.mode, it.hash);
+                                                if (checkPrivKey(addr, resultKeys[it.thId], it.incr, it.mode)) {
+                                                        nbFoundKey++;
+                                                }
                                         }
-                                }
-                                else {
-                                        std::string addr = secp->GetAddressETH(it.hash);
-                                        if (checkPrivKeyETH(addr, resultKeys[it.thId], it.incr)) {
-                                                nbFoundKey++;
+                                        else {
+                                                std::string addr = secp->GetAddressETH(it.hash);
+                                                if (checkPrivKeyETH(addr, resultKeys[it.thId], it.incr)) {
+                                                        nbFoundKey++;
+                                                }
                                         }
                                 }
                         }
                         break;
                 case (int)SEARCH_MODE_MX:
                         ok = g->LaunchSEARCH_MODE_MX(found, false, queueNextBatch);
-                        for (int i = 0; i < (int)found.size() && !endOfSearch; i++) {
-                                ITEM it = found[i];
-                                if (checkPrivKeyX(/*addr,*/ resultKeys[it.thId], it.incr, it.mode)) {
-                                        nbFoundKey++;
+                        if (ok && stagedNextBatch) {
+                                launchPendingAttempted = true;
+                                launchPendingOk = g->LaunchPendingKeys();
+                        }
+                        if (ok) {
+                                for (int i = 0; i < (int)found.size() && !endOfSearch; i++) {
+                                        ITEM it = found[i];
+                                        if (checkPrivKeyX(/*addr,*/ resultKeys[it.thId], it.incr, it.mode)) {
+                                                nbFoundKey++;
+                                        }
                                 }
                         }
                         break;
                 case (int)SEARCH_MODE_SA:
                         ok = g->LaunchSEARCH_MODE_SA(found, false, queueNextBatch);
-                        for (int i = 0; i < (int)found.size() && !endOfSearch; i++) {
-                                ITEM it = found[i];
-                                if (coinType == COIN_BTC) {
-                                        std::string addr = secp->GetAddress(it.mode, it.hash);
-                                        if (checkPrivKey(addr, resultKeys[it.thId], it.incr, it.mode)) {
-                                                nbFoundKey++;
+                        if (ok && stagedNextBatch) {
+                                launchPendingAttempted = true;
+                                launchPendingOk = g->LaunchPendingKeys();
+                        }
+                        if (ok) {
+                                for (int i = 0; i < (int)found.size() && !endOfSearch; i++) {
+                                        ITEM it = found[i];
+                                        if (coinType == COIN_BTC) {
+                                                std::string addr = secp->GetAddress(it.mode, it.hash);
+                                                if (checkPrivKey(addr, resultKeys[it.thId], it.incr, it.mode)) {
+                                                        nbFoundKey++;
+                                                }
                                         }
-                                }
-                                else {
-                                        std::string addr = secp->GetAddressETH(it.hash);
-                                        if (checkPrivKeyETH(addr, resultKeys[it.thId], it.incr)) {
-                                                nbFoundKey++;
+                                        else {
+                                                std::string addr = secp->GetAddressETH(it.hash);
+                                                if (checkPrivKeyETH(addr, resultKeys[it.thId], it.incr)) {
+                                                        nbFoundKey++;
+                                                }
                                         }
                                 }
                         }
                         break;
                 case (int)SEARCH_MODE_SX:
                         ok = g->LaunchSEARCH_MODE_SX(found, false, queueNextBatch);
-                        for (int i = 0; i < (int)found.size() && !endOfSearch; i++) {
-                                ITEM it = found[i];
-                                if (checkPrivKeyX(/*addr,*/ resultKeys[it.thId], it.incr, it.mode)) {
-                                        nbFoundKey++;
+                        if (ok && stagedNextBatch) {
+                                launchPendingAttempted = true;
+                                launchPendingOk = g->LaunchPendingKeys();
+                        }
+                        if (ok) {
+                                for (int i = 0; i < (int)found.size() && !endOfSearch; i++) {
+                                        ITEM it = found[i];
+                                        if (checkPrivKeyX(/*addr,*/ resultKeys[it.thId], it.incr, it.mode)) {
+                                                nbFoundKey++;
+                                        }
                                 }
                         }
                         break;
                 default:
                         break;
+                }
+
+                if (launchPendingAttempted && !launchPendingOk) {
+                        ok = false;
                 }
 
                 if (ok) {
@@ -1964,13 +1997,8 @@ void KeyHunt::FindKeyGPU(TH_PARAM * ph)
                         continue;
                 }
 
-                if (assignedBlocks == 0) {
+                if (!stagedNextBatch) {
                         ok = false;
-                        break;
-                }
-
-                ok = g->LaunchPendingKeys();
-                if (!ok) {
                         break;
                 }
 
