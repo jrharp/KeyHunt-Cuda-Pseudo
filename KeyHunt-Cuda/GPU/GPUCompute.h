@@ -44,7 +44,10 @@ struct GeneratorTableView {
 
         const uint64_t* __restrict__ gx = nullptr;
         const uint64_t* __restrict__ gy = nullptr;
+        const uint64_t* __restrict__ twoGx = nullptr;
+        const uint64_t* __restrict__ twoGy = nullptr;
         bool usesSharedMemory = false;
+        bool usesSharedTwoG = false;
 
         __device__ __forceinline__ const uint64_t* GxPtr(int index) const
         {
@@ -60,14 +63,31 @@ struct GeneratorTableView {
         {
                 return usesSharedMemory;
         }
+
+        __device__ __forceinline__ const uint64_t* TwoGxPtr() const
+        {
+                return twoGx;
+        }
+
+        __device__ __forceinline__ const uint64_t* TwoGyPtr() const
+        {
+                return twoGy;
+        }
+
+        __device__ __forceinline__ bool UsesSharedTwoG() const
+        {
+                return usesSharedTwoG;
+        }
 };
+
+constexpr int kKernelLaunchBound = 256;
 
 constexpr size_t kGeneratorSharedTableBytes =
         2ULL * static_cast<size_t>(GeneratorTableView::kPointCount)
         * static_cast<size_t>(GeneratorTableView::kLimbCount) * sizeof(uint64_t);
 
 constexpr bool kPrefetchGeneratorTablesSupported =
-        kGeneratorSharedTableBytes <= static_cast<size_t>(48U * 1024U);
+        kGeneratorSharedTableBytes <= static_cast<size_t>(96U * 1024U);
 
 template <typename ThreadBlock>
 __device__ inline GeneratorTableView PrefetchGeneratorTables(ThreadBlock block,
@@ -80,6 +100,7 @@ __device__ inline GeneratorTableView PrefetchGeneratorTables(ThreadBlock block,
         cg::memcpy_async(block, &sharedGx[0][0], Gx, copyBytes);
         cg::memcpy_async(block, &sharedGy[0][0], Gy, copyBytes);
         cg::wait(block);
+        block.sync();
 
         GeneratorTableView view{};
         view.gx = &sharedGx[0][0];
@@ -88,11 +109,55 @@ __device__ inline GeneratorTableView PrefetchGeneratorTables(ThreadBlock block,
         return view;
 }
 
+template <typename ThreadBlock>
+__device__ inline GeneratorTableView PrefetchGeneratorTablesFallback(ThreadBlock block,
+        uint64_t (*sharedGx)[GeneratorTableView::kLimbCount],
+        uint64_t (*sharedGy)[GeneratorTableView::kLimbCount])
+{
+        const size_t limbCount = static_cast<size_t>(GeneratorTableView::kPointCount)
+                * static_cast<size_t>(GeneratorTableView::kLimbCount);
+        uint64_t* sharedGxFlat = &sharedGx[0][0];
+        uint64_t* sharedGyFlat = &sharedGy[0][0];
+        const size_t threadIndex = static_cast<size_t>(threadIdx.x);
+        const size_t stride = static_cast<size_t>(blockDim.x);
+        for (size_t idx = threadIndex; idx < limbCount; idx += stride) {
+                sharedGxFlat[idx] = Gx[idx];
+                sharedGyFlat[idx] = Gy[idx];
+        }
+        block.sync();
+
+        GeneratorTableView view{};
+        view.gx = sharedGxFlat;
+        view.gy = sharedGyFlat;
+        view.usesSharedMemory = true;
+        return view;
+}
+
+template <typename ThreadBlock>
+__device__ inline void PrefetchDoubleGenerator(ThreadBlock block, uint64_t (&sharedTwoGx)[4],
+        uint64_t (&sharedTwoGy)[4])
+{
+#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 800)
+        cg::memcpy_async(block, sharedTwoGx, _2Gnx, sizeof(sharedTwoGx));
+        cg::memcpy_async(block, sharedTwoGy, _2Gny, sizeof(sharedTwoGy));
+        cg::wait(block);
+        block.sync();
+#else
+        if (threadIdx.x < 4) {
+                sharedTwoGx[threadIdx.x] = _2Gnx[threadIdx.x];
+                sharedTwoGy[threadIdx.x] = _2Gny[threadIdx.x];
+        }
+        block.sync();
+#endif
+}
+
 __device__ __forceinline__ GeneratorTableView GlobalGeneratorTables()
 {
         GeneratorTableView view{};
         view.gx = Gx;
         view.gy = Gy;
+        view.twoGx = _2Gnx;
+        view.twoGy = _2Gny;
         return view;
 }
 
@@ -583,15 +648,14 @@ __device__ void ComputeKeysSEARCH_MODE_MA(uint32_t mode, uint64_t* startx, uint6
         const uint64_t* __restrict__ tableGy = tables.gy;
         const bool tablesInShared = tables.IsSharedMemory();
 
-        LoadGeneratorPoint(twoGx, _2Gnx);
-        LoadGeneratorPoint(twoGy, _2Gny);
+        LoadGeneratorPoint(twoGx, tables.TwoGxPtr(), tables.UsesSharedTwoG());
+        LoadGeneratorPoint(twoGy, tables.TwoGyPtr(), tables.UsesSharedTwoG());
 
         // Load starting key
-        __syncthreads();
         Load256A(sx, startx);
         Load256A(sy, starty);
-	Load256(px, sx);
-	Load256(py, sy);
+        Load256(px, sx);
+        Load256(py, sy);
 
 	// Fill group with delta x
 	uint32_t i;
@@ -697,10 +761,9 @@ __device__ void ComputeKeysSEARCH_MODE_MA(uint32_t mode, uint64_t* startx, uint6
         ModSub256(py, twoGy);                 // py = - p2.y - s*(ret.x-p2.x);
 
 
-	// Update starting point
-	__syncthreads();
-	Store256A(startx, px);
-	Store256A(starty, py);
+        // Update starting point
+        Store256A(startx, px);
+        Store256A(starty, py);
 
 }
 
@@ -747,15 +810,14 @@ __device__ void ComputeKeysSEARCH_MODE_SA(uint32_t mode, uint64_t* startx, uint6
         const uint64_t* __restrict__ tableGy = tables.gy;
         const bool tablesInShared = tables.IsSharedMemory();
 
-        LoadGeneratorPoint(twoGx, _2Gnx);
-        LoadGeneratorPoint(twoGy, _2Gny);
+        LoadGeneratorPoint(twoGx, tables.TwoGxPtr(), tables.UsesSharedTwoG());
+        LoadGeneratorPoint(twoGy, tables.TwoGyPtr(), tables.UsesSharedTwoG());
 
         // Load starting key
-	__syncthreads();
-	Load256A(sx, startx);
-	Load256A(sy, starty);
-	Load256(px, sx);
-	Load256(py, sy);
+        Load256A(sx, startx);
+        Load256A(sy, starty);
+        Load256(px, sx);
+        Load256(py, sy);
 
 	// Fill group with delta x
 	uint32_t i;
@@ -860,10 +922,9 @@ __device__ void ComputeKeysSEARCH_MODE_SA(uint32_t mode, uint64_t* startx, uint6
         _ModMult(py, _s);                    // py = - s*(ret.x-p2.x)
         ModSub256(py, twoGy);                // py = - p2.y - s*(ret.x-p2.x);
 
-	// Update starting point
-	__syncthreads();
-	Store256A(startx, px);
-	Store256A(starty, py);
+        // Update starting point
+        Store256A(startx, px);
+        Store256A(starty, py);
 
 }
 
@@ -894,15 +955,14 @@ __device__ void ComputeKeysSEARCH_MODE_MX(uint32_t mode, uint64_t* startx, uint6
         const uint64_t* __restrict__ tableGy = tables.gy;
         const bool tablesInShared = tables.IsSharedMemory();
 
-        LoadGeneratorPoint(twoGx, _2Gnx);
-        LoadGeneratorPoint(twoGy, _2Gny);
+        LoadGeneratorPoint(twoGx, tables.TwoGxPtr(), tables.UsesSharedTwoG());
+        LoadGeneratorPoint(twoGy, tables.TwoGyPtr(), tables.UsesSharedTwoG());
 
         // Load starting key
-	__syncthreads();
-	Load256A(sx, startx);
-	Load256A(sy, starty);
-	Load256(px, sx);
-	Load256(py, sy);
+        Load256A(sx, startx);
+        Load256A(sy, starty);
+        Load256(px, sx);
+        Load256(py, sy);
 
 	// Fill group with delta x
 	uint32_t i;
@@ -1007,10 +1067,9 @@ __device__ void ComputeKeysSEARCH_MODE_MX(uint32_t mode, uint64_t* startx, uint6
         _ModMult(py, _s);                 // py = - s*(ret.x-p2.x)
         ModSub256(py, twoGy);             // py = - p2.y - s*(ret.x-p2.x);
 
-	// Update starting point
-	__syncthreads();
-	Store256A(startx, px);
-	Store256A(starty, py);
+        // Update starting point
+        Store256A(startx, px);
+        Store256A(starty, py);
 
 }
 
@@ -1038,15 +1097,14 @@ __device__ void ComputeKeysSEARCH_MODE_SX(uint32_t mode, uint64_t* startx, uint6
         const uint64_t* __restrict__ tableGy = tables.gy;
         const bool tablesInShared = tables.IsSharedMemory();
 
-        LoadGeneratorPoint(twoGx, _2Gnx);
-        LoadGeneratorPoint(twoGy, _2Gny);
+        LoadGeneratorPoint(twoGx, tables.TwoGxPtr(), tables.UsesSharedTwoG());
+        LoadGeneratorPoint(twoGy, tables.TwoGyPtr(), tables.UsesSharedTwoG());
 
         // Load starting key
-	__syncthreads();
-	Load256A(sx, startx);
-	Load256A(sy, starty);
-	Load256(px, sx);
-	Load256(py, sy);
+        Load256A(sx, startx);
+        Load256A(sy, starty);
+        Load256(px, sx);
+        Load256(py, sy);
 
 	// Fill group with delta x
 	uint32_t i;
@@ -1151,10 +1209,9 @@ __device__ void ComputeKeysSEARCH_MODE_SX(uint32_t mode, uint64_t* startx, uint6
         _ModMult(py, _s);                  // py = - s*(ret.x-p2.x)
         ModSub256(py, twoGy);              // py = - p2.y - s*(ret.x-p2.x);
 
-	// Update starting point
-	__syncthreads();
-	Store256A(startx, px);
-	Store256A(starty, py);
+        // Update starting point
+        Store256A(startx, px);
+        Store256A(starty, py);
 
 }
 
@@ -1249,15 +1306,14 @@ __device__ void ComputeKeysSEARCH_ETH_MODE_MA(uint64_t* startx, uint64_t* starty
         const uint64_t* __restrict__ tableGy = tables.gy;
         const bool tablesInShared = tables.IsSharedMemory();
 
-        LoadGeneratorPoint(twoGx, _2Gnx);
-        LoadGeneratorPoint(twoGy, _2Gny);
+        LoadGeneratorPoint(twoGx, tables.TwoGxPtr(), tables.UsesSharedTwoG());
+        LoadGeneratorPoint(twoGy, tables.TwoGyPtr(), tables.UsesSharedTwoG());
 
         // Load starting key
-	__syncthreads();
-	Load256A(sx, startx);
-	Load256A(sy, starty);
-	Load256(px, sx);
-	Load256(py, sy);
+        Load256A(sx, startx);
+        Load256A(sy, starty);
+        Load256(px, sx);
+        Load256(py, sy);
 
 	// Fill group with delta x
 	uint32_t i;
@@ -1363,10 +1419,9 @@ __device__ void ComputeKeysSEARCH_ETH_MODE_MA(uint64_t* startx, uint64_t* starty
         ModSub256(py, twoGy);                 // py = - p2.y - s*(ret.x-p2.x);
 
 
-	// Update starting point
-	__syncthreads();
-	Store256A(startx, px);
-	Store256A(starty, py);
+        // Update starting point
+        Store256A(startx, px);
+        Store256A(starty, py);
 
 }
 
@@ -1448,15 +1503,14 @@ __device__ void ComputeKeysSEARCH_ETH_MODE_SA(uint64_t* startx, uint64_t* starty
         const uint64_t* __restrict__ tableGy = tables.gy;
         const bool tablesInShared = tables.IsSharedMemory();
 
-        LoadGeneratorPoint(twoGx, _2Gnx);
-        LoadGeneratorPoint(twoGy, _2Gny);
+        LoadGeneratorPoint(twoGx, tables.TwoGxPtr(), tables.UsesSharedTwoG());
+        LoadGeneratorPoint(twoGy, tables.TwoGyPtr(), tables.UsesSharedTwoG());
 
         // Load starting key
-	__syncthreads();
-	Load256A(sx, startx);
-	Load256A(sy, starty);
-	Load256(px, sx);
-	Load256(py, sy);
+        Load256A(sx, startx);
+        Load256A(sy, starty);
+        Load256(px, sx);
+        Load256(py, sy);
 
 	// Fill group with delta x
 	uint32_t i;
@@ -1561,10 +1615,9 @@ __device__ void ComputeKeysSEARCH_ETH_MODE_SA(uint64_t* startx, uint64_t* starty
         _ModMult(py, _s);                    // py = - s*(ret.x-p2.x)
         ModSub256(py, twoGy);                // py = - p2.y - s*(ret.x-p2.x);
 
-	// Update starting point
-	__syncthreads();
-	Store256A(startx, px);
-	Store256A(starty, py);
+        // Update starting point
+        Store256A(startx, px);
+        Store256A(starty, py);
 
 }
 
