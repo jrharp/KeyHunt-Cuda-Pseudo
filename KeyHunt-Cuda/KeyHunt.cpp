@@ -1728,6 +1728,9 @@ void KeyHunt::FindKeyGPU(TH_PARAM * ph)
         int nbThread = g->GetNbThread();
         int threadsPerGroup = g->GetThreadsPerGroup();
         Point* pointBuffers[2] = { new Point[nbThread], new Point[nbThread] };
+        std::vector<uint64_t> pointSoABuffers[2] = {
+                std::vector<uint64_t>(static_cast<size_t>(nbThread) * 8ULL, 0ULL),
+                std::vector<uint64_t>(static_cast<size_t>(nbThread) * 8ULL, 0ULL) };
         Int* keyBuffers[2] = { new Int[nbThread], new Int[nbThread] };
         std::vector<uint64_t> pseudoSequentialBuffers[2] = {
                 std::vector<uint64_t>(nbThread, std::numeric_limits<uint64_t>::max()),
@@ -1737,9 +1740,29 @@ void KeyHunt::FindKeyGPU(TH_PARAM * ph)
         int currentAssignedBlocks = 0;
 
         const int compiledGroupSize = GPUEngine::GetCompiledGroupSize();
+        const int soaStride = threadsPerGroup > 0 ? threadsPerGroup : (nbThread > 0 ? nbThread : 1);
+
+        auto writePointSoA = [&](std::vector<uint64_t>& soa, int index, const Point& point) {
+                if (soa.empty()) {
+                        return;
+                }
+                const int groupBase = (index / soaStride) * soaStride;
+                const int lane = index % soaStride;
+                const size_t base = static_cast<size_t>(8 * groupBase + lane);
+                const size_t stride = static_cast<size_t>(soaStride);
+                soa[base + 0 * stride] = point.x.bits64[0];
+                soa[base + 1 * stride] = point.x.bits64[1];
+                soa[base + 2 * stride] = point.x.bits64[2];
+                soa[base + 3 * stride] = point.x.bits64[3];
+                soa[base + 4 * stride] = point.y.bits64[0];
+                soa[base + 5 * stride] = point.y.bits64[1];
+                soa[base + 6 * stride] = point.y.bits64[2];
+                soa[base + 7 * stride] = point.y.bits64[3];
+        };
 
         auto preparePseudoRandomBatch = [&](int bufferIndex, int& assignedBlocksOut, int& activeThreadsOut) {
                 auto& sequential = pseudoSequentialBuffers[bufferIndex];
+                auto& soaBuffer = pointSoABuffers[bufferIndex];
                 std::fill(sequential.begin(), sequential.end(), std::numeric_limits<uint64_t>::max());
 
                 assignedBlocksOut = 0;
@@ -1753,6 +1776,7 @@ void KeyHunt::FindKeyGPU(TH_PARAM * ph)
 
                         keyBuffers[bufferIndex][i] = block.key;
                         pointBuffers[bufferIndex][i] = block.startPoint;
+                        writePointSoA(soaBuffer, i, pointBuffers[bufferIndex][i]);
                         sequential[i] = block.sequentialIndex;
                         assignedBlocksOut++;
                 }
@@ -1775,6 +1799,7 @@ void KeyHunt::FindKeyGPU(TH_PARAM * ph)
                                                 break;
                                         }
                                         pointBuffers[bufferIndex][idx] = pointBuffers[bufferIndex][assignedBlocksOut - 1];
+                                        writePointSoA(soaBuffer, idx, pointBuffers[bufferIndex][idx]);
                                         keyBuffers[bufferIndex][idx] = keyBuffers[bufferIndex][assignedBlocksOut - 1];
                                         sequential[idx] = std::numeric_limits<uint64_t>::max();
                                 }
@@ -1797,7 +1822,7 @@ void KeyHunt::FindKeyGPU(TH_PARAM * ph)
                 int initialActiveThreads = 0;
                 bool haveInitial = preparePseudoRandomBatch(currentBuffer, currentAssignedBlocks, initialActiveThreads);
                 if (haveInitial) {
-                        ok = g->SetKeys(pointBuffers[currentBuffer], initialActiveThreads);
+                        ok = g->SetKeysSoA(pointSoABuffers[currentBuffer].data(), initialActiveThreads);
                 }
                 else {
                         ok = false;
@@ -1806,7 +1831,10 @@ void KeyHunt::FindKeyGPU(TH_PARAM * ph)
         else {
                 getGPUStartingKeys(tRangeStart, tRangeEnd, compiledGroupSize, nbThread, keyBuffers[currentBuffer],
                         pointBuffers[currentBuffer]);
-                ok = g->SetKeys(pointBuffers[currentBuffer]);
+                for (int i = 0; i < nbThread; ++i) {
+                        writePointSoA(pointSoABuffers[currentBuffer], i, pointBuffers[currentBuffer][i]);
+                }
+                ok = g->SetKeysSoA(pointSoABuffers[currentBuffer].data());
         }
 
         ph->hasStarted = true;
@@ -1830,7 +1858,7 @@ void KeyHunt::FindKeyGPU(TH_PARAM * ph)
                 if (usePseudoRandomGpu) {
                         preparePseudoRandomBatch(nextBuffer, assignedBlocks, activeThreads);
                         if (assignedBlocks > 0) {
-                                ok = g->SetKeys(pointBuffers[nextBuffer], activeThreads, false);
+                                ok = g->SetKeysSoA(pointSoABuffers[nextBuffer].data(), activeThreads, false);
                                 if (!ok) {
                                         break;
                                 }
@@ -1840,7 +1868,10 @@ void KeyHunt::FindKeyGPU(TH_PARAM * ph)
                         if (ph->rKeyRequest) {
                                 getGPUStartingKeys(tRangeStart, tRangeEnd, compiledGroupSize, nbThread, keyBuffers[currentBuffer],
                                         pointBuffers[currentBuffer]);
-                                ok = g->SetKeys(pointBuffers[currentBuffer]);
+                                for (int i = 0; i < nbThread; ++i) {
+                                        writePointSoA(pointSoABuffers[currentBuffer], i, pointBuffers[currentBuffer][i]);
+                                }
+                                ok = g->SetKeysSoA(pointSoABuffers[currentBuffer].data());
                                 ph->rKeyRequest = false;
                         }
                 }

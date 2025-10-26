@@ -86,6 +86,7 @@ public:
 	~GPUEngine();
 
         bool SetKeys(Point* p, int activeThreadCount = -1, bool launchKernel = true);
+        bool SetKeysSoA(const uint64_t* keyData, int activeThreadCount = -1, bool launchKernel = true);
 
         bool LaunchPendingKeys();
 
@@ -114,6 +115,18 @@ private:
         bool AllocateDeviceBuffer(void** ptr, size_t size);
         void FreeDeviceBuffer(void** ptr);
         void SynchronizeStreamIfNeeded();
+
+        uint32_t DownloadResultCount();
+        void StageResultPayloadCopy(size_t payloadBytes);
+        void EnsureResultCopyComplete();
+        struct KernelGraphState
+        {
+                const void* function = nullptr;
+                cudaGraphExec_t exec = nullptr;
+                cudaGraphNode_t node = nullptr;
+                bool initialized = false;
+        };
+        KernelGraphState* GetOrCreateGraphState(const void* function);
 
         bool callKernelSEARCH_MODE_MA();
         bool callKernelSEARCH_MODE_SA();
@@ -149,7 +162,7 @@ private:
         uint32_t bloomMask_ = 0;
         uint32_t bloomIsPowerOfTwo_ = 0;
 
-        static constexpr int kInputKeyBufferCount = 2;
+        static constexpr int kInputKeyBufferCount = 3;
         std::array<uint64_t*, kInputKeyBufferCount> inputKeyDevice{};
         std::array<uint64_t*, kInputKeyBufferCount> inputKeyPinned{};
         std::array<cudaEvent_t, kInputKeyBufferCount> inputKeyCopyEvents{};
@@ -195,6 +208,13 @@ private:
         bool copyStreamCreated_ = false;
         bool eventCreated_ = false;
 
+        cudaEvent_t lastKernelCompleteEvent_ = nullptr;
+        bool lastKernelCompleteRecorded_ = false;
+        cudaEvent_t resultHeaderReadyEvent_ = nullptr;
+        bool resultHeaderReadyRecorded_ = false;
+        cudaEvent_t resultCopyCompleteEvent_ = nullptr;
+        bool resultCopyCompleteRecorded_ = false;
+
         bool useAsyncAlloc_ = false;
         cudaMemPool_t memPool_ = nullptr;
         bool asyncFallbackNotified_ = false;
@@ -203,6 +223,9 @@ private:
         bool clusterLaunchActive_ = false;
         bool cooperativeLaunchSupported_ = false;
         bool cooperativeLaunchActive_ = false;
+
+        bool graphLaunchEnabled_ = true;
+        std::vector<KernelGraphState> graphStates_;
 
         uint64_t* GetActiveInputKeyBuffer() const;
         bool ActivateStagedInputKeyBuffer();
