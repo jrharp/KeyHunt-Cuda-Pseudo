@@ -1728,6 +1728,9 @@ void KeyHunt::FindKeyGPU(TH_PARAM * ph)
         int nbThread = g->GetNbThread();
         int threadsPerGroup = g->GetThreadsPerGroup();
         Point* pointBuffers[2] = { new Point[nbThread], new Point[nbThread] };
+        std::vector<uint64_t> pointSoABuffers[2] = {
+                std::vector<uint64_t>(static_cast<size_t>(nbThread) * 8ULL, 0ULL),
+                std::vector<uint64_t>(static_cast<size_t>(nbThread) * 8ULL, 0ULL) };
         Int* keyBuffers[2] = { new Int[nbThread], new Int[nbThread] };
         std::vector<uint64_t> pseudoSequentialBuffers[2] = {
                 std::vector<uint64_t>(nbThread, std::numeric_limits<uint64_t>::max()),
@@ -1737,9 +1740,29 @@ void KeyHunt::FindKeyGPU(TH_PARAM * ph)
         int currentAssignedBlocks = 0;
 
         const int compiledGroupSize = GPUEngine::GetCompiledGroupSize();
+        const int soaStride = threadsPerGroup > 0 ? threadsPerGroup : (nbThread > 0 ? nbThread : 1);
+
+        auto writePointSoA = [&](std::vector<uint64_t>& soa, int index, const Point& point) {
+                if (soa.empty()) {
+                        return;
+                }
+                const int groupBase = (index / soaStride) * soaStride;
+                const int lane = index % soaStride;
+                const size_t base = static_cast<size_t>(8 * groupBase + lane);
+                const size_t stride = static_cast<size_t>(soaStride);
+                soa[base + 0 * stride] = point.x.bits64[0];
+                soa[base + 1 * stride] = point.x.bits64[1];
+                soa[base + 2 * stride] = point.x.bits64[2];
+                soa[base + 3 * stride] = point.x.bits64[3];
+                soa[base + 4 * stride] = point.y.bits64[0];
+                soa[base + 5 * stride] = point.y.bits64[1];
+                soa[base + 6 * stride] = point.y.bits64[2];
+                soa[base + 7 * stride] = point.y.bits64[3];
+        };
 
         auto preparePseudoRandomBatch = [&](int bufferIndex, int& assignedBlocksOut, int& activeThreadsOut) {
                 auto& sequential = pseudoSequentialBuffers[bufferIndex];
+                auto& soaBuffer = pointSoABuffers[bufferIndex];
                 std::fill(sequential.begin(), sequential.end(), std::numeric_limits<uint64_t>::max());
 
                 assignedBlocksOut = 0;
@@ -1753,6 +1776,7 @@ void KeyHunt::FindKeyGPU(TH_PARAM * ph)
 
                         keyBuffers[bufferIndex][i] = block.key;
                         pointBuffers[bufferIndex][i] = block.startPoint;
+                        writePointSoA(soaBuffer, i, pointBuffers[bufferIndex][i]);
                         sequential[i] = block.sequentialIndex;
                         assignedBlocksOut++;
                 }
@@ -1775,6 +1799,7 @@ void KeyHunt::FindKeyGPU(TH_PARAM * ph)
                                                 break;
                                         }
                                         pointBuffers[bufferIndex][idx] = pointBuffers[bufferIndex][assignedBlocksOut - 1];
+                                        writePointSoA(soaBuffer, idx, pointBuffers[bufferIndex][idx]);
                                         keyBuffers[bufferIndex][idx] = keyBuffers[bufferIndex][assignedBlocksOut - 1];
                                         sequential[idx] = std::numeric_limits<uint64_t>::max();
                                 }
@@ -1797,7 +1822,7 @@ void KeyHunt::FindKeyGPU(TH_PARAM * ph)
                 int initialActiveThreads = 0;
                 bool haveInitial = preparePseudoRandomBatch(currentBuffer, currentAssignedBlocks, initialActiveThreads);
                 if (haveInitial) {
-                        ok = g->SetKeys(pointBuffers[currentBuffer], initialActiveThreads);
+                        ok = g->SetKeysSoA(pointSoABuffers[currentBuffer].data(), initialActiveThreads);
                 }
                 else {
                         ok = false;
@@ -1806,7 +1831,10 @@ void KeyHunt::FindKeyGPU(TH_PARAM * ph)
         else {
                 getGPUStartingKeys(tRangeStart, tRangeEnd, compiledGroupSize, nbThread, keyBuffers[currentBuffer],
                         pointBuffers[currentBuffer]);
-                ok = g->SetKeys(pointBuffers[currentBuffer]);
+                for (int i = 0; i < nbThread; ++i) {
+                        writePointSoA(pointSoABuffers[currentBuffer], i, pointBuffers[currentBuffer][i]);
+                }
+                ok = g->SetKeysSoA(pointSoABuffers[currentBuffer].data());
         }
 
         ph->hasStarted = true;
@@ -1822,6 +1850,7 @@ void KeyHunt::FindKeyGPU(TH_PARAM * ph)
 
                 int assignedBlocks = 0;
                 int activeThreads = nbThread;
+                bool stagedNextBatch = false;
 
                 if (usePseudoRandomGpu && ph->rKeyRequest) {
                         ph->rKeyRequest = false;
@@ -1830,81 +1859,116 @@ void KeyHunt::FindKeyGPU(TH_PARAM * ph)
                 if (usePseudoRandomGpu) {
                         preparePseudoRandomBatch(nextBuffer, assignedBlocks, activeThreads);
                         if (assignedBlocks > 0) {
-                                ok = g->SetKeys(pointBuffers[nextBuffer], activeThreads, false);
+                                ok = g->SetKeysSoA(pointSoABuffers[nextBuffer].data(), activeThreads, false);
                                 if (!ok) {
                                         break;
                                 }
+                                stagedNextBatch = true;
                         }
                 }
                 else {
                         if (ph->rKeyRequest) {
                                 getGPUStartingKeys(tRangeStart, tRangeEnd, compiledGroupSize, nbThread, keyBuffers[currentBuffer],
                                         pointBuffers[currentBuffer]);
-                                ok = g->SetKeys(pointBuffers[currentBuffer]);
+                                for (int i = 0; i < nbThread; ++i) {
+                                        writePointSoA(pointSoABuffers[currentBuffer], i, pointBuffers[currentBuffer][i]);
+                                }
+                                ok = g->SetKeysSoA(pointSoABuffers[currentBuffer].data());
                                 ph->rKeyRequest = false;
                         }
+                        stagedNextBatch = false;
                 }
 
                 const bool queueNextBatch = !usePseudoRandomGpu;
+                bool launchPendingAttempted = false;
+                bool launchPendingOk = true;
 
                 // Call kernel
                 switch (searchMode) {
                 case (int)SEARCH_MODE_MA:
                         ok = g->LaunchSEARCH_MODE_MA(found, false, queueNextBatch);
-                        for (int i = 0; i < (int)found.size() && !endOfSearch; i++) {
-                                ITEM it = found[i];
-                                if (coinType == COIN_BTC) {
-                                        std::string addr = secp->GetAddress(it.mode, it.hash);
-                                        if (checkPrivKey(addr, resultKeys[it.thId], it.incr, it.mode)) {
-                                                nbFoundKey++;
+                        if (ok && stagedNextBatch) {
+                                launchPendingAttempted = true;
+                                launchPendingOk = g->LaunchPendingKeys();
+                        }
+                        if (ok) {
+                                for (int i = 0; i < (int)found.size() && !endOfSearch; i++) {
+                                        ITEM it = found[i];
+                                        if (coinType == COIN_BTC) {
+                                                std::string addr = secp->GetAddress(it.mode, it.hash);
+                                                if (checkPrivKey(addr, resultKeys[it.thId], it.incr, it.mode)) {
+                                                        nbFoundKey++;
+                                                }
                                         }
-                                }
-                                else {
-                                        std::string addr = secp->GetAddressETH(it.hash);
-                                        if (checkPrivKeyETH(addr, resultKeys[it.thId], it.incr)) {
-                                                nbFoundKey++;
+                                        else {
+                                                std::string addr = secp->GetAddressETH(it.hash);
+                                                if (checkPrivKeyETH(addr, resultKeys[it.thId], it.incr)) {
+                                                        nbFoundKey++;
+                                                }
                                         }
                                 }
                         }
                         break;
                 case (int)SEARCH_MODE_MX:
                         ok = g->LaunchSEARCH_MODE_MX(found, false, queueNextBatch);
-                        for (int i = 0; i < (int)found.size() && !endOfSearch; i++) {
-                                ITEM it = found[i];
-                                if (checkPrivKeyX(/*addr,*/ resultKeys[it.thId], it.incr, it.mode)) {
-                                        nbFoundKey++;
+                        if (ok && stagedNextBatch) {
+                                launchPendingAttempted = true;
+                                launchPendingOk = g->LaunchPendingKeys();
+                        }
+                        if (ok) {
+                                for (int i = 0; i < (int)found.size() && !endOfSearch; i++) {
+                                        ITEM it = found[i];
+                                        if (checkPrivKeyX(/*addr,*/ resultKeys[it.thId], it.incr, it.mode)) {
+                                                nbFoundKey++;
+                                        }
                                 }
                         }
                         break;
                 case (int)SEARCH_MODE_SA:
                         ok = g->LaunchSEARCH_MODE_SA(found, false, queueNextBatch);
-                        for (int i = 0; i < (int)found.size() && !endOfSearch; i++) {
-                                ITEM it = found[i];
-                                if (coinType == COIN_BTC) {
-                                        std::string addr = secp->GetAddress(it.mode, it.hash);
-                                        if (checkPrivKey(addr, resultKeys[it.thId], it.incr, it.mode)) {
-                                                nbFoundKey++;
+                        if (ok && stagedNextBatch) {
+                                launchPendingAttempted = true;
+                                launchPendingOk = g->LaunchPendingKeys();
+                        }
+                        if (ok) {
+                                for (int i = 0; i < (int)found.size() && !endOfSearch; i++) {
+                                        ITEM it = found[i];
+                                        if (coinType == COIN_BTC) {
+                                                std::string addr = secp->GetAddress(it.mode, it.hash);
+                                                if (checkPrivKey(addr, resultKeys[it.thId], it.incr, it.mode)) {
+                                                        nbFoundKey++;
+                                                }
                                         }
-                                }
-                                else {
-                                        std::string addr = secp->GetAddressETH(it.hash);
-                                        if (checkPrivKeyETH(addr, resultKeys[it.thId], it.incr)) {
-                                                nbFoundKey++;
+                                        else {
+                                                std::string addr = secp->GetAddressETH(it.hash);
+                                                if (checkPrivKeyETH(addr, resultKeys[it.thId], it.incr)) {
+                                                        nbFoundKey++;
+                                                }
                                         }
                                 }
                         }
                         break;
                 case (int)SEARCH_MODE_SX:
                         ok = g->LaunchSEARCH_MODE_SX(found, false, queueNextBatch);
-                        for (int i = 0; i < (int)found.size() && !endOfSearch; i++) {
-                                ITEM it = found[i];
-                                if (checkPrivKeyX(/*addr,*/ resultKeys[it.thId], it.incr, it.mode)) {
-                                        nbFoundKey++;
+                        if (ok && stagedNextBatch) {
+                                launchPendingAttempted = true;
+                                launchPendingOk = g->LaunchPendingKeys();
+                        }
+                        if (ok) {
+                                for (int i = 0; i < (int)found.size() && !endOfSearch; i++) {
+                                        ITEM it = found[i];
+                                        if (checkPrivKeyX(/*addr,*/ resultKeys[it.thId], it.incr, it.mode)) {
+                                                nbFoundKey++;
+                                        }
                                 }
                         }
                         break;
                 default:
                         break;
+                }
+
+                if (launchPendingAttempted && !launchPendingOk) {
+                        ok = false;
                 }
 
                 if (ok) {
@@ -1933,13 +1997,8 @@ void KeyHunt::FindKeyGPU(TH_PARAM * ph)
                         continue;
                 }
 
-                if (assignedBlocks == 0) {
+                if (!stagedNextBatch) {
                         ok = false;
-                        break;
-                }
-
-                ok = g->LaunchPendingKeys();
-                if (!ok) {
                         break;
                 }
 
@@ -2120,12 +2179,12 @@ void KeyHunt::Search(int nbThread, std::vector<int> gpuId, std::vector<int> grid
 
         double keyRate = 0.0;
         double gpuKeyRate = 0.0;
-        double smoothedKeyRate = 0.0;
-        double smoothedGpuKeyRate = 0.0;
-        bool haveSmoothedKeyRate = false;
-        bool haveSmoothedGpuKeyRate = false;
-        double lastKeyProgressTick = 0.0;
-        double lastGpuProgressTick = 0.0;
+        this->smoothedKeyRate = 0.0;
+        this->smoothedGpuKeyRate = 0.0;
+        this->haveSmoothedKeyRate = false;
+        this->haveSmoothedGpuKeyRate = false;
+        this->lastKeyProgressTick = 0.0;
+        this->lastGpuProgressTick = 0.0;
         char timeStr[256];
 
 	// Wait that all threads have started
@@ -2137,8 +2196,8 @@ void KeyHunt::Search(int nbThread, std::vector<int> gpuId, std::vector<int> grid
         Timer::Init();
         t0 = Timer::get_tick();
         startTime = t0;
-        lastKeyProgressTick = startTime;
-        lastGpuProgressTick = startTime;
+        this->lastKeyProgressTick = startTime;
+        this->lastGpuProgressTick = startTime;
         const double hourlyUpdateInterval = 3600.0;
         const double smoothingAlpha = 0.25;
         const double idleDecaySeconds = 12.0;
@@ -2181,53 +2240,53 @@ void KeyHunt::Search(int nbThread, std::vector<int> gpuId, std::vector<int> grid
                 const bool gpuProgress = (gpuCount > lastGPUCount);
 
                 if (keyProgress) {
-                        if (!haveSmoothedKeyRate) {
-                                smoothedKeyRate = keyRate;
-                                haveSmoothedKeyRate = true;
+                        if (!this->haveSmoothedKeyRate) {
+                                this->smoothedKeyRate = keyRate;
+                                this->haveSmoothedKeyRate = true;
                         }
                         else {
-                                smoothedKeyRate = smoothingAlpha * keyRate + (1.0 - smoothingAlpha) * smoothedKeyRate;
+                                this->smoothedKeyRate = smoothingAlpha * keyRate + (1.0 - smoothingAlpha) * this->smoothedKeyRate;
                         }
-                        lastKeyProgressTick = t1;
+                        this->lastKeyProgressTick = t1;
                 }
-                else if (haveSmoothedKeyRate) {
+                else if (this->haveSmoothedKeyRate) {
                         const double decay = std::exp(-elapsed / idleDecaySeconds);
-                        smoothedKeyRate *= decay;
+                        this->smoothedKeyRate *= decay;
                 }
 
                 if (gpuProgress) {
-                        if (!haveSmoothedGpuKeyRate) {
-                                smoothedGpuKeyRate = gpuKeyRate;
-                                haveSmoothedGpuKeyRate = true;
+                        if (!this->haveSmoothedGpuKeyRate) {
+                                this->smoothedGpuKeyRate = gpuKeyRate;
+                                this->haveSmoothedGpuKeyRate = true;
                         }
                         else {
-                                smoothedGpuKeyRate = smoothingAlpha * gpuKeyRate + (1.0 - smoothingAlpha) * smoothedGpuKeyRate;
+                                this->smoothedGpuKeyRate = smoothingAlpha * gpuKeyRate + (1.0 - smoothingAlpha) * this->smoothedGpuKeyRate;
                         }
-                        lastGpuProgressTick = t1;
+                        this->lastGpuProgressTick = t1;
                 }
-                else if (haveSmoothedGpuKeyRate) {
+                else if (this->haveSmoothedGpuKeyRate) {
                         const double decay = std::exp(-elapsed / idleDecaySeconds);
-                        smoothedGpuKeyRate *= decay;
+                        this->smoothedGpuKeyRate *= decay;
                 }
 
-                if (haveSmoothedKeyRate) {
-                        keyRate = smoothedKeyRate;
+                if (this->haveSmoothedKeyRate) {
+                        keyRate = this->smoothedKeyRate;
                 }
 
-                if (haveSmoothedGpuKeyRate) {
-                        gpuKeyRate = smoothedGpuKeyRate;
+                if (this->haveSmoothedGpuKeyRate) {
+                        gpuKeyRate = this->smoothedGpuKeyRate;
                 }
 
-                if (!keyProgress && haveSmoothedKeyRate && keyRate < 1.0 && (t1 - lastKeyProgressTick) > (idleDecaySeconds * 4.0)) {
-                        haveSmoothedKeyRate = false;
+                if (!keyProgress && this->haveSmoothedKeyRate && keyRate < 1.0 && (t1 - this->lastKeyProgressTick) > (idleDecaySeconds * 4.0)) {
+                        this->haveSmoothedKeyRate = false;
                         keyRate = (count > 0 && (t1 - startTime) > 0.0) ? (double)count / (t1 - startTime) : 0.0;
-                        smoothedKeyRate = keyRate;
+                        this->smoothedKeyRate = keyRate;
                 }
 
-                if (!gpuProgress && haveSmoothedGpuKeyRate && gpuKeyRate < 1.0 && (t1 - lastGpuProgressTick) > (idleDecaySeconds * 4.0)) {
-                        haveSmoothedGpuKeyRate = false;
+                if (!gpuProgress && this->haveSmoothedGpuKeyRate && gpuKeyRate < 1.0 && (t1 - this->lastGpuProgressTick) > (idleDecaySeconds * 4.0)) {
+                        this->haveSmoothedGpuKeyRate = false;
                         gpuKeyRate = (gpuCount > 0 && (t1 - startTime) > 0.0) ? (double)gpuCount / (t1 - startTime) : 0.0;
-                        smoothedGpuKeyRate = gpuKeyRate;
+                        this->smoothedGpuKeyRate = gpuKeyRate;
                 }
 
                 if (isAlive(params)) {
