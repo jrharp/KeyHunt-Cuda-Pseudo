@@ -295,8 +295,6 @@ struct DeviceCapabilityInfo
         int cooperativeMultiDeviceLaunch = 0;
         int clusterLaunch = 0;
         int memSyncDomainCount = 1;
-        int maxSharedMemoryPerBlockOptin = 0;
-        int maxSharedMemoryPerBlock = 0;
 };
 
 int GetAttributeOrDefault(cudaDeviceAttr attr, int deviceId, int defaultValue = 0)
@@ -338,31 +336,7 @@ DeviceCapabilityInfo QueryDeviceCapabilityInfo(int deviceId)
 #ifdef cudaDevAttrMemSyncDomainCount
         info.memSyncDomainCount = GetAttributeOrDefault(cudaDevAttrMemSyncDomainCount, deviceId, 1);
 #endif
-#ifdef cudaDevAttrMaxSharedMemoryPerBlockOptin
-        info.maxSharedMemoryPerBlockOptin = GetAttributeOrDefault(cudaDevAttrMaxSharedMemoryPerBlockOptin, deviceId);
-#endif
-#ifdef cudaDevAttrMaxSharedMemoryPerBlock
-        info.maxSharedMemoryPerBlock = GetAttributeOrDefault(cudaDevAttrMaxSharedMemoryPerBlock, deviceId);
-#endif
         return info;
-}
-
-size_t DetermineMaxDynamicSharedMemory(const cudaDeviceProp& deviceProp, const DeviceCapabilityInfo& capability)
-{
-        size_t maxDynamicSharedMemory = 0;
-        if (capability.maxSharedMemoryPerBlockOptin > 0) {
-                maxDynamicSharedMemory = static_cast<size_t>(capability.maxSharedMemoryPerBlockOptin);
-        }
-        if (maxDynamicSharedMemory == 0 && deviceProp.sharedMemPerBlockOptin > 0) {
-                maxDynamicSharedMemory = static_cast<size_t>(deviceProp.sharedMemPerBlockOptin);
-        }
-        if (maxDynamicSharedMemory == 0 && capability.maxSharedMemoryPerBlock > 0) {
-                maxDynamicSharedMemory = static_cast<size_t>(capability.maxSharedMemoryPerBlock);
-        }
-        if (maxDynamicSharedMemory == 0) {
-                maxDynamicSharedMemory = static_cast<size_t>(deviceProp.sharedMemPerBlock);
-        }
-        return maxDynamicSharedMemory;
 }
 
 } // namespace
@@ -580,20 +554,18 @@ __device__ void RunKeyComputation(uint64_t* keys, int stepMultiplier, ComputeFun
 
         GeneratorTableView tables = GlobalGeneratorTables();
         if constexpr (kPrefetchGeneratorTablesSupported) {
-                if (GeneratorPrefetchEnabled()) {
-                        extern __shared__ uint64_t sharedGenerator[];
-                        uint64_t* sharedGxFlat = sharedGenerator;
-                        uint64_t* sharedGyFlat = sharedGenerator
-                                + static_cast<size_t>(GeneratorTableView::kPointCount)
-                                        * static_cast<size_t>(GeneratorTableView::kLimbCount);
-                        auto sharedGx = reinterpret_cast<uint64_t (*)[GeneratorTableView::kLimbCount]>(sharedGxFlat);
-                        auto sharedGy = reinterpret_cast<uint64_t (*)[GeneratorTableView::kLimbCount]>(sharedGyFlat);
+                extern __shared__ uint64_t sharedGenerator[];
+                uint64_t* sharedGxFlat = sharedGenerator;
+                uint64_t* sharedGyFlat = sharedGenerator
+                        + static_cast<size_t>(GeneratorTableView::kPointCount)
+                                * static_cast<size_t>(GeneratorTableView::kLimbCount);
+                auto sharedGx = reinterpret_cast<uint64_t (*)[GeneratorTableView::kLimbCount]>(sharedGxFlat);
+                auto sharedGy = reinterpret_cast<uint64_t (*)[GeneratorTableView::kLimbCount]>(sharedGyFlat);
 #if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 800)
-                        tables = PrefetchGeneratorTables(block, sharedGx, sharedGy);
+                tables = PrefetchGeneratorTables(block, sharedGx, sharedGy);
 #else
-                        tables = PrefetchGeneratorTablesFallback(block, sharedGx, sharedGy);
+                tables = PrefetchGeneratorTablesFallback(block, sharedGx, sharedGy);
 #endif
-                }
         }
         __shared__ uint64_t sharedTwoGx[4];
         __shared__ uint64_t sharedTwoGy[4];
@@ -816,18 +788,13 @@ template <typename KernelFunc, typename... Args>
 bool GPUEngine::LaunchKeyKernel(const char* label, KernelFunc kernel, dim3 gridDim, dim3 blockDim, Args&&... args)
 {
         size_t sharedMemBytes = 0;
-        const bool useGeneratorPrefetch = kPrefetchGeneratorTablesSupported && generatorPrefetchEnabled_;
-        if (useGeneratorPrefetch) {
+        if (kPrefetchGeneratorTablesSupported) {
                 sharedMemBytes = kGeneratorSharedTableBytes;
 #if defined(cudaFuncAttributeMaxDynamicSharedMemorySize)
                 const cudaError_t sharedLimitStatus = cudaFuncSetAttribute(kernel,
                         cudaFuncAttributeMaxDynamicSharedMemorySize, static_cast<int>(sharedMemBytes));
                 if (sharedLimitStatus == cudaErrorNotSupported || sharedLimitStatus == cudaErrorInvalidValue) {
                         cudaGetLastError();
-                        DisableGeneratorPrefetch(
-                                "GPUEngine: disabling generator table prefetch due to unsupported dynamic shared memory opt-in.");
-                        sharedMemBytes = 0;
-                        return LaunchKeyKernel(label, kernel, gridDim, blockDim, std::forward<Args>(args)...);
                 }
                 else {
                         CUDA_CHECK(sharedLimitStatus);
@@ -921,28 +888,6 @@ bool GPUEngine::LaunchKeyKernel(const char* label, KernelFunc kernel, dim3 gridD
         return true;
 }
 
-void GPUEngine::DisableGeneratorPrefetch(const char* reason)
-{
-        if (!generatorPrefetchEnabled_) {
-                return;
-        }
-
-        generatorPrefetchEnabled_ = false;
-
-        const int flag = 0;
-        if (streamCreated_ && stream_ != nullptr) {
-                CUDA_CHECK(cudaMemcpyToSymbolAsync(gGeneratorPrefetchEnabled, &flag, sizeof(int), 0,
-                        cudaMemcpyHostToDevice, stream_));
-        }
-        else {
-                CUDA_CHECK(cudaMemcpyToSymbol(gGeneratorPrefetchEnabled, &flag, sizeof(int), 0, cudaMemcpyHostToDevice));
-        }
-
-        if (reason != nullptr && reason[0] != '\0') {
-                std::fprintf(stderr, "%s\n", reason);
-        }
-}
-
 #if defined(CUDART_VERSION) && (CUDART_VERSION >= 12000)
 template <typename KernelFunc>
 dim3 GPUEngine::QueryClusterDimension(KernelFunc kernel, dim3 gridDim, dim3 blockDim)
@@ -964,8 +909,10 @@ dim3 GPUEngine::QueryClusterDimension(KernelFunc kernel, dim3 gridDim, dim3 bloc
                 return cache.value;
         }
 
-        const bool useGeneratorPrefetch = kPrefetchGeneratorTablesSupported && generatorPrefetchEnabled_;
-        size_t sharedMemBytes = useGeneratorPrefetch ? kGeneratorSharedTableBytes : 0;
+        size_t sharedMemBytes = 0;
+        if (kPrefetchGeneratorTablesSupported) {
+                sharedMemBytes = kGeneratorSharedTableBytes;
+        }
 
         cudaLaunchConfig_t config{};
         config.gridDim = gridDim;
@@ -1091,16 +1038,6 @@ GPUEngine::GPUEngine(Secp256K1* secp, int nbThreadGroup, int nbThreadPerGroup, i
         const int warpSize = capability.warpSize > 0 ? capability.warpSize : deviceProp.warpSize;
         warpSize_ = warpSize;
 
-        const size_t maxDynamicSharedMemory = DetermineMaxDynamicSharedMemory(deviceProp, capability);
-
-        generatorPrefetchEnabled_ = kPrefetchGeneratorTablesSupported
-                && (maxDynamicSharedMemory >= kGeneratorSharedTableBytes);
-        if (!generatorPrefetchEnabled_ && kPrefetchGeneratorTablesSupported) {
-                std::fprintf(stderr,
-                        "GPUEngine: generator table prefetch disabled (requires %zuB dynamic shared memory, device limit is %zuB).\n",
-                        static_cast<size_t>(kGeneratorSharedTableBytes), maxDynamicSharedMemory);
-        }
-
 #if defined(CUDART_VERSION) && (CUDART_VERSION >= 12000)
         clusterLaunchSupported_ = capability.clusterLaunch != 0;
         clusterLaunchActive_ = clusterLaunchSupported_;
@@ -1202,11 +1139,6 @@ GPUEngine::GPUEngine(Secp256K1* secp, int nbThreadGroup, int nbThreadPerGroup, i
 #endif
 #endif
         streamCreated_ = true;
-        {
-                const int generatorPrefetchFlag = generatorPrefetchEnabled_ ? 1 : 0;
-                CUDA_CHECK(cudaMemcpyToSymbolAsync(gGeneratorPrefetchEnabled, &generatorPrefetchFlag, sizeof(int), 0,
-                        cudaMemcpyHostToDevice, stream_));
-        }
         CUDA_CHECK(cudaStreamCreateWithFlags(&copyStream_, cudaStreamNonBlocking));
 #if defined(ENABLE_NVTX)
 #if GPUENGINE_HAS_NVTX_CUDA_STREAM
@@ -1318,16 +1250,6 @@ GPUEngine::GPUEngine(Secp256K1* secp, int nbThreadGroup, int nbThreadPerGroup, i
         const int warpSize = capability.warpSize > 0 ? capability.warpSize : deviceProp.warpSize;
         warpSize_ = warpSize;
 
-        const size_t maxDynamicSharedMemory = DetermineMaxDynamicSharedMemory(deviceProp, capability);
-
-        generatorPrefetchEnabled_ = kPrefetchGeneratorTablesSupported
-                && (maxDynamicSharedMemory >= kGeneratorSharedTableBytes);
-        if (!generatorPrefetchEnabled_ && kPrefetchGeneratorTablesSupported) {
-                std::fprintf(stderr,
-                        "GPUEngine: generator table prefetch disabled (requires %zuB dynamic shared memory, device limit is %zuB).\n",
-                        static_cast<size_t>(kGeneratorSharedTableBytes), maxDynamicSharedMemory);
-        }
-
 #if defined(CUDART_VERSION) && (CUDART_VERSION >= 12000)
         clusterLaunchSupported_ = capability.clusterLaunch != 0;
         clusterLaunchActive_ = clusterLaunchSupported_;
@@ -1429,11 +1351,6 @@ GPUEngine::GPUEngine(Secp256K1* secp, int nbThreadGroup, int nbThreadPerGroup, i
 #endif
 #endif
         streamCreated_ = true;
-        {
-                const int generatorPrefetchFlag = generatorPrefetchEnabled_ ? 1 : 0;
-                CUDA_CHECK(cudaMemcpyToSymbolAsync(gGeneratorPrefetchEnabled, &generatorPrefetchFlag, sizeof(int), 0,
-                        cudaMemcpyHostToDevice, stream_));
-        }
         CUDA_CHECK(cudaStreamCreateWithFlags(&copyStream_, cudaStreamNonBlocking));
 #if defined(ENABLE_NVTX)
 #if GPUENGINE_HAS_NVTX_CUDA_STREAM
