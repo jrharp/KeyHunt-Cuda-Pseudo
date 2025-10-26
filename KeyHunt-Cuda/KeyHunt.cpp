@@ -1734,7 +1734,9 @@ void KeyHunt::FindKeyGPU(TH_PARAM * ph)
                 std::vector<uint64_t>(nbThread, std::numeric_limits<uint64_t>::max()) };
         int currentBuffer = 0;
         int nextBuffer = 1;
-        int currentAssignedBlocks = 0;
+
+        const bool usePseudoRandomGpu = pseudoRandomEnabled;
+        int currentAssignedBlocks = usePseudoRandomGpu ? 0 : nbThread;
 
         const int compiledGroupSize = GPUEngine::GetCompiledGroupSize();
 
@@ -1789,7 +1791,6 @@ void KeyHunt::FindKeyGPU(TH_PARAM * ph)
 
         counters[thId] = 0;
 
-        const bool usePseudoRandomGpu = pseudoRandomEnabled;
         if (usePseudoRandomGpu) {
                 startPseudoRandomGpuPrefetch(nbThread);
         }
@@ -1818,7 +1819,7 @@ void KeyHunt::FindKeyGPU(TH_PARAM * ph)
                 const int resultsBuffer = currentBuffer;
                 Int* resultKeys = keyBuffers[resultsBuffer];
                 auto& resultSequential = pseudoSequentialBuffers[resultsBuffer];
-                const int resultAssignedBlocks = currentAssignedBlocks;
+                const int resultAssignedBlocks = usePseudoRandomGpu ? currentAssignedBlocks : nbThread;
 
                 int assignedBlocks = 0;
                 int activeThreads = nbThread;
@@ -1903,19 +1904,23 @@ void KeyHunt::FindKeyGPU(TH_PARAM * ph)
 
                 if (ok) {
                         const uint64_t stepSize = g->GetStepSize();
+                        const int processedBlocks = resultAssignedBlocks;
+
                         if (usePseudoRandomGpu) {
                                 for (int i = 0; i < resultAssignedBlocks; i++) {
                                         if (resultSequential[i] != std::numeric_limits<uint64_t>::max()) {
                                                 notifyPseudoRandomBlockComplete(resultSequential[i]);
                                         }
                                 }
-                                counters[thId] += stepSize * static_cast<uint64_t>(resultAssignedBlocks);
                         }
                         else {
                                 for (int i = 0; i < nbThread; i++) {
                                         resultKeys[i].Add(stepSize);
                                 }
-                                counters[thId] += stepSize * static_cast<uint64_t>(nbThread); // Point
+                        }
+
+                        if (processedBlocks > 0) {
+                                counters[thId] += stepSize * static_cast<uint64_t>(processedBlocks);
                         }
                 }
 
