@@ -23,6 +23,7 @@
 #include <stdint.h>
 
 #include "GPUMath.h"
+#include "GPUDeviceParams.h"
 
 namespace cg = cooperative_groups;
 
@@ -31,11 +32,13 @@ __device__ __constant__ uint64_t* _2Gnx = nullptr;
 __device__ __constant__ uint64_t* _2Gny = nullptr;
 __device__ __constant__ uint64_t* Gx = nullptr;
 __device__ __constant__ uint64_t* Gy = nullptr;
+__device__ __constant__ DeviceKernelParams g_deviceParams;
 #else
 extern __device__ __constant__ uint64_t* _2Gnx;
 extern __device__ __constant__ uint64_t* _2Gny;
 extern __device__ __constant__ uint64_t* Gx;
 extern __device__ __constant__ uint64_t* Gy;
+extern __device__ __constant__ DeviceKernelParams g_deviceParams;
 #endif
 
 struct GeneratorTableView {
