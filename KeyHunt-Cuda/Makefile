@@ -48,9 +48,13 @@ endif
 
 CXX        = g++
 CUDA            ?= /usr/local/cuda-13.0
+CUDA_TARGET     ?= x86_64-linux
 CUDA_INC        := $(CUDA)/include
-CUDA_INC_TGT    := $(CUDA)/targets
+CUDA_INC_TGT    := $(CUDA)/targets/$(CUDA_TARGET)/include
 CUDA_INCLUDES   := -I$(CUDA_INC) -I$(CUDA_INC_TGT)
+CUDA_LIB        := $(CUDA)/lib64
+CUDA_LIB_TGT    := $(CUDA)/targets/$(CUDA_TARGET)/lib
+CUDA_LIBS       := -L$(CUDA_LIB) -L$(CUDA_LIB_TGT)
 
 
 CXXCUDA    = /usr/bin/g++
@@ -62,7 +66,7 @@ CXXFLAGS   = -DWITHGPU -m64 -mssse3 -Wno-write-strings -g -I. -I$(CUDA)/include 
 else
 CXXFLAGS   = -DWITHGPU -m64 -mssse3 -Wno-write-strings -O2 -I. -I$(CUDA)/include -std=c++23
 endif
-LFLAGS     = -lgmp -lpthread -L$(CUDA)/lib64 -lcudart -lssl -lcrypto -lsqlite3 -lcurl $(NVTX_LIB)
+LFLAGS     = -lgmp -lpthread $(CUDA_LIBS) -lcudart -lssl -lcrypto -lsqlite3 -lcurl $(NVTX_LIB)
 else
 ifdef debug
 CXXFLAGS   = -m64 -mssse3 -Wno-write-strings -g -I. -I$(CUDA)/include -std=c++23
