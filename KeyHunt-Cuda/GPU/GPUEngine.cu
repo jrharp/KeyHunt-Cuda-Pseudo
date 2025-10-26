@@ -550,15 +550,29 @@ __device__ void RunKeyComputation(uint64_t* keys, int stepMultiplier, ComputeFun
         uint64_t* xPtr = keys + baseIndex;
         uint64_t* yPtr = xPtr + 4 * blockDim.x;
 
+        cg::thread_block block = cg::this_thread_block();
+
         GeneratorTableView tables = GlobalGeneratorTables();
-#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 800)
         if constexpr (kPrefetchGeneratorTablesSupported) {
-                __shared__ uint64_t sharedGx[GeneratorTableView::kPointCount][GeneratorTableView::kLimbCount];
-                __shared__ uint64_t sharedGy[GeneratorTableView::kPointCount][GeneratorTableView::kLimbCount];
-                const auto block = cg::this_thread_block();
+                extern __shared__ uint64_t sharedGenerator[];
+                uint64_t* sharedGxFlat = sharedGenerator;
+                uint64_t* sharedGyFlat = sharedGenerator
+                        + static_cast<size_t>(GeneratorTableView::kPointCount)
+                                * static_cast<size_t>(GeneratorTableView::kLimbCount);
+                auto sharedGx = reinterpret_cast<uint64_t (*)[GeneratorTableView::kLimbCount]>(sharedGxFlat);
+                auto sharedGy = reinterpret_cast<uint64_t (*)[GeneratorTableView::kLimbCount]>(sharedGyFlat);
+#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 800)
                 tables = PrefetchGeneratorTables(block, sharedGx, sharedGy);
-        }
+#else
+                tables = PrefetchGeneratorTablesFallback(block, sharedGx, sharedGy);
 #endif
+        }
+        __shared__ uint64_t sharedTwoGx[4];
+        __shared__ uint64_t sharedTwoGy[4];
+        PrefetchDoubleGenerator(block, sharedTwoGx, sharedTwoGy);
+        tables.twoGx = sharedTwoGx;
+        tables.twoGy = sharedTwoGy;
+        tables.usesSharedTwoG = true;
 
         for (int iteration = 0; iteration < stepMultiplier; ++iteration) {
                 const uint32_t baseOffset = static_cast<uint32_t>(iteration) * static_cast<uint32_t>(GRP_SIZE);
@@ -573,7 +587,6 @@ __device__ void LoadToShared(T (&shared)[N], const T* __restrict__ source)
         cg::thread_block block = cg::this_thread_block();
         cg::memcpy_async(block, shared, source, sizeof(T) * N);
         cg::wait(block);
-        block.sync();
 #else
         if (threadIdx.x < static_cast<int>(N)) {
                 shared[threadIdx.x] = source[threadIdx.x];
@@ -679,7 +692,8 @@ struct ModeEthSaFunctor
 } // namespace
 
 // mode multiple addresses
-__global__ void compute_keys_mode_ma(uint32_t mode, uint8_t* bloomLookUp, uint64_t BLOOM_BITS, uint8_t BLOOM_HASHES,
+__global__ __launch_bounds__(kKernelLaunchBound, 1)
+void compute_keys_mode_ma(uint32_t mode, uint8_t* bloomLookUp, uint64_t BLOOM_BITS, uint8_t BLOOM_HASHES,
         uint64_t bloomReciprocal, uint32_t bloomMask, uint32_t bloomIsPowerOfTwo,
         uint64_t* keys, uint32_t maxFound, uint32_t* found, int stepMultiplier)
 {
@@ -688,7 +702,8 @@ __global__ void compute_keys_mode_ma(uint32_t mode, uint8_t* bloomLookUp, uint64
                         bloomIsPowerOfTwo, maxFound, found});
 }
 
-__global__ void compute_keys_comp_mode_ma(uint32_t mode, uint8_t* bloomLookUp, uint64_t BLOOM_BITS, uint8_t BLOOM_HASHES,
+__global__ __launch_bounds__(kKernelLaunchBound, 1)
+void compute_keys_comp_mode_ma(uint32_t mode, uint8_t* bloomLookUp, uint64_t BLOOM_BITS, uint8_t BLOOM_HASHES,
         uint64_t bloomReciprocal, uint32_t bloomMask, uint32_t bloomIsPowerOfTwo,
         uint64_t* keys, uint32_t maxFound, uint32_t* found, int stepMultiplier)
 {
@@ -698,7 +713,8 @@ __global__ void compute_keys_comp_mode_ma(uint32_t mode, uint8_t* bloomLookUp, u
 }
 
 // mode single address
-__global__ void compute_keys_mode_sa(uint32_t mode, const uint32_t* __restrict__ hash160, uint64_t* keys, uint32_t maxFound, uint32_t* found,
+__global__ __launch_bounds__(kKernelLaunchBound, 1)
+void compute_keys_mode_sa(uint32_t mode, const uint32_t* __restrict__ hash160, uint64_t* keys, uint32_t maxFound, uint32_t* found,
         int stepMultiplier)
 {
         __shared__ uint32_t sharedHash160[5];
@@ -708,7 +724,8 @@ __global__ void compute_keys_mode_sa(uint32_t mode, const uint32_t* __restrict__
 
 }
 
-__global__ void compute_keys_comp_mode_sa(uint32_t mode, const uint32_t* __restrict__ hash160, uint64_t* keys, uint32_t maxFound, uint32_t* found,
+__global__ __launch_bounds__(kKernelLaunchBound, 1)
+void compute_keys_comp_mode_sa(uint32_t mode, const uint32_t* __restrict__ hash160, uint64_t* keys, uint32_t maxFound, uint32_t* found,
         int stepMultiplier)
 {
         __shared__ uint32_t sharedHash160[5];
@@ -719,7 +736,8 @@ __global__ void compute_keys_comp_mode_sa(uint32_t mode, const uint32_t* __restr
 }
 
 // mode multiple x points
-__global__ void compute_keys_comp_mode_mx(uint32_t mode, uint8_t* bloomLookUp, uint64_t BLOOM_BITS, uint8_t BLOOM_HASHES,
+__global__ __launch_bounds__(kKernelLaunchBound, 1)
+void compute_keys_comp_mode_mx(uint32_t mode, uint8_t* bloomLookUp, uint64_t BLOOM_BITS, uint8_t BLOOM_HASHES,
         uint64_t bloomReciprocal, uint32_t bloomMask, uint32_t bloomIsPowerOfTwo, uint64_t* keys,
         uint32_t maxFound, uint32_t* found, int stepMultiplier)
 {
@@ -730,7 +748,8 @@ __global__ void compute_keys_comp_mode_mx(uint32_t mode, uint8_t* bloomLookUp, u
 }
 
 // mode single x point
-__global__ void compute_keys_comp_mode_sx(uint32_t mode, uint32_t* xpoint, uint64_t* keys, uint32_t maxFound, uint32_t* found,
+__global__ __launch_bounds__(kKernelLaunchBound, 1)
+void compute_keys_comp_mode_sx(uint32_t mode, uint32_t* xpoint, uint64_t* keys, uint32_t maxFound, uint32_t* found,
         int stepMultiplier)
 {
         RunKeyComputation(keys, stepMultiplier,
@@ -741,7 +760,8 @@ __global__ void compute_keys_comp_mode_sx(uint32_t mode, uint32_t* xpoint, uint6
 // ---------------------------------------------------------------------------------------
 // ethereum
 
-__global__ void compute_keys_mode_eth_ma(uint8_t* bloomLookUp, uint64_t BLOOM_BITS, uint8_t BLOOM_HASHES,
+__global__ __launch_bounds__(kKernelLaunchBound, 1)
+void compute_keys_mode_eth_ma(uint8_t* bloomLookUp, uint64_t BLOOM_BITS, uint8_t BLOOM_HASHES,
         uint64_t bloomReciprocal, uint32_t bloomMask, uint32_t bloomIsPowerOfTwo, uint64_t* keys,
         uint32_t maxFound, uint32_t* found, int stepMultiplier)
 {
@@ -751,7 +771,8 @@ __global__ void compute_keys_mode_eth_ma(uint8_t* bloomLookUp, uint64_t BLOOM_BI
 
 }
 
-__global__ void compute_keys_mode_eth_sa(const uint32_t* __restrict__ hash, uint64_t* keys, uint32_t maxFound, uint32_t* found,
+__global__ __launch_bounds__(kKernelLaunchBound, 1)
+void compute_keys_mode_eth_sa(const uint32_t* __restrict__ hash, uint64_t* keys, uint32_t maxFound, uint32_t* found,
         int stepMultiplier)
 {
         __shared__ uint32_t sharedHash[5];
@@ -766,6 +787,31 @@ __global__ void compute_keys_mode_eth_sa(const uint32_t* __restrict__ hash, uint
 template <typename KernelFunc, typename... Args>
 bool GPUEngine::LaunchKeyKernel(const char* label, KernelFunc kernel, dim3 gridDim, dim3 blockDim, Args&&... args)
 {
+        size_t sharedMemBytes = 0;
+        if (kPrefetchGeneratorTablesSupported) {
+                sharedMemBytes = kGeneratorSharedTableBytes;
+#if defined(cudaFuncAttributeMaxDynamicSharedMemorySize)
+                const cudaError_t sharedLimitStatus = cudaFuncSetAttribute(kernel,
+                        cudaFuncAttributeMaxDynamicSharedMemorySize, static_cast<int>(sharedMemBytes));
+                if (sharedLimitStatus == cudaErrorNotSupported || sharedLimitStatus == cudaErrorInvalidValue) {
+                        cudaGetLastError();
+                }
+                else {
+                        CUDA_CHECK(sharedLimitStatus);
+                }
+#endif
+#if defined(cudaFuncAttributePreferredSharedMemoryCarveout)
+                const cudaError_t carveoutStatus = cudaFuncSetAttribute(kernel,
+                        cudaFuncAttributePreferredSharedMemoryCarveout, 100);
+                if (carveoutStatus == cudaErrorNotSupported || carveoutStatus == cudaErrorInvalidValue) {
+                        cudaGetLastError();
+                }
+                else {
+                        CUDA_CHECK(carveoutStatus);
+                }
+#endif
+        }
+
 #if defined(ENABLE_NVTX)
         if (label == nullptr || label[0] == '\0') {
                 label = "KeyHunt Kernel";
@@ -786,7 +832,7 @@ bool GPUEngine::LaunchKeyKernel(const char* label, KernelFunc kernel, dim3 gridD
                         cudaLaunchConfig_t config{};
                         config.gridDim = gridDim;
                         config.blockDim = blockDim;
-                        config.dynamicSmemBytes = 0;
+                        config.dynamicSmemBytes = sharedMemBytes;
                         config.stream = stream_;
 
                         cudaLaunchAttribute attribute{};
@@ -815,7 +861,7 @@ bool GPUEngine::LaunchKeyKernel(const char* label, KernelFunc kernel, dim3 gridD
                 cudaLaunchConfig_t config{};
                 config.gridDim = gridDim;
                 config.blockDim = blockDim;
-                config.dynamicSmemBytes = 0;
+                config.dynamicSmemBytes = sharedMemBytes;
                 config.stream = stream_;
 
                 cudaLaunchAttribute attribute{};
@@ -838,7 +884,7 @@ bool GPUEngine::LaunchKeyKernel(const char* label, KernelFunc kernel, dim3 gridD
                 }
         }
 #endif
-        kernel<<<gridDim, blockDim, 0, stream_>>>(std::forward<Args>(args)...);
+        kernel<<<gridDim, blockDim, sharedMemBytes, stream_>>>(std::forward<Args>(args)...);
         return true;
 }
 
@@ -863,10 +909,15 @@ dim3 GPUEngine::QueryClusterDimension(KernelFunc kernel, dim3 gridDim, dim3 bloc
                 return cache.value;
         }
 
+        size_t sharedMemBytes = 0;
+        if (kPrefetchGeneratorTablesSupported) {
+                sharedMemBytes = kGeneratorSharedTableBytes;
+        }
+
         cudaLaunchConfig_t config{};
         config.gridDim = gridDim;
         config.blockDim = blockDim;
-        config.dynamicSmemBytes = 0;
+        config.dynamicSmemBytes = sharedMemBytes;
 
         int clusterSize = 0;
         const cudaError_t status = cudaOccupancyMaxPotentialClusterSize(&clusterSize,
@@ -1031,6 +1082,13 @@ GPUEngine::GPUEngine(Secp256K1* secp, int nbThreadGroup, int nbThreadPerGroup, i
                 nbThreadPerGroup = deviceProp.maxThreadsPerBlock;
         }
 
+        if (nbThreadPerGroup > kKernelLaunchBound) {
+                std::fprintf(stderr,
+                        "GPUEngine: clamping threads per group from %d to %d to honor kernel launch bounds.\n",
+                        nbThreadPerGroup, kKernelLaunchBound);
+                nbThreadPerGroup = kKernelLaunchBound;
+        }
+
         if (warpSize > 0 && nbThreadPerGroup % warpSize != 0) {
                 const int adjusted = ((nbThreadPerGroup + warpSize - 1) / warpSize) * warpSize;
                 std::fprintf(stderr,
@@ -1068,8 +1126,8 @@ GPUEngine::GPUEngine(Secp256K1* secp, int nbThreadGroup, int nbThreadPerGroup, i
                 this->nbThreadPerGroup);
         deviceName = std::string(tmp);
 
-        // Prefer L1 (We do not use __shared__ at all)
-        CUDA_CHECK(cudaDeviceSetCacheConfig(cudaFuncCachePreferL1));
+        // Prefer shared memory to accommodate staged generator tables
+        CUDA_CHECK(cudaDeviceSetCacheConfig(cudaFuncCachePreferShared));
 
         const size_t stackSize = 49152;
         CUDA_CHECK(cudaDeviceSetLimit(cudaLimitStackSize, stackSize));
@@ -1236,6 +1294,13 @@ GPUEngine::GPUEngine(Secp256K1* secp, int nbThreadGroup, int nbThreadPerGroup, i
                 nbThreadPerGroup = deviceProp.maxThreadsPerBlock;
         }
 
+        if (nbThreadPerGroup > kKernelLaunchBound) {
+                std::fprintf(stderr,
+                        "GPUEngine: clamping threads per group from %d to %d to honor kernel launch bounds.\n",
+                        nbThreadPerGroup, kKernelLaunchBound);
+                nbThreadPerGroup = kKernelLaunchBound;
+        }
+
         if (warpSize > 0 && nbThreadPerGroup % warpSize != 0) {
                 const int adjusted = ((nbThreadPerGroup + warpSize - 1) / warpSize) * warpSize;
                 std::fprintf(stderr,
@@ -1273,8 +1338,8 @@ GPUEngine::GPUEngine(Secp256K1* secp, int nbThreadGroup, int nbThreadPerGroup, i
                 this->nbThreadPerGroup);
         deviceName = std::string(tmp);
 
-        // Prefer L1 (We do not use __shared__ at all)
-        CUDA_CHECK(cudaDeviceSetCacheConfig(cudaFuncCachePreferL1));
+        // Prefer shared memory to accommodate staged generator tables
+        CUDA_CHECK(cudaDeviceSetCacheConfig(cudaFuncCachePreferShared));
 
         const size_t stackSize = 49152;
         CUDA_CHECK(cudaDeviceSetLimit(cudaLimitStackSize, stackSize));
