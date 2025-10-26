@@ -112,7 +112,13 @@ private:
 	Bloom* bloom;
 
         std::atomic<uint64_t> counters[256];
-	double startTime;
+        double startTime;
+        double smoothedKeyRate = 0.0;
+        double smoothedGpuKeyRate = 0.0;
+        bool haveSmoothedKeyRate = false;
+        bool haveSmoothedGpuKeyRate = false;
+        double lastKeyProgressTick = 0.0;
+        double lastGpuProgressTick = 0.0;
 
 	int compMode;
 	int searchMode;
